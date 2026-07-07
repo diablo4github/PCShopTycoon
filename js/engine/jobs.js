@@ -124,7 +124,7 @@
     var upgCats = ['ram', 'storage', 'gpu'].filter(function (c) {
       return purchasableByCategory(state, c).length > 0;
     });
-    if (upgCats.length) add('upgrade', null, 5);
+    if (upgCats.length) add('upgrade', null, 3.5);
     if (purchasableByCategory(state, 'os').length) add('software', 'os_install', 2);
     if (year >= 1988 && Engine.equipmentOwned(state, 'software-station'))
       add('software', 'virus', (year >= 1995 && year <= 2010) ? 6 : 2);
@@ -173,7 +173,7 @@
 
     switch (choice.type) {
       case 'repair': {
-        var cat = Engine.pick(faultCats);
+        var cat = pickFaultCategory(faultCats);
         var tmpl = Engine.pick((F.faults || {})[cat] || [{ desc: 'Mystery gremlins', laborHours: 2 }]);
         job.fault = {
           desc: tmpl.desc,
@@ -337,17 +337,26 @@
     return job;
   }
 
+  // Weighted list of eligible fault sources (CONFIG.FAULT_CATEGORY_WEIGHTS).
   function repairFaultCategories(state) {
     var F = FLAVOR();
+    var weights = CFG().FAULT_CATEGORY_WEIGHTS || {};
     var out = [], faults = F.faults || {};
     var cats = Object.keys(faults);
     for (var i = 0; i < cats.length; i++) {
       var c = cats[i];
       if (!faults[c] || !faults[c].length) continue;
-      if (c === 'laborOnly') { out.push(c, c); continue; } // double weight: no part needed
-      if (purchasableByCategory(state, c).length) out.push(c);
+      if (c !== 'laborOnly' && !purchasableByCategory(state, c).length) continue;
+      out.push({ cat: c, w: weights[c] != null ? weights[c] : 1 });
     }
     return out;
+  }
+  function pickFaultCategory(cats) {
+    var total = 0, i;
+    for (i = 0; i < cats.length; i++) total += cats[i].w;
+    var r = Engine.rand() * total;
+    for (i = 0; i < cats.length; i++) { r -= cats[i].w; if (r <= 0) return cats[i].cat; }
+    return cats.length ? cats[cats.length - 1].cat : 'laborOnly';
   }
 
   // ------------------------------------------------------------------

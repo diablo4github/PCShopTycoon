@@ -74,11 +74,18 @@
     INSURANCE_MONTHLY_LABOR_MULT: 2,  // monthly premium = laborRate * this
     STORAGE_FEE_LABOR_DIV: 10,        // feePerSlot = laborRate/10 per overage slot
 
-    // Job pay (§5.4)
+    // Job pay (§5.4). Multipliers tuned so a typical 2h 1983 repair lands ~$45-80
+    // and the month-1 target of §7 (roughly break-even) holds for a busy shop.
     TYPE_MULT: {
-      repair: 1.0, upgrade: 0.9, software: 0.9, cleaning: 0.8, peripheral: 0.9,
-      data_recovery: 1.6, enthusiast: 1.3, contract: 1.1, build: 0, refurb: 0,
+      repair: 0.85, upgrade: 0.78, software: 0.78, cleaning: 0.7, peripheral: 0.78,
+      data_recovery: 1.5, enthusiast: 1.25, contract: 0.95, build: 0, refurb: 0,
       callback: 0
+    },
+    // Relative frequency of repair fault sources; labor-only & cheap-part faults
+    // dominate so the 1.25x parts markup doesn't print money in expensive-part eras.
+    FAULT_CATEGORY_WEIGHTS: {
+      laborOnly: 3.5, cooling: 1.5, psu: 1.4, ram: 1.2, storage: 0.9,
+      gpu: 0.9, cpu: 0.7, motherboard: 0.6
     },
     DIFF_MULT: [0.9, 1.05, 1.2, 1.4, 1.6],  // index difficulty-1
     RUSH_CHANCE: 0.08, RUSH_PAY_MULT: 1.8,

@@ -299,6 +299,11 @@ function runEra(era, idx) {
     ' | rating ' + line.rating.toFixed(2) +
     ' | builds ' + line.builds + ' | refurbs ' + line.refurbsSold +
     ' | callbacks ' + line.callbacksArrived + '+' + line.callbacksPending + ' pending');
+  var lt = s.ledger.lifetime;
+  console.log('    ledger: revenue ' + Engine.fmtMoney(lt.revenue) +
+    ' | parts ' + Engine.fmtMoney(lt.partsCost) +
+    ' | fixed ' + Engine.fmtMoney(lt.fixedCosts) +
+    ' | other ' + Engine.fmtMoney(lt.other));
   return line;
 }
 

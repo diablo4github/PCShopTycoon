@@ -60,7 +60,7 @@
   DATA.SHOP_TIERS = [
     {
       id: 0, name: "Garage",
-      rentBase: 350, utilitiesBase: 80,
+      rentBase: 350, utilitiesBase: 70,
       workstationSlots: 2, offerBonus: 0, storageSlots: 20,
       upgradeCost: null, minPrestige: 0,
       desc: "A workbench, a shelf, and the family car parked outside. Cheap, cramped, and where every legend starts."

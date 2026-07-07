@@ -88,7 +88,7 @@
       data_recovery: 1.4, enthusiast: 1.25, contract: 0.65, build: 0, refurb: 0,
       callback: 0
     },
-    BENCH_FEE_LABOR_MULT: 0.45,  // §9.6: repairs add ~0.5x laborRate bench fee to payout
+    BENCH_FEE_LABOR_MULT: 0.5,   // §9.6: repairs add ~0.5x laborRate bench fee to payout
     // §9.2 — which customer types can receive which job type. Key is "type",
     // "type:subtype", or "build:<useCase>"; most specific key wins; absent = broad.
     CUSTOMER_JOB_AFFINITY: {

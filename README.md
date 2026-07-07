@@ -26,6 +26,12 @@ python3 -m http.server 8000
   to recover before bankruptcy.
 - Grow reputation and prestige to unlock business contracts, enthusiast clientele,
   and wholesale discounts; upgrade the shop from garage to superstore.
+- Match customer brand tastes for pay bonuses, push into overtime when a deadline
+  looms (tomorrow starts short), strip broken machines for parts, and browse the
+  in-game **Wiki** — 600+ real components with period-accurate historical notes that
+  unlock as the calendar advances.
+- Era-flavored generative music and sound effects (all synthesized in-browser, no
+  assets) with mute toggles in the header; UI auto-scales to your window.
 
 ## Development
 

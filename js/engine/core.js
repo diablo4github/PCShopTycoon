@@ -59,12 +59,13 @@
     ASIS_CHURN: 0.08,            // nightly chance each listing churns (~2wk shelf life)
     ASIS_ARRIVAL_CHANCE: 0.33,   // <=1 new arrival/night (~1 per 3 nights) below cap
     ASIS_START_MIN: 2, ASIS_START_MAX: 4,     // listings seeded at newGame
-    ASIS_ASK_MIN: 0.40, ASIS_ASK_MAX: 0.55,   // ask vs part value (§9.6)
-    REFURB_SALE_RATIO: 0.85,     // of part value
-    REFURB_COND_MIN: 0.9, REFURB_COND_MAX: 1.1,
+    ASIS_ASK_MIN: 0.45, ASIS_ASK_MAX: 0.55,   // ask vs part value (§9.6: 40-55%)
+    REFURB_SALE_RATIO: 0.68,     // of part value (§9.6 override of §5.4's 0.85:
+                                 //   keeps flips at 1.2-1.8x the jobs $/hour)
+    REFURB_COND_MIN: 0.95, REFURB_COND_MAX: 1.05,
     REFURB_PREMIUM_HOURS: 3,     // working-machine premium = laborRate*this (§9.6)
     REFURB_SCRAP_RATIO: 0.25,    // abandon: 25% of parts value
-    REFURB_HOURS_MIN: 2, REFURB_HOURS_MAX: 4,
+    REFURB_HOURS_MIN: 3, REFURB_HOURS_MAX: 5,  // §9.6: flips are slower work now
     ASIS_MAX_AGE_YEARS: 12,      // how far back as-is machines reach
     // §9.5 strip-for-parts
     STRIP_HOURS: 1.5,
@@ -83,11 +84,11 @@
     // Job pay (§5.4, retuned per §9.6: honest labor is the era-1 backbone —
     // repairs also bill a bench fee; typical 1983 repair lands $60-110).
     TYPE_MULT: {
-      repair: 1.05, upgrade: 0.85, software: 1.0, cleaning: 0.7, peripheral: 0.8,
-      data_recovery: 1.45, enthusiast: 1.25, contract: 0.9, build: 0, refurb: 0,
+      repair: 0.8, upgrade: 0.7, software: 0.85, cleaning: 0.6, peripheral: 0.6,
+      data_recovery: 1.4, enthusiast: 1.25, contract: 0.65, build: 0, refurb: 0,
       callback: 0
     },
-    BENCH_FEE_LABOR_MULT: 0.5,   // §9.6: repairs add ~0.5x laborRate bench fee to payout
+    BENCH_FEE_LABOR_MULT: 0.45,  // §9.6: repairs add ~0.5x laborRate bench fee to payout
     // §9.2 — which customer types can receive which job type. Key is "type",
     // "type:subtype", or "build:<useCase>"; most specific key wins; absent = broad.
     CUSTOMER_JOB_AFFINITY: {
@@ -109,7 +110,7 @@
     // Relative frequency of repair fault sources; labor-only & cheap-part faults
     // dominate so the 1.25x parts markup doesn't print money in expensive-part eras.
     FAULT_CATEGORY_WEIGHTS: {
-      laborOnly: 4, cooling: 1.5, psu: 1.4, ram: 1.1, storage: 0.8,
+      laborOnly: 5.5, cooling: 1.5, psu: 1.4, ram: 1.1, storage: 0.8,
       gpu: 0.8, cpu: 0.6, motherboard: 0.5
     },
     DIFF_MULT: [0.9, 1.05, 1.2, 1.4, 1.6],  // index difficulty-1
@@ -117,7 +118,7 @@
     OFFER_BASE: 2, OFFER_HARD_MAX: 6,       // clamp(…, 2, 6+offerBonus)
     DEADLINE_MIN: 2, DEADLINE_MAX: 7,
     CONTRACT_DEADLINE_MIN: 12, CONTRACT_DEADLINE_MAX: 25,
-    CONTRACT_UNITS_MIN: 4, CONTRACT_UNITS_MAX: 10,
+    CONTRACT_UNITS_MIN: 4, CONTRACT_UNITS_MAX: 8,
     CONTRACT_MIN_DAYS_BETWEEN: 7,           // <=1/week
     CONTRACT_UNIT_HOURS_MIN: 1, CONTRACT_UNIT_HOURS_MAX: 2,
 

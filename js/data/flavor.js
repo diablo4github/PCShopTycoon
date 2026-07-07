@@ -97,68 +97,102 @@
       "sun-faded", "sticker-covered", "garage-kept", "flood-salvaged", "estate-sale", "school-surplus",
       "cigarette-tarred", "attic-fresh", "well-loved", "mystery-box"
     ],
+    // v2 (§9.2): blurbs are { text, customers: [customerTypeIds] | null } — null = fits anyone.
     jobBlurbs: {
       repair: [
-        "It was working fine last night, and this morning — nothing. We invoice on this machine!",
-        "My kid says it's 'toast.' I need a second opinion from a professional.",
-        "It makes a horrible noise and then just... stops. Please tell me it's cheap.",
-        "The screen went black mid-game and never came back. I've tried turning it off and on. Twice.",
-        "It smells like burning plastic when I turn it on. That's bad, right?"
+        { text: "It makes a horrible noise and then just... stops. Please tell me it's cheap.", customers: null },
+        { text: "It smells like burning plastic when I turn it on. That's bad, right?", customers: null },
+        { text: "It was working fine last night, and this morning — nothing. We invoice on this machine!", customers: ["smallbiz", "office"] },
+        { text: "The front desk computer is dead and customers are staring at us.", customers: ["smallbiz", "office"] },
+        { text: "The screen went black mid-game and never came back. I've tried turning it off and on. Twice.", customers: ["gamer", "student"] },
+        { text: "It crashed during finals week and won't even start. My whole semester is on there.", customers: ["student"] },
+        { text: "My kid says it's 'toast.' I need a second opinion from a professional.", customers: ["home", "senior"] },
+        { text: "It died mid-render and the client call is Thursday. Save me.", customers: ["creator"] },
+        { text: "One of my rigs dropped offline overnight. Every hour down is money burned.", customers: ["miner"] },
+        { text: "I've soldered a few things in my day, but this one has me beat.", customers: ["hobbyist", "senior"] }
       ],
       upgrade: [
-        "Everyone says I need more memory. I don't know what that means, but here's the machine.",
-        "The new software says my machine doesn't meet 'minimum requirements.' Rude, but fix it.",
-        "It takes five minutes to open anything. Make it faster, whatever it takes.",
-        "My nephew says this thing is a dinosaur. Modernize it — within reason.",
-        "I just need it to run one specific program. The box lists things I don't own."
+        { text: "It takes five minutes to open anything. Make it faster, whatever it takes.", customers: null },
+        { text: "The new software says my machine doesn't meet 'minimum requirements.' Rude, but fix it.", customers: null },
+        { text: "Everyone says I need more memory. I don't know what that means, but here's the machine.", customers: ["home", "senior"] },
+        { text: "My nephew says this thing is a dinosaur. Modernize it — within reason.", customers: ["senior", "home"] },
+        { text: "I just need it to run one specific program. The box lists things I don't own.", customers: ["office", "smallbiz"] },
+        { text: "Payroll software update says we're 'below spec' now. It runs the whole office, so fix it fast.", customers: ["smallbiz", "office"] },
+        { text: "The new game launches Friday and my frame rate is a war crime. Upgrade me.", customers: ["gamer", "student"] },
+        { text: "My exports take all night. More cores, more memory, whatever eats the render queue.", customers: ["creator"] },
+        { text: "I want to try the new algorithm but my cards need a better platform under them.", customers: ["miner", "hobbyist"] }
       ],
       build: [
-        "I've saved up all year for this. Build me something that'll turn heads.",
-        "I need a machine for the office — reliable, boring, and on budget. Surprise me with neither.",
-        "Build it like you'd build your own. That's the whole spec.",
-        "My friend's machine loads everything instantly. I want to beat it. Comfortably.",
-        "Here's my budget. Every dollar past it comes out of my vacation fund, so don't."
+        { text: "Build it like you'd build your own. That's the whole spec.", customers: null },
+        { text: "Here's my budget. Every dollar past it comes out of my vacation fund, so don't.", customers: null },
+        { text: "I've saved up all year for this. Build me something that'll turn heads.", customers: ["gamer", "student", "creator"] },
+        { text: "My friend's machine loads everything instantly. I want to beat it. Comfortably.", customers: ["gamer", "student"] },
+        { text: "I need a machine for the office — reliable, boring, and on budget. Surprise me with neither.", customers: ["office", "smallbiz"] },
+        { text: "Something simple for email and the grandkids' photos. Big text, please.", customers: ["senior", "home"] },
+        { text: "Family machine for homework and taxes. If it survives the kids, it's a win.", customers: ["home"] },
+        { text: "I need it to edit video without sounding like a leaf blower. Storage. Lots of storage.", customers: ["creator"] },
+        { text: "A tinker box — something I can open up and fiddle with on weekends without crying.", customers: ["hobbyist"] },
+        { text: "Max cards, minimum everything else. It lives in the garage; looks don't matter.", customers: ["miner"] }
       ],
       data_recovery: [
-        "My thesis is on that drive. My ONLY copy. Please. I'm begging you.",
-        "Ten years of family photos. The drive just clicks now. Whatever it costs.",
-        "Our accounts are on there and tax season starts Monday.",
-        "I deleted the wrong folder and then, in a panic, I made it worse.",
-        "The drive fell off the desk. It was on. I know, I know."
+        { text: "I deleted the wrong folder and then, in a panic, I made it worse.", customers: null },
+        { text: "The drive fell off the desk. It was on. I know, I know.", customers: null },
+        { text: "My thesis is on that drive. My ONLY copy. Please. I'm begging you.", customers: ["student"] },
+        { text: "Ten years of family photos. The drive just clicks now. Whatever it costs.", customers: ["home", "senior"] },
+        { text: "Forty years of letters and my address book. My son says it's probably gone. Prove him wrong.", customers: ["senior"] },
+        { text: "Our accounts are on there and tax season starts Monday.", customers: ["smallbiz", "office"] },
+        { text: "The customer database died with the drive. We're back to paper and panic.", customers: ["smallbiz", "office"] },
+        { text: "Three years of raw footage on one drive. Yes, I know. I KNOW. Please help.", customers: ["creator"] },
+        { text: "My wallet keys are on that disk. I will pay you a percentage. A generous one.", customers: ["miner", "hobbyist"] }
       ],
       software: [
-        "There are seventeen toolbars in my browser and I installed exactly none of them.",
-        "It's asking me to pay money to unlock my own files. This is extortion. Fix it.",
-        "Fresh start, please. Wipe it and set it up like new — but keep my stuff.",
-        "Pop-ups. So many pop-ups. It beeps at me even when it's off. I think.",
-        "My grandson installed 'a few games' and now nothing works."
+        { text: "There are seventeen toolbars in my browser and I installed exactly none of them.", customers: null },
+        { text: "Fresh start, please. Wipe it and set it up like new — but keep my stuff.", customers: null },
+        { text: "It's asking me to pay money to unlock my own files. This is extortion. Fix it.", customers: ["smallbiz", "office", "home"] },
+        { text: "Pop-ups. So many pop-ups. It beeps at me even when it's off. I think.", customers: ["senior", "home"] },
+        { text: "My grandson installed 'a few games' and now nothing works.", customers: ["senior"] },
+        { text: "Something's mining on my machine and it isn't me. Get it out.", customers: ["gamer", "miner", "student"] },
+        { text: "My plugins fight each other and the whole suite crashes on export. Untangle it.", customers: ["creator", "hobbyist"] },
+        { text: "Every machine in the office got the same weird email. One of us clicked it. Guess whose computer I'm carrying.", customers: ["office", "smallbiz"] },
+        { text: "I tried installing a second operating system and now there's only a blinking cursor.", customers: ["hobbyist", "student"] }
       ],
       cleaning: [
-        "I opened the case to look inside and closed it immediately. You need to see this.",
-        "It sounds like a hair dryer and heats the whole room. Just clean it, please.",
-        "The cat sleeps on it. Draw your own conclusions.",
-        "It shuts itself off when it gets hot. Summer's coming. Help.",
-        "There may or may not be a decade of cigarette smoke in there. There is."
+        { text: "I opened the case to look inside and closed it immediately. You need to see this.", customers: null },
+        { text: "It sounds like a hair dryer and heats the whole room. Just clean it, please.", customers: null },
+        { text: "It shuts itself off when it gets hot. Summer's coming. Help.", customers: null },
+        { text: "The cat sleeps on it. Draw your own conclusions.", customers: ["home", "senior"] },
+        { text: "There may or may not be a decade of cigarette smoke in there. There is.", customers: ["home", "hobbyist", "senior"] },
+        { text: "My rig's temps creep up every match. I need airflow, not excuses.", customers: ["gamer", "student"] },
+        { text: "The render box breathes dust like a dragon. Make it quiet before the voiceover session.", customers: ["creator"] },
+        { text: "Shop floor dust got into everything. The quote machine wheezes louder than the compressor.", customers: ["smallbiz", "office"] },
+        { text: "These cards have been running hot for two years straight. Deep-clean the lot.", customers: ["miner"] }
       ],
       peripheral: [
-        "The printer eats every third page and I've started taking it personally.",
-        "The monitor flickers until I smack it. I'd like a more professional solution.",
-        "My modem dials, screams, and gives up. I hear that's not normal anymore.",
-        "Half the keys stick and the spacebar needs a running start.",
-        "The screen's gone all green and wavy. It's like working inside an aquarium."
+        { text: "The printer eats every third page and I've started taking it personally.", customers: null },
+        { text: "The monitor flickers until I smack it. I'd like a more professional solution.", customers: null },
+        { text: "My modem dials, screams, and gives up. I hear that's not normal anymore.", customers: ["home", "senior"] },
+        { text: "Half the keys stick and the spacebar needs a running start.", customers: ["home", "office"] },
+        { text: "The screen's gone all green and wavy. It's like working inside an aquarium.", customers: ["office", "senior"] },
+        { text: "Invoices come out striped. The customers think it's a design choice. It is not.", customers: ["smallbiz"] },
+        { text: "Reception's monitor buzzes like a wasp. It's all anyone can hear on the phone.", customers: ["office", "smallbiz"] },
+        { text: "The grandchildren set the printer to Dutch, I think. It also no longer prints.", customers: ["senior", "home"] }
       ],
       enthusiast: [
-        "I want every last megahertz this thing can give. Warranty is a suggestion.",
-        "Make it faster than my brother's. That's the entire specification.",
-        "I saw a build online with lights everywhere. I want that, but tasteful. But lights everywhere.",
-        "Quiet, cold, and fast. Pick all three, that's why I'm paying a professional.",
-        "I've overclocked it myself and now it won't boot. Make it go faster anyway."
+        { text: "Quiet, cold, and fast. Pick all three, that's why I'm paying a professional.", customers: null },
+        { text: "I've overclocked it myself and now it won't boot. Make it go faster anyway.", customers: null },
+        { text: "I want every last megahertz this thing can give. Warranty is a suggestion.", customers: ["gamer", "hobbyist"] },
+        { text: "Make it faster than my brother's. That's the entire specification.", customers: ["gamer", "student"] },
+        { text: "I saw a build online with lights everywhere. I want that, but tasteful. But lights everywhere.", customers: ["gamer", "student", "creator"] },
+        { text: "The stream needs a glow-up. Make the case the star of the background shot.", customers: ["creator"] },
+        { text: "Undervolt them all. Every watt saved is pure margin.", customers: ["miner"] },
+        { text: "I read a forum thread about delidding. I'm not brave enough, but you might be.", customers: ["hobbyist"] }
       ],
       contract: [
-        "We're outfitting the whole office. Identical machines, on time, no drama.",
-        "The school board approved the budget. Twelve machines by end of month.",
-        "Our firm is expanding — we need workstations for the new hires, all the same spec.",
-        "Corporate says buy local. Congratulations, you're local. Here's the purchase order."
+        { text: "We're outfitting the whole office. Identical machines, on time, no drama.", customers: ["office", "smallbiz"] },
+        { text: "The school board approved the budget. Twelve machines by end of month.", customers: ["office"] },
+        { text: "Our firm is expanding — we need workstations for the new hires, all the same spec.", customers: ["office", "smallbiz"] },
+        { text: "Corporate says buy local. Congratulations, you're local. Here's the purchase order.", customers: ["smallbiz", "office"] },
+        { text: "Every register in the shop gets replaced this quarter. Quote me the lot.", customers: ["smallbiz"] }
       ]
     },
     peripheralItems: [

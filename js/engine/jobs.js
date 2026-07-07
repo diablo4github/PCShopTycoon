@@ -210,7 +210,7 @@
     var upgCats = ['ram', 'storage', 'gpu'].filter(function (c) {
       return purchasableByCategory(state, c).length > 0;
     });
-    if (upgCats.length) add('upgrade', null, 3);
+    if (upgCats.length) add('upgrade', null, 2);
     if (purchasableByCategory(state, 'os').length) add('software', 'os_install', 2);
     if (year >= 1988 && Engine.equipmentOwned(state, 'software-station'))
       add('software', 'virus', (year >= 1995 && year <= 2010) ? 6 : 2);
@@ -893,7 +893,8 @@
         'The tube bit back. Medical bill ' + Engine.fmtMoney(medical) +
         (covered ? ' (insurance covered ' + Engine.fmtMoney(covered) + ')' : '') +
         '. You will lose the next ' + C.INJURY_DAYS + ' days.');
-      return { ok: true, hoursSpent: 0, completed: false, mishap: 'crt' };
+      // UI contract: mishap:true lets the UI play its mishap sound
+      return { ok: true, hoursSpent: 0, completed: false, mishap: true, mishapKind: 'crt' };
     }
 
     var m = effectiveMult(state, job);
@@ -1234,7 +1235,14 @@
       Engine.randInt(mobo.introYear, Math.min(year, (mobo.eolYear || year) + 2)),
       mobo.introYear, year);
     var value = machinePartsValue(state, { partIds: partIds });
-    var ask = Engine.round2(value * Engine.uniform(C.ASIS_ASK_MIN, C.ASIS_ASK_MAX));
+    // Dealers price big iron closer to its real worth, and machines that
+    // "just need some love" cost extra — flattens flip margins (§9.6).
+    var span = C.ASIS_ASK_MAX - C.ASIS_ASK_MIN;
+    var bl = Engine.baselineFor(year);
+    var sizeT = Engine.clamp(value / Math.max(1, bl.buildBudget), 0, 1);
+    var frac = C.ASIS_ASK_MIN + span * (0.35 * Engine.rand() + 0.65 * sizeT);
+    if (faultIdx == null) frac = Math.min(C.ASIS_ASK_MAX, frac + 0.04);
+    var ask = Engine.round2(value * frac);
     return {
       id: 'm' + (state.asIsNextId++),
       name: adjective + ' ' + mobo.name + ' machine',

@@ -60,7 +60,7 @@
   DATA.SHOP_TIERS = [
     {
       id: 0, name: "Garage",
-      rentBase: 350, utilitiesBase: 60,
+      rentBase: 350, utilitiesBase: 70,
       workstationSlots: 2, offerBonus: 0, storageSlots: 20,
       upgradeCost: null, minPrestige: 0,
       desc: "A workbench, a shelf, and the family car parked outside. Cheap, cramped, and where every legend starts."
@@ -96,7 +96,7 @@
     { id: "diag-station", name: "Diagnostic Station", costBase: 800, introYear: 1983,
       desc: "POST cards, loopback plugs, and reference manuals. Halves diagnosis time.",
       effects: { diagHoursMult: 0.5 } },
-    { id: "oscilloscope", name: "Bench Oscilloscope", costBase: 650, introYear: 1983,
+    { id: "oscilloscope", name: "Bench Oscilloscope", costBase: 750, introYear: 1983,
       desc: "See the signals instead of guessing. Cuts diagnosis time by a quarter.",
       effects: { diagHoursMult: 0.75 } },
     { id: "build-bench", name: "Assembly Bench", costBase: 1200, introYear: 1983,

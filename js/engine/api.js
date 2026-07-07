@@ -281,9 +281,8 @@
     var cost = Engine.round2(unit * qty);
     if (state.cash < cost) return err('Not enough cash (' + Engine.fmtMoney(cost) + ' needed)');
     if (!state.supplyRunDoneToday) {
-      if (state.hoursLeft < Engine.CONFIG.SUPPLY_RUN_HOURS)
-        return err('No time left for a supply run today');
-      state.hoursLeft = Engine.round2(state.hoursLeft - Engine.CONFIG.SUPPLY_RUN_HOURS);
+      var run = Engine.spendHours(state, Engine.CONFIG.SUPPLY_RUN_HOURS); // overtime rules (§9.4)
+      if (!run.ok) return run;
       state.supplyRunDoneToday = true;
     }
     Engine.addCash(state, -cost);

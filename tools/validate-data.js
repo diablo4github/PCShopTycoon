@@ -73,7 +73,9 @@ PARTS.forEach(function (p, i) {
   if (!isInt(p.eolYear) || p.eolYear < p.introYear) err(label + ': eolYear invalid (must be >= introYear)');
   if (TIERS.indexOf(p.tier) === -1) err(label + ': bad tier "' + p.tier + '"');
   if (p.legacy !== undefined && typeof p.legacy !== 'boolean') err(label + ': legacy must be boolean');
-  if (p.desc !== undefined && !isStr(p.desc)) err(label + ': desc must be a non-empty string');
+  // v2 (§9.1): brand required everywhere; desc required, wiki-grade, >= 40 chars
+  if (!isStr(p.brand)) err(label + ': brand is required (v2 §9.1)');
+  if (!isStr(p.desc) || p.desc.length < 40) err(label + ': desc is required and must be >= 40 chars (v2 §9.1)');
 
   // power fields
   if (p.category === 'psu') {
@@ -117,22 +119,31 @@ PARTS.forEach(function (p, i) {
     }
   }
 });
-if (PARTS.length < 300 || PARTS.length > 450) {
-  err('PARTS total ' + PARTS.length + ' outside target 300-450');
+if (PARTS.length < 600 || PARTS.length > 700) {
+  err('PARTS total ' + PARTS.length + ' outside v2 target 600-700 (§9.1)');
 }
 
-// ---------------------------------------------------------------- coverage table
+// ---------------------------------------------------------------- coverage table (v2 §9.1 minimums)
 var BUCKETS = [[1979, 1984], [1985, 1990], [1991, 1995], [1996, 2000], [2001, 2005], [2006, 2010], [2011, 2015], [2016, 2020], [2021, 2025]];
-var MIN_MAJOR = 4, MIN_MINOR = 2;
+var MIN_MAJOR = 5, MIN_MINOR = 3, MIN_BRANDS = 2;
 var MAJOR = ['cpu', 'motherboard', 'ram', 'storage', 'gpu', 'psu', 'case'];
 var MINOR = ['cooling', 'os', 'peripheral'];
 var cov = BUCKETS.map(function (b) {
   var row = { bucket: b[0] + '-' + b[1] };
-  CATEGORIES.forEach(function (c) { row[c] = 0; });
+  var brands = {};
+  CATEGORIES.forEach(function (c) { row[c] = 0; brands[c] = {}; });
   PARTS.forEach(function (p) {
-    if (p.introYear >= b[0] && p.introYear <= b[1]) row[p.category]++;
+    if (p.introYear >= b[0] && p.introYear <= b[1]) {
+      row[p.category]++;
+      if (p.brand) brands[p.category][p.brand] = true;
+    }
   });
-  MAJOR.forEach(function (c) { if (row[c] < MIN_MAJOR) err('coverage: bucket ' + row.bucket + ' has only ' + row[c] + ' ' + c + ' (need ' + MIN_MAJOR + ')'); });
+  row._brands = {};
+  CATEGORIES.forEach(function (c) { row._brands[c] = Object.keys(brands[c]).length; });
+  MAJOR.forEach(function (c) {
+    if (row[c] < MIN_MAJOR) err('coverage: bucket ' + row.bucket + ' has only ' + row[c] + ' ' + c + ' (need ' + MIN_MAJOR + ')');
+    if (row._brands[c] < MIN_BRANDS) err('coverage: bucket ' + row.bucket + ' has only ' + row._brands[c] + ' distinct ' + c + ' brand(s) (need ' + MIN_BRANDS + ', v2 §9.1)');
+  });
   MINOR.forEach(function (c) { if (row[c] < MIN_MINOR) err('coverage: bucket ' + row.bucket + ' has only ' + row[c] + ' ' + c + ' (need ' + MIN_MINOR + ')'); });
   return row;
 });
@@ -346,8 +357,38 @@ Object.keys(FL.faults || {}).forEach(function (k) {
   });
 });
 needLen(FL.machineAdjectives, 8, 'machineAdjectives');
+// v2 (§9.2): blurbs are { text, customers: [ids] | null }; every ALLOWED customer type
+// needs >= 2 fitting blurbs per job type (null customers fit everyone). The allowed-type
+// map mirrors the engine's CUSTOMER_JOB_AFFINITY described in §9.2.
 var BLURB_KEYS = ['repair', 'upgrade', 'build', 'data_recovery', 'software', 'cleaning', 'peripheral', 'enthusiast', 'contract'];
-BLURB_KEYS.forEach(function (k) { needLen((FL.jobBlurbs || {})[k], 4, 'jobBlurbs.' + k); });
+var ALL_CUST = (FL.customerTypes || []).map(function (c) { return c.id; });
+var BLURB_AFFINITY = {
+  repair: ALL_CUST, upgrade: ALL_CUST, build: ALL_CUST, data_recovery: ALL_CUST,
+  software: ALL_CUST, cleaning: ALL_CUST,
+  peripheral: ['home', 'smallbiz', 'office', 'senior'],
+  enthusiast: ['gamer', 'student', 'creator', 'hobbyist', 'miner'],
+  contract: ['smallbiz', 'office']
+};
+BLURB_KEYS.forEach(function (k) {
+  var arr = (FL.jobBlurbs || {})[k];
+  needLen(arr, 4, 'jobBlurbs.' + k);
+  (arr || []).forEach(function (b, i) {
+    var l = 'FLAVOR.jobBlurbs.' + k + '[' + i + ']';
+    if (!b || typeof b !== 'object' || !isStr(b.text)) { err(l + ': must be { text, customers } with non-empty text (v2 §9.2)'); return; }
+    if (b.customers !== null) {
+      if (!Array.isArray(b.customers) || !b.customers.length) err(l + ': customers must be null or a non-empty array');
+      else b.customers.forEach(function (cid) {
+        if (ALL_CUST.indexOf(cid) === -1) err(l + ': unknown customer type id "' + cid + '"');
+      });
+    }
+  });
+  (BLURB_AFFINITY[k] || []).forEach(function (cid) {
+    var fitting = (arr || []).filter(function (b) {
+      return b && (b.customers === null || (Array.isArray(b.customers) && b.customers.indexOf(cid) !== -1));
+    }).length;
+    if (fitting < 2) err('FLAVOR.jobBlurbs.' + k + ': customer type "' + cid + '" has only ' + fitting + ' fitting blurb(s), need >= 2 (v2 §9.2)');
+  });
+});
 needLen(FL.peripheralItems, 10, 'peripheralItems');
 (FL.peripheralItems || []).forEach(function (it) {
   if (!isStr(it.name) || !isInt(it.minYear)) err('FLAVOR.peripheralItems: entries need name + minYear');

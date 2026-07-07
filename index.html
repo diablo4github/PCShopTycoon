@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Circuit &amp; Solder: PC Shop Tycoon</title>
+  <link rel="stylesheet" href="css/styles.css">
+</head>
+<body class="era-early">
+
+  <!-- ============ Screen: New Game ============ -->
+  <div id="screen-newgame" class="screen" hidden></div>
+
+  <!-- ============ Screen: Main game ============ -->
+  <div id="screen-main" class="screen" hidden>
+    <header id="app-header">
+      <div class="hdr-left">
+        <span id="hdr-shopname" class="hdr-shopname"></span>
+        <span id="hdr-date" class="hdr-date"></span>
+      </div>
+      <div class="hdr-right">
+        <span id="hdr-cash" class="hdr-cash num" title="Cash on hand"></span>
+        <span id="hdr-hours" class="hdr-hours" title="Hours left today"></span>
+        <span id="hdr-rating" class="hdr-rating" title="Shop rating"></span>
+        <span id="hdr-prestige" class="hdr-chip" title="Prestige"></span>
+        <span id="hdr-tier" class="hdr-chip" title="Shop tier"></span>
+        <button id="btn-endday" class="btn btn-primary" type="button">End Day</button>
+      </div>
+    </header>
+
+    <nav id="tab-bar" aria-label="Game sections">
+      <button class="tab-btn active" type="button" data-tab="offers">Offers <span class="tab-badge" id="badge-offers" hidden></span></button>
+      <button class="tab-btn" type="button" data-tab="workbench">Workbench <span class="tab-badge" id="badge-workbench" hidden></span></button>
+      <button class="tab-btn" type="button" data-tab="inventory">Inventory</button>
+      <button class="tab-btn" type="button" data-tab="market">Parts Market</button>
+      <button class="tab-btn" type="button" data-tab="shop">Shop</button>
+      <button class="tab-btn" type="button" data-tab="ledger">Ledger</button>
+      <button class="tab-btn" type="button" data-tab="news">News</button>
+      <button class="tab-btn" type="button" data-tab="save">Save / Load</button>
+    </nav>
+
+    <main id="tab-panels">
+      <section id="tab-offers" class="tab-panel"></section>
+      <section id="tab-workbench" class="tab-panel" hidden></section>
+      <section id="tab-inventory" class="tab-panel" hidden></section>
+      <section id="tab-market" class="tab-panel" hidden></section>
+      <section id="tab-shop" class="tab-panel" hidden></section>
+      <section id="tab-ledger" class="tab-panel" hidden></section>
+      <section id="tab-news" class="tab-panel" hidden></section>
+      <section id="tab-save" class="tab-panel" hidden></section>
+    </main>
+  </div>
+
+  <!-- ============ Screen: Game Over ============ -->
+  <div id="screen-gameover" class="screen" hidden></div>
+
+  <!-- ============ Overlays ============ -->
+  <div id="modal-root"></div>
+  <div id="toast-root" aria-live="polite"></div>
+
+  <!-- ============ Scripts (SPEC §0 load order) ============ -->
+  <script src="js/data/catalog.js"></script>
+  <script src="js/data/eras.js"></script>
+  <script src="js/data/events.js"></script>
+  <script src="js/data/flavor.js"></script>
+  <script src="js/engine/core.js"></script>
+  <script src="js/engine/pricing.js"></script>
+  <script src="js/engine/compat.js"></script>
+  <script src="js/engine/jobs.js"></script>
+  <script src="js/engine/simulation.js"></script>
+  <script src="js/engine/api.js"></script>
+  <script src="js/ui/ui.js"></script>
+  <script src="js/ui/tabs.js"></script>
+  <script src="js/ui/screens.js"></script>
+  <script>
+    document.addEventListener('DOMContentLoaded', function () { UI.init(); });
+  </script>
+</body>
+</html>

@@ -1,0 +1,1114 @@
+/* ==========================================================================
+ * Circuit & Solder: PC Shop Tycoon — js/ui/tabs.js
+ * Renderers + delegated event handling for the 8 main tabs:
+ * Offers, Workbench (incl. As-Is Market), Inventory, Parts Market,
+ * Shop, Ledger, News, Save/Load.
+ *
+ * Pattern: each render replaces the panel's innerHTML; exactly three
+ * delegated listeners (click/change/input) live on #tab-panels forever,
+ * so re-renders never leak listeners.
+ * ========================================================================== */
+(function () {
+  'use strict';
+
+  var UI = window.UI = window.UI || {};
+  var T = UI.tabs = UI.tabs || {};
+
+  /* ---------------- shared shorthands ---------------- */
+  function esc(s) { return UI.esc(s); }
+  function fm(x) { return UI.fm(x); }
+  function tryCall(fn) { return UI.tryCall(fn); }
+  function arr(x) { return Array.isArray(x) ? x : []; }
+  function getState() {
+    if (!UI.engineReady()) return null;
+    try { return Engine.getState(); } catch (e) { return null; }
+  }
+  function emptyBox(msg) { return '<div class="empty">' + esc(msg) + '</div>'; }
+
+  var CATEGORIES = ['cpu', 'motherboard', 'ram', 'storage', 'gpu', 'psu', 'case', 'cooling', 'os', 'peripheral'];
+  var CAT_LABELS = {
+    cpu: 'CPU', motherboard: 'Motherboard', ram: 'RAM', storage: 'Storage',
+    gpu: 'GPU', psu: 'PSU', 'case': 'Case', cooling: 'Cooling', os: 'OS', peripheral: 'Peripheral'
+  };
+  var TYPE_LABELS = {
+    repair: 'Repair', upgrade: 'Upgrade', build: 'Custom Build', refurb: 'Refurb',
+    data_recovery: 'Data Recovery', software: 'Software', cleaning: 'Cleaning',
+    peripheral: 'Peripheral', contract: 'Contract', enthusiast: 'Enthusiast', callback: 'Callback'
+  };
+  var SUBTYPE_LABELS = {
+    virus: 'Virus Removal', os_install: 'OS Install', overclock: 'Overclock',
+    aesthetic: 'Aesthetic Build', thermal_paste: 'Thermal Paste', contract_build: 'Build Contract',
+    contract_upgrade: 'Upgrade Contract', crt: 'CRT', printer: 'Printer'
+  };
+  var SPEED_TIP = 'Work speed trade-off — Quick: fewer hours on the bench but a much higher ' +
+    'warranty-callback risk and a rating penalty. Standard: baseline. Meticulous: more hours, ' +
+    'far fewer callbacks and a rating bonus.';
+
+  var marketTimer = null;
+  var refocusMarketSearch = false;
+
+  /* ------------------------------------------------------------------ *
+   * Render dispatch
+   * ------------------------------------------------------------------ */
+
+  var renderers = {
+    offers: renderOffers,
+    workbench: renderWorkbench,
+    inventory: renderInventory,
+    market: renderMarket,
+    shop: renderShop,
+    ledger: renderLedger,
+    news: renderNews,
+    save: renderSave
+  };
+
+  T.render = function (id) {
+    var panel = document.getElementById('tab-' + id);
+    var fn = renderers[id];
+    if (!panel || !fn) return;
+    try {
+      fn(panel);
+    } catch (e) {
+      if (window.console && console.error) console.error(e);
+      panel.innerHTML = '<div class="error-box">Could not render this tab: ' + esc(e && e.message) + '</div>';
+    }
+  };
+
+  /* ------------------------------------------------------------------ *
+   * Delegated events (bound once from UI.init)
+   * ------------------------------------------------------------------ */
+
+  T.bind = function () {
+    var panels = document.getElementById('tab-panels');
+    if (!panels) return;
+    panels.addEventListener('click', onPanelClick);
+    panels.addEventListener('change', onPanelChange);
+    panels.addEventListener('input', onPanelInput);
+  };
+
+  function jobIdOf(el) {
+    var v = el.getAttribute('data-job');
+    return v === null ? null : parseInt(v, 10);
+  }
+
+  function onPanelClick(e) {
+    var t = e.target;
+    if (!t || !t.closest) return;
+    var el = t.closest('[data-action]');
+    if (!el || el.disabled) return;
+    var action = el.getAttribute('data-action');
+    var jobId = jobIdOf(el);
+
+    switch (action) {
+      /* ---- Offers ---- */
+      case 'accept':
+        UI.api(tryCall(function () { return Engine.acceptOffer(jobId); }), 'Job accepted — it is on your Workbench');
+        break;
+      case 'decline':
+        UI.api(tryCall(function () { return Engine.declineOffer(jobId); }));
+        break;
+
+      /* ---- Workbench ---- */
+      case 'diagnose': {
+        var dr = tryCall(function () { return Engine.diagnoseJob(jobId); });
+        if (dr && dr.ok !== false && dr.fault) {
+          UI.toast('Diagnosis (' + (dr.hoursSpent != null ? dr.hoursSpent + 'h' : 'done') + '): ' +
+            (dr.fault.desc || 'fault found') +
+            (dr.fault.partCategory ? ' — needs a ' + (CAT_LABELS[dr.fault.partCategory] || dr.fault.partCategory) + ' part' : ' — labor only'),
+            'info', 6500);
+        }
+        UI.api(dr);
+        break;
+      }
+      case 'work1':
+        workAndReport(jobId, 1);
+        break;
+      case 'workall':
+        workAndReport(jobId, null);
+        break;
+      case 'abandon': {
+        var isRefurb = el.getAttribute('data-refurb') === '1';
+        UI.confirm(
+          isRefurb
+            ? 'Abandon this refurb? The machine is scrapped for a fraction of its parts value and your reputation takes a hit.'
+            : 'Abandon this job? The customer will not be happy — your reputation takes a hit.',
+          function () { UI.api(tryCall(function () { return Engine.abandonJob(jobId); }), 'Job abandoned'); },
+          { yesLabel: 'Abandon job', title: 'Abandon job' }
+        );
+        break;
+      }
+      case 'install': {
+        var needIdx = parseInt(el.getAttribute('data-need'), 10);
+        var sel = document.getElementById('need-sel-' + jobId + '-' + needIdx);
+        var pid = sel && sel.value;
+        if (!pid) { UI.toast('Pick a part first', 'info'); break; }
+        var ir = tryCall(function () { return Engine.installPart(jobId, needIdx, pid); });
+        if (ir && ir.ok !== false) {
+          var msg = 'Part installed';
+          if (ir.cost) msg += ' — ' + fm(ir.cost);
+          if (ir.filledNow !== null && ir.filledNow !== undefined) msg += ' (' + ir.filledNow + ' filled this batch)';
+          UI.toast(msg, 'success');
+        }
+        UI.api(ir);
+        break;
+      }
+      case 'sell-refurb': {
+        var sr = tryCall(function () { return Engine.sellRefurb(jobId); });
+        if (sr && sr.ok !== false) UI.toast('Machine sold for ' + fm(sr.price), 'success', 5000);
+        UI.api(sr);
+        break;
+      }
+      case 'appraise': {
+        var ar = tryCall(function () { return Engine.appraiseRefurb(jobId); });
+        if (ar && ar.ok === false) UI.toast(ar.error, 'error');
+        else if (ar) UI.toast('Appraisal: should sell for about ' + fm(ar.estimate), 'info', 5000);
+        break; // read-only — no refresh needed
+      }
+      case 'commit-build':
+        UI.api(tryCall(function () { return Engine.commitBuild(jobId); }),
+          'Build locked in — parts sourced. Work the job to assemble it.');
+        break;
+      case 'buy-asis': {
+        var mid = el.getAttribute('data-machine');
+        UI.api(tryCall(function () { return Engine.buyAsIsMachine(mid); }),
+          'Machine bought — it is on your Workbench as a refurb job');
+        break;
+      }
+
+      /* ---- Inventory ---- */
+      case 'sell-part': {
+        var spid = el.getAttribute('data-part');
+        var sqty = parseInt(el.getAttribute('data-qty'), 10) || 1;
+        var pr = tryCall(function () { return Engine.sellPart(spid, sqty); });
+        if (pr && pr.ok !== false) UI.toast('Sold ' + sqty + ' for ' + fm(pr.proceeds), 'success');
+        UI.api(pr);
+        break;
+      }
+
+      /* ---- Parts Market ---- */
+      case 'mcat':
+        UI.state.marketCat = el.getAttribute('data-cat') || 'all';
+        T.render('market');
+        break;
+      case 'buy': {
+        var bpid = el.getAttribute('data-part');
+        var bqty = parseInt(el.getAttribute('data-qty'), 10) || 1;
+        var br = tryCall(function () { return Engine.buyPart(bpid, bqty); });
+        if (br && br.ok !== false) UI.toast('Bought ' + bqty + ' — ' + fm(br.cost), 'success');
+        UI.api(br);
+        break;
+      }
+
+      /* ---- Shop ---- */
+      case 'upgrade': {
+        var label = el.getAttribute('data-label') || 'the next tier';
+        var cost = el.getAttribute('data-cost') || '';
+        UI.confirm(
+          'Upgrade the shop to ' + label + (cost ? ' for ' + cost : '') + '? Rent and utilities go up with the bigger space.',
+          function () { UI.api(tryCall(function () { return Engine.upgradeShop(); }), 'Shop upgraded!'); },
+          { yesLabel: 'Upgrade', title: 'Upgrade shop', danger: false }
+        );
+        break;
+      }
+      case 'buy-equip': {
+        var eid = el.getAttribute('data-id');
+        UI.api(tryCall(function () { return Engine.buyEquipment(eid); }), 'Equipment purchased');
+        break;
+      }
+
+      /* ---- Save / Load ---- */
+      case 'export':
+        doExport();
+        break;
+      case 'import':
+        doImport();
+        break;
+      case 'clear-autosave':
+        UI.confirm('Delete the autosave? This cannot be undone.', function () {
+          tryCall(function () { return Engine.clearAutosave(); });
+          UI.toast('Autosave cleared', 'info');
+          T.render('save');
+        }, { yesLabel: 'Delete autosave' });
+        break;
+      case 'sim10':
+        simulateDays(10);
+        break;
+    }
+  }
+
+  function onPanelChange(e) {
+    var t = e.target;
+    if (!t || !t.closest) return;
+    var el = t.closest('[data-action]');
+    if (!el) return;
+    var action = el.getAttribute('data-action');
+    var jobId = jobIdOf(el);
+
+    if (action === 'speed') {
+      UI.api(tryCall(function () { return Engine.setJobSpeed(jobId, el.value); }));
+    } else if (action === 'buildpart') {
+      var cat = el.getAttribute('data-cat');
+      var pid = el.value || null;
+      UI.api(tryCall(function () { return Engine.setBuildPart(jobId, cat, pid); }));
+    } else if (action === 'insurance') {
+      UI.api(tryCall(function () { return Engine.setInsurance(!!el.checked); }));
+    } else if (action === 'import-file') {
+      readImportFile(el);
+    }
+  }
+
+  function onPanelInput(e) {
+    var t = e.target;
+    if (t && t.id === 'market-search') {
+      UI.state.marketSearch = t.value;
+      if (marketTimer) window.clearTimeout(marketTimer);
+      marketTimer = window.setTimeout(function () {
+        refocusMarketSearch = true;
+        T.render('market');
+      }, 170);
+    }
+  }
+
+  /* ------------------------------------------------------------------ *
+   * Shared action helpers
+   * ------------------------------------------------------------------ */
+
+  function workAndReport(jobId, hours) {
+    var r = tryCall(function () {
+      return (hours === null || hours === undefined) ? Engine.workJob(jobId) : Engine.workJob(jobId, hours);
+    });
+    if (r && r.ok !== false) {
+      if (r.completed) {
+        var res = r.result || {};
+        var msg = 'Job finished';
+        if (res.payout) msg += ' — paid ' + fm(res.payout);
+        if (res.score !== null && res.score !== undefined) msg += ' • score ' + Number(res.score).toFixed(1) + '/5';
+        if (res.onTime === false) msg += ' • LATE';
+        if (res.notes) msg += ' • ' + res.notes;
+        UI.toast(msg, 'success', 6500);
+      } else if (r.hoursSpent) {
+        UI.toast('Worked ' + r.hoursSpent + 'h', 'info', 1600);
+      }
+    }
+    UI.api(r);
+  }
+
+  function simulateDays(n) {
+    var done = 0;
+    for (var i = 0; i < n; i++) {
+      var r = tryCall(function () { return Engine.endDay(); });
+      if (!r || r.ok === false) { UI.toast((r && r.error) || 'Simulation stopped', 'error'); break; }
+      done++;
+      var st = getState();
+      if (st && st.flags && st.flags.gameOver) break;
+    }
+    UI.toast('Simulated ' + done + ' day' + (done === 1 ? '' : 's'), 'info');
+    UI.refresh();
+  }
+
+  /* ------------------------------------------------------------------ *
+   * Shared render helpers
+   * ------------------------------------------------------------------ */
+
+  function typeChip(j) {
+    var label = TYPE_LABELS[j.type] || j.type || '';
+    if (j.subtype && SUBTYPE_LABELS[j.subtype]) label = SUBTYPE_LABELS[j.subtype];
+    return '<span class="chip chip-type t-' + esc(j.type) + '">' + esc(label) + '</span>';
+  }
+
+  function custTypeLabel(typeId) {
+    try {
+      var list = window.DATA && DATA.FLAVOR && DATA.FLAVOR.customerTypes;
+      if (list) {
+        for (var i = 0; i < list.length; i++) {
+          if (list[i].id === typeId) return list[i].label;
+        }
+      }
+    } catch (e) { /* ignore */ }
+    if (!typeId) return '';
+    return String(typeId).charAt(0).toUpperCase() + String(typeId).slice(1);
+  }
+
+  function customerLine(j) {
+    if (!j.customer) return '';
+    var s = esc(j.customer.name || '');
+    var tl = custTypeLabel(j.customer.type);
+    if (tl) s += ' <span class="chip">' + esc(tl) + '</span>';
+    return s;
+  }
+
+  function dueText(j, st) {
+    if (j.deadlineDay === null || j.deadlineDay === undefined) return { txt: 'No deadline', urgent: false };
+    var d = j.deadlineDay - st.day;
+    if (d <= 0) return { txt: 'Due TODAY', urgent: true };
+    if (d === 1) return { txt: 'Due tomorrow', urgent: true };
+    return { txt: 'Due in ' + d + ' days', urgent: false };
+  }
+
+  /* ================================================================== *
+   * TAB: Offers
+   * ================================================================== */
+
+  function renderOffers(panel) {
+    var st = getState();
+    if (!st) { panel.innerHTML = emptyBox('Waiting for the engine to load…'); return; }
+    var offers = arr(tryCall(function () { return Engine.getOffers(); }));
+    if (!offers.length) {
+      panel.innerHTML = '<h2 class="section-title">Job Offers</h2>' +
+        emptyBox('No offers today — check back tomorrow. Ending the day brings fresh customers through the door.');
+      return;
+    }
+    var html = '<h2 class="section-title">Job Offers <span class="muted small">(' + offers.length + ' waiting — unanswered offers expire after a few days)</span></h2><div class="cards">';
+    offers.forEach(function (j) {
+      var due = dueText(j, st);
+      html += '<div class="card job-card">' +
+        '<div class="card-title">' + esc(j.title) +
+          (j.rush ? ' <span class="badge b-rush">RUSH</span>' : '') + '</div>' +
+        '<div class="meta-row">' + typeChip(j) + UI.wrenches(j.difficulty) + '</div>' +
+        (j.blurb ? '<div class="blurb">&ldquo;' + esc(j.blurb) + '&rdquo;</div>' : '') +
+        '<div class="meta-row">' + customerLine(j) + '</div>' +
+        '<div class="meta-row flex-between">' +
+          '<span class="pay num">' + (j.pay !== null && j.pay !== undefined ? fm(j.pay) : 'Market-priced') + '</span>' +
+          '<span class="' + (due.urgent ? 'due-soon' : 'muted') + '">' + esc(due.txt) + '</span>' +
+        '</div>' +
+        '<div class="job-actions">' +
+          '<button type="button" class="btn btn-primary btn-sm" data-action="accept" data-job="' + j.id + '">Accept</button>' +
+          '<button type="button" class="btn btn-sm" data-action="decline" data-job="' + j.id + '">Decline</button>' +
+        '</div>' +
+      '</div>';
+    });
+    panel.innerHTML = html + '</div>';
+  }
+
+  /* ================================================================== *
+   * TAB: Workbench (active jobs + as-is market)
+   * ================================================================== */
+
+  function renderWorkbench(panel) {
+    var st = getState();
+    if (!st) { panel.innerHTML = emptyBox('Waiting for the engine to load…'); return; }
+
+    var jobs = arr(tryCall(function () { return Engine.getActiveJobs(); }));
+    var slots = null;
+    try {
+      var sv = Engine.getShopView();
+      if (sv && sv.tier) slots = sv.tier.workstationSlots;
+    } catch (e) { /* ignore */ }
+
+    var activeCount = 0;
+    jobs.forEach(function (j) { if (j.type !== 'refurb') activeCount++; });
+
+    var html = '<div class="wb-top"><h2 class="section-title">Workbench</h2>' +
+      (slots ? '<span class="muted small">' + activeCount + ' active job' + (activeCount === 1 ? '' : 's') +
+        ' / ' + slots + ' workstation slot' + (slots === 1 ? '' : 's') +
+        ' — jobs beyond your slots take +50% hours</span>' : '') +
+      '</div>';
+
+    if (!jobs.length) {
+      html += emptyBox('The bench is clear. Accept an offer, or flip a machine from the As-Is Market below.');
+    } else {
+      jobs.forEach(function (j) { html += jobCardHTML(j, st); });
+    }
+
+    /* As-Is Market */
+    html += '<h2 class="section-title">As-Is Market <span class="muted small">broken machines, sold untested — repair and flip them</span></h2>';
+    var machines = arr(tryCall(function () { return Engine.getAsIsMarket(); }));
+    if (!machines.length) {
+      html += emptyBox('Nothing listed right now — new machines turn up most mornings.');
+    } else {
+      html += '<div class="cards">';
+      machines.forEach(function (m) {
+        html += '<div class="card">' +
+          '<div class="card-title">' + esc(m.name) + ' <span class="muted small">(' + esc(m.year) + ')</span></div>' +
+          (m.hint ? '<div class="blurb">&ldquo;' + esc(m.hint) + '&rdquo;</div>' : '') +
+          '<div class="meta-row"><span class="muted small">' + arr(m.partIds).length + ' parts inside • sold as-is, no returns</span></div>' +
+          '<div class="job-actions">' +
+            '<button type="button" class="btn btn-primary btn-sm" data-action="buy-asis" data-machine="' + esc(m.id) + '">Buy — ' + fm(m.askPrice) + '</button>' +
+          '</div>' +
+        '</div>';
+      });
+      html += '</div>';
+    }
+
+    panel.innerHTML = html;
+  }
+
+  function jobCardHTML(j, st) {
+    var due = dueText(j, st);
+    var isRefurb = j.type === 'refurb';
+    var undiagnosed = !!(j.needsDiagnosis && !j.diagnosed);
+    var buildPending = !!(j.build && !j.build.validated);
+    var ready = j.status === 'done';
+    var noHours = (Number(st.hoursLeft) || 0) <= 0;
+
+    var h = '<div class="card job-card-full">';
+
+    /* title row */
+    h += '<div class="card-title">' + esc(j.title) +
+      (j.rush ? ' <span class="badge b-rush">RUSH</span>' : '') +
+      (ready ? ' <span class="chip chip-status done">' + (isRefurb ? 'Repaired — ready to sell' : 'Done') + '</span>' : '') +
+      (j.crt ? ' <span class="badge b-warn" title="CRT work without a discharge kit risks injury">CRT — HIGH VOLTAGE</span>' : '') +
+      '</div>';
+
+    /* meta row */
+    h += '<div class="meta-row">' + typeChip(j) + UI.wrenches(j.difficulty) +
+      customerLine(j) +
+      '<span class="pay num">' + (j.pay !== null && j.pay !== undefined
+        ? (j.type === 'callback' ? 'Warranty — no pay' : fm(j.pay))
+        : 'Market-priced at sale') + '</span>' +
+      '<span class="' + (due.urgent ? 'due-soon' : 'muted') + '">' + esc(due.txt) + '</span>' +
+      (j.drTier ? '<span class="chip" title="Data-recovery rig tier required">Needs DR rig tier ' + esc(j.drTier) + '</span>' : '') +
+      '</div>';
+
+    if (j.blurb) h += '<div class="blurb">&ldquo;' + esc(j.blurb) + '&rdquo;</div>';
+
+    /* progress */
+    h += '<div class="bar-row"><span class="muted small">Progress</span>' +
+      UI.barHTML(j.hoursDone, j.hoursRequired, 'wide') +
+      '<span class="num small">' + esc(j.hoursDone) + ' / ' + esc(j.hoursRequired) + 'h <span class="muted">(at standard pace)</span></span></div>';
+
+    /* contract units */
+    if (j.units && j.units > 1) {
+      h += '<div class="bar-row"><span class="muted small">Units</span>' +
+        UI.barHTML(j.unitsDone || 0, j.units, 'wide good') +
+        '<span class="num small">' + esc(j.unitsDone || 0) + ' / ' + esc(j.units) + ' machines</span></div>';
+    }
+
+    /* speed selector */
+    if (!ready) {
+      h += '<div class="meta-row"><label class="muted small" for="speed-' + j.id + '">Pace</label>' +
+        '<select class="sel" id="speed-' + j.id + '" data-action="speed" data-job="' + j.id + '" title="' + esc(SPEED_TIP) + '">' +
+        speedOpt(j, 'quick', 'Quick (fewer hours, callback risk)') +
+        speedOpt(j, 'standard', 'Standard') +
+        speedOpt(j, 'meticulous', 'Meticulous (more hours, better rating)') +
+        '</select>' +
+        '<span class="tip" title="' + esc(SPEED_TIP) + '">?</span></div>';
+    }
+
+    /* diagnosis */
+    if (undiagnosed) {
+      h += '<div class="note">Fault not identified yet — diagnose before ordering parts.</div>';
+    } else if (j.diagnosed && j.fault) {
+      h += '<div class="meta-row"><span class="muted small">Fault:</span> ' + esc(j.fault.desc || '') +
+        (j.fault.partCategory
+          ? ' <span class="chip">' + esc(CAT_LABELS[j.fault.partCategory] || j.fault.partCategory) + ' part needed</span>'
+          : ' <span class="chip">Labor only</span>') +
+        '</div>';
+    }
+
+    /* refurb machine info */
+    if (isRefurb && j.machine) {
+      h += '<div class="refurb-box"><span class="muted small">Machine:</span> ' + esc(j.machine.name) +
+        ' <span class="muted small">(' + esc(j.machine.year) + ')</span>' +
+        (j.machine.boughtFor !== null && j.machine.boughtFor !== undefined
+          ? ' <span class="muted small">— bought for <span class="num">' + esc(fm(j.machine.boughtFor)) + '</span></span>' : '') +
+        '</div>';
+    }
+
+    /* needs part-picker */
+    if (!undiagnosed && !buildPending && j.needs && j.needs.length) {
+      h += needsHTML(j);
+    }
+
+    /* build configurator */
+    if (j.build) {
+      if (buildPending) h += buildCfgHTML(j);
+      else h += '<div class="note">Build spec locked in and parts sourced — work the job to assemble it.</div>';
+    }
+
+    /* actions */
+    h += '<div class="job-actions">';
+    if (undiagnosed) {
+      h += '<button type="button" class="btn btn-primary btn-sm" data-action="diagnose" data-job="' + j.id + '"' +
+        (noHours ? ' disabled title="No hours left today — End Day"' : '') + '>Diagnose</button>';
+    }
+    if (ready && isRefurb) {
+      h += '<button type="button" class="btn btn-primary btn-sm" data-action="sell-refurb" data-job="' + j.id + '">Sell machine</button>';
+    } else if (!undiagnosed && !buildPending) {
+      h += '<button type="button" class="btn btn-sm" data-action="work1" data-job="' + j.id + '"' +
+        (noHours ? ' disabled title="No hours left today — End Day"' : '') + '>Work 1h</button>' +
+        '<button type="button" class="btn btn-primary btn-sm" data-action="workall" data-job="' + j.id + '"' +
+        (noHours ? ' disabled title="No hours left today — End Day"' : '') + '>Work All</button>';
+    }
+    if (isRefurb) {
+      h += '<button type="button" class="btn btn-sm btn-ghost" data-action="appraise" data-job="' + j.id + '">Appraise</button>';
+    }
+    h += '<button type="button" class="btn btn-sm btn-ghost" data-action="abandon" data-job="' + j.id + '" data-refurb="' + (isRefurb ? 1 : 0) + '">Abandon</button>';
+    h += '</div></div>';
+    return h;
+  }
+
+  function speedOpt(j, val, label) {
+    return '<option value="' + val + '"' + (j.speed === val ? ' selected' : '') + '>' + esc(label) + '</option>';
+  }
+
+  function needsHTML(j) {
+    var needs = tryCall(function () { return Engine.getJobNeeds(j.id); });
+    if (!Array.isArray(needs) || !needs.length) return '';
+    var h = '<div class="needs"><div class="sub-title">Parts needed</div>';
+    needs.forEach(function (n) {
+      var qty = n.qty || 1;
+      var filledAll = (n.filled || 0) >= qty;
+      h += '<div class="need-row' + (filledAll ? ' done' : '') + '">' +
+        '<span class="need-label">' + esc(n.label || CAT_LABELS[n.category] || n.category) +
+        (qty > 1 ? ' <span class="muted">(' + (n.filled || 0) + '/' + qty + ')</span>' : '') + '</span>';
+      if (filledAll) {
+        h += '<span class="ok-mark">✓ installed</span>';
+      } else if (!n.options || !n.options.length) {
+        h += '<span class="muted">No compatible part available right now — check back after prices refresh.</span>';
+      } else {
+        h += '<select class="sel" id="need-sel-' + j.id + '-' + n.index + '">';
+        n.options.forEach(function (o) {
+          h += '<option value="' + esc(o.partId) + '">' + esc(o.name) + ' — ' + esc(fm(o.price)) +
+            (o.source === 'inventory' ? ' (in stock)' : ' (buy from market)') + '</option>';
+        });
+        h += '</select>' +
+          '<button type="button" class="btn btn-primary btn-sm" data-action="install" data-job="' + j.id + '" data-need="' + n.index + '">Install</button>';
+      }
+      h += '</div>';
+    });
+    return h + '</div>';
+  }
+
+  /* ---- custom build configurator ---- */
+
+  var BUILD_ORDER = ['motherboard', 'cpu', 'ram', 'storage', 'gpu', 'psu', 'case', 'cooling', 'os', 'peripheral'];
+
+  function buildCfgHTML(j) {
+    var bc = tryCall(function () { return Engine.getBuildCatalog(j.id); });
+    if (!bc || bc.ok === false || !bc.categories) {
+      return '<div class="note">Build catalog unavailable.</div>';
+    }
+    var v = tryCall(function () { return Engine.validateBuild(j.id); });
+    if (v && v.ok === false) v = null;
+
+    /* which part is selected in each category (job.build.parts holds ids only) */
+    var selected = {};
+    var chosenIds = (j.build && j.build.parts) || [];
+    Object.keys(bc.categories).forEach(function (c) {
+      arr(bc.categories[c]).forEach(function (o) {
+        if (chosenIds.indexOf(o.partId) !== -1) selected[c] = o.partId;
+      });
+    });
+
+    var cats = BUILD_ORDER.filter(function (c) { return bc.categories[c]; });
+    Object.keys(bc.categories).forEach(function (c) {
+      if (cats.indexOf(c) === -1) cats.push(c);
+    });
+
+    var b = j.build || {};
+    var h = '<div class="build-cfg"><div class="sub-title">Build configurator</div>';
+
+    /* target line */
+    var mp = b.minPerf || {};
+    h += '<div class="meta-row muted small">' +
+      (b.useCase ? '<span class="chip">' + esc(b.useCase) + '</span>' : '') +
+      '<span>Budget <b class="num">' + esc(fm(b.budget)) + '</b></span>' +
+      (mp.cpu ? '<span>CPU ≥ ' + esc(mp.cpu) + '</span>' : '') +
+      (mp.gpu ? '<span>GPU ≥ ' + esc(mp.gpu) + '</span>' : '') +
+      (mp.ramMB ? '<span>RAM ≥ ' + esc(mp.ramMB) + ' MB</span>' : '') +
+      (mp.storageGB ? '<span>Storage ≥ ' + esc(mp.storageGB) + ' GB</span>' : '') +
+      (b.minStyle ? '<span>Style ≥ ' + esc(b.minStyle) + '</span>' : '') +
+      '</div>';
+
+    /* category selects */
+    h += '<div class="build-grid">';
+    cats.forEach(function (c) {
+      h += '<span class="build-lbl">' + esc(CAT_LABELS[c] || c) + '</span>' +
+        '<select data-action="buildpart" data-job="' + j.id + '" data-cat="' + esc(c) + '">' +
+        '<option value="">— none —</option>';
+      arr(bc.categories[c]).forEach(function (o) {
+        var label = o.name + ' — ' + fm(o.price) + (o.inStock ? ' (in stock)' : '');
+        if (o.compatible === false) {
+          label = '✕ ' + label + (o.why ? ' — ' + o.why : '');
+        }
+        h += '<option value="' + esc(o.partId) + '"' + (selected[c] === o.partId ? ' selected' : '') + '>' +
+          esc(label) + '</option>';
+      });
+      h += '</select>';
+    });
+    h += '</div>';
+
+    /* live validation panel */
+    if (v) {
+      h += '<div class="build-val">';
+      if (v.problems && v.problems.length) {
+        h += '<ul class="problems">';
+        v.problems.forEach(function (p) { h += '<li>' + esc(p) + '</li>'; });
+        h += '</ul>';
+      } else {
+        h += '<div class="ok-mark">✓ No compatibility problems</div>';
+      }
+
+      /* perf vs target */
+      var perf = v.perf || {};
+      h += '<div class="perf-grid">' +
+        perfCell('CPU', perf.cpu, mp.cpu) +
+        perfCell('GPU', perf.gpu, mp.gpu) +
+        perfCell('RAM (MB)', perf.ramMB, mp.ramMB) +
+        perfCell('Storage (GB)', perf.storageGB, mp.storageGB) +
+        '<div class="perf-cell' + (v.meetsTarget ? ' ok' : ' short') + '"><span class="muted small">Overall</span>' +
+          '<b>' + (perf.composite !== null && perf.composite !== undefined ? Number(perf.composite).toFixed(2) : '—') +
+          (v.meetsTarget ? ' ✓ meets target' : ' — below target') + '</b></div>' +
+        (b.minStyle ? '<div class="perf-cell' + ((v.style || 0) >= b.minStyle ? ' ok' : ' short') + '">' +
+          '<span class="muted small">Style</span><b>' + esc(v.style !== undefined ? v.style : '—') + ' / ' + esc(b.minStyle) + '</b></div>' : '') +
+        '</div>';
+
+      /* budget bar */
+      var over = !v.underBudget && (Number(v.partsCost) || 0) > (Number(v.budget) || 0);
+      h += '<div class="bar-row"><span class="muted small">Parts cost</span>' +
+        UI.barHTML(v.partsCost, v.budget, 'wide' + (over ? ' over' : '')) +
+        '<span class="num small' + (over ? ' down' : '') + '">' + esc(fm(v.partsCost)) + ' of ' + esc(fm(v.budget)) + ' budget' +
+        (over ? ' — OVER (eats your profit)' : '') + '</span></div>';
+
+      h += '<div class="job-actions">' +
+        '<button type="button" class="btn btn-primary btn-sm" data-action="commit-build" data-job="' + j.id + '"' +
+        (v.valid ? '' : ' disabled title="Fix the problems listed above first"') +
+        '>Commit build (buy parts)</button>' +
+        '</div></div>';
+    } else {
+      h += '<div class="job-actions">' +
+        '<button type="button" class="btn btn-primary btn-sm" data-action="commit-build" data-job="' + j.id + '">Commit build (buy parts)</button>' +
+        '</div>';
+    }
+
+    return h + '</div>';
+  }
+
+  function perfCell(label, val, target) {
+    if (!target) return '';
+    var ok = (Number(val) || 0) >= Number(target);
+    var shown = (val === null || val === undefined) ? '—' : val;
+    return '<div class="perf-cell' + (ok ? ' ok' : ' short') + '">' +
+      '<span class="muted small">' + esc(label) + '</span>' +
+      '<b class="num">' + esc(shown) + ' / ' + esc(target) + '</b></div>';
+  }
+
+  /* ================================================================== *
+   * TAB: Inventory
+   * ================================================================== */
+
+  function renderInventory(panel) {
+    var st = getState();
+    if (!st) { panel.innerHTML = emptyBox('Waiting for the engine to load…'); return; }
+
+    var html = '<h2 class="section-title">Inventory</h2>';
+
+    var stor = tryCall(function () { return Engine.getStorageInfo(); });
+    if (stor && stor.ok !== false && stor.used !== undefined) {
+      var capacity = Math.max(0, (stor.used || 0) + (stor.free || 0) - (stor.overage || 0));
+      var over = (stor.overage || 0) > 0;
+      html += '<div class="storage-meter">' +
+        '<div class="flex-between"><span>Storage: <b class="num">' + (stor.used || 0) + '</b> / ' + capacity + ' slots</span>' +
+        (over ? '<span class="down"><b>' + stor.overage + '</b> slots over — ' + esc(fm(stor.feePerSlot)) + '/slot fee each month</span>' : '') +
+        '</div>' +
+        UI.barHTML(stor.used || 0, capacity || 1, 'grow' + (over ? ' over' : '')) +
+        '</div>';
+    }
+
+    var inv = arr(tryCall(function () { return Engine.getInventoryView(); }));
+    if (!inv.length) {
+      html += emptyBox('No parts on the shelves — stock up in the Parts Market, or strip machines you buy as-is.');
+      panel.innerHTML = html;
+      return;
+    }
+
+    html += '<div class="table-wrap"><table class="data"><thead><tr>' +
+      '<th>Part</th><th>Category</th><th class="num">Qty</th><th class="num">Avg cost</th>' +
+      '<th class="num">Market price</th><th class="num">Value</th><th>Sell (70% of market)</th>' +
+      '</tr></thead><tbody>';
+    inv.forEach(function (it) {
+      var qty = it.qty || 0;
+      html += '<tr>' +
+        '<td>' + esc(it.name) + '</td>' +
+        '<td><span class="chip">' + esc(CAT_LABELS[it.category] || it.category) + '</span></td>' +
+        '<td class="num">' + qty + '</td>' +
+        '<td class="num">' + esc(fm(it.avgCost)) + '</td>' +
+        '<td class="num">' + esc(fm(it.curPrice)) + '</td>' +
+        '<td class="num">' + esc(fm((Number(it.curPrice) || 0) * qty)) + '</td>' +
+        '<td class="actions">' +
+          '<button type="button" class="btn btn-sm" data-action="sell-part" data-part="' + esc(it.partId) + '" data-qty="1">Sell 1</button> ' +
+          (qty > 1 ? '<button type="button" class="btn btn-sm" data-action="sell-part" data-part="' + esc(it.partId) + '" data-qty="' + qty + '">Sell all</button>' : '') +
+        '</td>' +
+        '</tr>';
+    });
+    html += '</tbody></table></div>';
+    panel.innerHTML = html;
+  }
+
+  /* ================================================================== *
+   * TAB: Parts Market
+   * ================================================================== */
+
+  function renderMarket(panel) {
+    var st = getState();
+    if (!st) { panel.innerHTML = emptyBox('Waiting for the engine to load…'); return; }
+
+    var cat = UI.state.marketCat || 'all';
+    var q = UI.state.marketSearch || '';
+
+    var html = '<h2 class="section-title">Parts Market</h2>';
+    html += '<div class="note">' + (st.supplyRunDoneToday
+      ? 'Supply run done for today — further purchases cost no extra time.'
+      : 'Your first parts purchase each day costs <b>0.5h</b> (supply run).') + '</div>';
+
+    /* controls */
+    html += '<div class="market-controls"><div class="chips">' + catChip('all', 'All', cat);
+    CATEGORIES.forEach(function (c) { html += catChip(c, CAT_LABELS[c], cat); });
+    html += '</div>' +
+      '<input type="search" id="market-search" placeholder="Search parts…" value="' + esc(q) + '" autocomplete="off">' +
+      '</div>';
+
+    var rows = tryCall(function () {
+      return Engine.getMarket({
+        category: cat === 'all' ? undefined : cat,
+        search: q || undefined
+      });
+    });
+    rows = arr(rows);
+
+    if (!rows.length) {
+      html += emptyBox('No parts match — try another category or clear the search. New hardware appears as the years roll on.');
+    } else {
+      html += '<div class="table-wrap"><table class="data"><thead><tr>' +
+        '<th>Part</th><th>Category</th><th class="num">Price</th><th class="num">1d</th>' +
+        '<th class="num">30d</th><th>Trend</th><th class="num">Owned</th><th>Buy</th>' +
+        '</tr></thead><tbody>';
+      rows.forEach(function (r) {
+        var c1 = Number(r.change1) || 0;
+        var c30 = Number(r.change30) || 0;
+        var a1 = c1 > 0.05 ? '▲' : (c1 < -0.05 ? '▼' : '·');
+        html += '<tr>' +
+          '<td>' + esc(r.name) +
+            (r.isNew ? ' <span class="badge b-new" title="Recently introduced">NEW</span>' : '') +
+            (r.scarce ? ' <span class="badge b-scarce" title="Out of production — scarcity pricing">SCARCE</span>' : '') +
+            (r.perfLabel ? ' <span class="muted small">' + esc(r.perfLabel) + '</span>' : '') +
+            (r.tier ? ' <span class="muted small">• ' + esc(r.tier) + '</span>' : '') +
+          '</td>' +
+          '<td><span class="chip">' + esc(CAT_LABELS[r.category] || r.category) + '</span></td>' +
+          '<td class="num"><b>' + esc(fm(r.price)) + '</b></td>' +
+          '<td class="num ' + (c1 > 0.05 ? 'up' : (c1 < -0.05 ? 'down' : 'muted')) + '">' + a1 + ' ' + esc(UI.pct(c1)) + '</td>' +
+          '<td class="num ' + (c30 > 0.05 ? 'up' : (c30 < -0.05 ? 'down' : 'muted')) + '">' + esc(UI.pct(c30)) + '</td>' +
+          '<td><span class="spark-wrap ' + (c30 >= 0 ? 'up' : 'down') + '">' + UI.sparkSVG(r.spark) + '</span></td>' +
+          '<td class="num">' + (r.inStockQty || 0) + '</td>' +
+          '<td class="actions">' +
+            '<button type="button" class="btn btn-sm" data-action="buy" data-part="' + esc(r.partId) + '" data-qty="1">Buy 1</button> ' +
+            '<button type="button" class="btn btn-sm" data-action="buy" data-part="' + esc(r.partId) + '" data-qty="5">Buy 5</button>' +
+          '</td>' +
+          '</tr>';
+      });
+      html += '</tbody></table></div>';
+    }
+
+    panel.innerHTML = html;
+
+    if (refocusMarketSearch) {
+      refocusMarketSearch = false;
+      var inp = document.getElementById('market-search');
+      if (inp) {
+        inp.focus();
+        var len = inp.value.length;
+        try { inp.setSelectionRange(len, len); } catch (e) { /* search inputs may refuse */ }
+      }
+    }
+  }
+
+  function catChip(id, label, current) {
+    return '<button type="button" class="chip-btn' + (current === id ? ' active' : '') +
+      '" data-action="mcat" data-cat="' + esc(id) + '">' + esc(label) + '</button>';
+  }
+
+  /* ================================================================== *
+   * TAB: Shop
+   * ================================================================== */
+
+  function renderShop(panel) {
+    var st = getState();
+    if (!st) { panel.innerHTML = emptyBox('Waiting for the engine to load…'); return; }
+    var sv = tryCall(function () { return Engine.getShopView(); });
+    if (!sv || sv.ok === false) { panel.innerHTML = emptyBox('Shop data unavailable.'); return; }
+
+    var html = '<h2 class="section-title">Your Shop</h2><div class="shop-grid">';
+
+    /* current tier */
+    var tier = sv.tier || {};
+    html += '<div class="card">' +
+      '<div class="card-title">' + esc(tier.name || 'Shop') + '</div>' +
+      (tier.desc ? '<p class="muted small">' + esc(tier.desc) + '</p>' : '') +
+      '<div class="meta-row small">' +
+        (tier.workstationSlots !== undefined ? '<span class="chip">' + esc(tier.workstationSlots) + ' workstations</span>' : '') +
+        (tier.storageSlots !== undefined ? '<span class="chip">' + esc(tier.storageSlots) + ' storage slots</span>' : '') +
+        (tier.offerBonus ? '<span class="chip">+' + esc(tier.offerBonus) + ' daily offers</span>' : '') +
+      '</div></div>';
+
+    /* upgrade */
+    if (sv.nextTier) {
+      var nt = sv.nextTier;
+      var blocked = [];
+      if (nt.prestigeOk === false) blocked.push('Requires prestige tier ' + nt.minPrestige);
+      if (nt.canAfford === false) blocked.push('Not enough cash');
+      html += '<div class="card">' +
+        '<div class="card-title">Upgrade: ' + esc(nt.name) + '</div>' +
+        '<div class="meta-row"><span class="pay num">' + esc(fm(nt.cost)) + '</span>' +
+          (nt.minPrestige ? '<span class="chip">Prestige tier ' + esc(nt.minPrestige) + '+ required</span>' : '') +
+        '</div>' +
+        (blocked.length ? '<div class="muted small">' + esc(blocked.join(' • ')) + '</div>' : '') +
+        '<div class="job-actions">' +
+          '<button type="button" class="btn btn-primary btn-sm" data-action="upgrade"' +
+            ' data-label="' + esc(nt.name) + '" data-cost="' + esc(fm(nt.cost)) + '"' +
+            (nt.canAfford && nt.prestigeOk ? '' : ' disabled title="' + esc(blocked.join('; ') || 'Unavailable') + '"') +
+          '>Upgrade shop</button>' +
+        '</div></div>';
+    } else {
+      html += '<div class="card"><div class="card-title">Upgrade</div>' +
+        '<p class="muted">You own the biggest shop in town. Nowhere left to grow but your reputation.</p></div>';
+    }
+
+    /* insurance */
+    var ins = sv.insurance || {};
+    html += '<div class="card"><div class="card-title">Insurance</div>' +
+      '<p class="muted small">Covers most of the cost when a mishap fries a part — or you.</p>' +
+      '<div class="insurance-row">' +
+        '<input type="checkbox" id="insurance-toggle" data-action="insurance"' + (ins.active ? ' checked' : '') + '>' +
+        '<label for="insurance-toggle">Shop insurance — <b class="num">' + esc(fm(ins.monthlyCost)) + '</b>/month</label>' +
+      '</div></div>';
+
+    html += '</div>'; /* /shop-grid */
+
+    /* equipment */
+    html += '<h2 class="section-title">Equipment</h2><div class="shop-grid">';
+    var equipment = arr(sv.equipment);
+    if (!equipment.length) {
+      html += '</div>' + emptyBox('No equipment catalog available.');
+      panel.innerHTML = html;
+      return;
+    }
+    equipment.forEach(function (eq) {
+      var reasons = [];
+      if (!eq.owned) {
+        if (eq.available === false) reasons.push('Not available yet');
+        if (eq.requiresOwned === false) reasons.push('Requires the earlier model first');
+      }
+      html += '<div class="card equip-card' + (eq.owned ? ' owned' : '') + '">' +
+        '<div class="card-title">' + esc(eq.name) +
+          (eq.owned ? ' <span class="chip chip-status done">Owned</span>' : '') + '</div>' +
+        (eq.desc ? '<p class="muted small">' + esc(eq.desc) + '</p>' : '') +
+        '<div class="job-actions">' +
+          (eq.owned
+            ? '<span class="muted small">Installed and ready.</span>'
+            : '<button type="button" class="btn btn-primary btn-sm" data-action="buy-equip" data-id="' + esc(eq.id) + '"' +
+              (reasons.length ? ' disabled title="' + esc(reasons.join('; ')) + '"' : '') +
+              '>Buy — <span class="equip-cost num">' + esc(fm(eq.cost)) + '</span></button>' +
+              (reasons.length ? ' <span class="muted small">' + esc(reasons.join(' • ')) + '</span>' : '')) +
+        '</div></div>';
+    });
+    html += '</div>';
+    panel.innerHTML = html;
+  }
+
+  /* ================================================================== *
+   * TAB: Ledger
+   * ================================================================== */
+
+  function renderLedger(panel) {
+    var st = getState();
+    if (!st) { panel.innerHTML = emptyBox('Waiting for the engine to load…'); return; }
+    var lg = tryCall(function () { return Engine.getLedger(); });
+    if (!lg || lg.ok === false) { panel.innerHTML = emptyBox('No ledger data yet.'); return; }
+
+    var html = '<h2 class="section-title">Ledger</h2>';
+
+    /* current month preview */
+    var cur = lg.currentMonthPreview;
+    if (cur) {
+      html += '<h3 class="sub-title mt0">Current month' + (cur.ym ? ' (' + esc(cur.ym) + ')' : '') + ' — so far</h3>' +
+        moneyKV([
+          ['Revenue', cur.revenue], ['Parts cost', cur.partsCost],
+          ['Fixed costs', cur.fixedCosts], ['Other', cur.other], ['Net', cur.net, true]
+        ]);
+    }
+
+    /* month table */
+    var months = arr(lg.months);
+    html += '<h3 class="sub-title">Closed months</h3>';
+    if (!months.length) {
+      html += emptyBox('First month still in progress — the books close on the 1st.');
+    } else {
+      html += '<div class="table-wrap"><table class="data"><thead><tr>' +
+        '<th>Month</th><th class="num">Revenue</th><th class="num">Parts</th>' +
+        '<th class="num">Fixed</th><th class="num">Other</th><th class="num">Net</th>' +
+        '</tr></thead><tbody>';
+      months.slice().reverse().forEach(function (m) {
+        var net = Number(m.net) || 0;
+        html += '<tr>' +
+          '<td>' + esc(m.ym) + '</td>' +
+          '<td class="num">' + esc(fm(m.revenue)) + '</td>' +
+          '<td class="num">' + esc(fm(m.partsCost)) + '</td>' +
+          '<td class="num">' + esc(fm(m.fixedCosts)) + '</td>' +
+          '<td class="num">' + esc(fm(m.other)) + '</td>' +
+          '<td class="num ' + (net >= 0 ? 'up' : 'down') + '"><b>' + esc(fm(net)) + '</b></td>' +
+          '</tr>';
+      });
+      html += '</tbody></table></div>';
+    }
+
+    /* lifetime */
+    var lt = lg.lifetime || {};
+    html += '<h3 class="sub-title">Lifetime</h3><div class="kv">' +
+      kvCell('Revenue', fm(lt.revenue)) +
+      kvCell('Parts cost', fm(lt.partsCost)) +
+      kvCell('Fixed costs', fm(lt.fixedCosts)) +
+      kvCell('Other', fm(lt.other)) +
+      kvCell('Jobs completed', lt.jobsCompleted || 0) +
+      kvCell('Jobs failed', lt.jobsFailed || 0) +
+      kvCell('Builds delivered', lt.buildsDelivered || 0) +
+      kvCell('Refurbs sold', lt.refurbsSold || 0) +
+      kvCell('Days played', lt.daysPlayed || 0) +
+      '</div>';
+
+    panel.innerHTML = html;
+  }
+
+  function kvCell(k, v) {
+    return '<div class="cell"><div class="k">' + esc(k) + '</div><div class="v">' + esc(v) + '</div></div>';
+  }
+
+  function moneyKV(pairs) {
+    var h = '<div class="kv">';
+    pairs.forEach(function (p) {
+      var val = Number(p[1]) || 0;
+      var cls = p[2] ? (val >= 0 ? ' up' : ' down') : '';
+      h += '<div class="cell"><div class="k">' + esc(p[0]) + '</div><div class="v' + cls + '">' + esc(fm(val)) + '</div></div>';
+    });
+    return h + '</div>';
+  }
+
+  /* ================================================================== *
+   * TAB: News
+   * ================================================================== */
+
+  function renderNews(panel) {
+    var st = getState();
+    if (!st) { panel.innerHTML = emptyBox('Waiting for the engine to load…'); return; }
+    var items = arr(tryCall(function () { return Engine.getNews(50); }));
+    var html = '<h2 class="section-title">News</h2>';
+    if (!items.length) {
+      html += emptyBox('No news yet — a quiet start. Events, price shocks and milestones land here.');
+      panel.innerHTML = html;
+      return;
+    }
+    html += '<div class="news-feed">';
+    items.forEach(function (n) {
+      html += '<article class="news-item k-' + esc(n.kind || 'info') + '">' +
+        '<div class="news-date">' + esc(n.dateStr || '') + '</div>' +
+        '<div class="news-head">' + esc(n.headline || '') + '</div>' +
+        (n.body ? '<div class="news-body">' + esc(n.body) + '</div>' : '') +
+        '</article>';
+    });
+    html += '</div>';
+    panel.innerHTML = html;
+  }
+
+  /* ================================================================== *
+   * TAB: Save / Load
+   * ================================================================== */
+
+  function renderSave(panel) {
+    var hasAuto = false;
+    try { hasAuto = !!(window.Engine && Engine.hasAutosave && Engine.hasAutosave()); } catch (e) { /* ignore */ }
+
+    var html = '<h2 class="section-title">Save / Load</h2><div class="save-grid">';
+
+    html += '<div class="card"><h3>Export</h3>' +
+      '<p class="muted small">The game autosaves every night. Export a copy to keep or move between browsers.</p>' +
+      '<div class="file-row">' +
+        '<button type="button" class="btn btn-primary btn-sm" data-action="export">Export save</button>' +
+        '<a id="save-dl" class="btn btn-sm" download="pcshop-save.json" hidden>Download .json</a>' +
+      '</div>' +
+      '<textarea id="export-ta" readonly placeholder="Click Export to dump the save JSON here…"></textarea>' +
+      '</div>';
+
+    html += '<div class="card"><h3>Import</h3>' +
+      '<p class="muted small">Paste a save below, or choose a file — then press Import. Importing over a running game asks first.</p>' +
+      '<textarea id="import-ta" placeholder="Paste save JSON here…"></textarea>' +
+      '<div class="file-row">' +
+        '<input type="file" id="import-file" accept=".json,application/json,text/plain" data-action="import-file">' +
+        '<button type="button" class="btn btn-primary btn-sm" data-action="import">Import</button>' +
+      '</div>' +
+      '</div>';
+
+    html += '<div class="card"><h3>Autosave</h3>' +
+      '<p class="muted small">' + (hasAuto ? 'An autosave exists in this browser.' : 'No autosave found in this browser.') + '</p>' +
+      '<div class="file-row">' +
+        '<button type="button" class="btn btn-sm" data-action="clear-autosave"' + (hasAuto ? '' : ' disabled') + '>Clear autosave</button>' +
+        '<button type="button" class="btn btn-sm" data-debug data-action="sim10">Simulate 10 Days</button>' +
+      '</div>' +
+      '</div>';
+
+    html += '</div>';
+    panel.innerHTML = html;
+  }
+
+  function doExport() {
+    var json = tryCall(function () { return Engine.exportSave(); });
+    if (typeof json !== 'string') {
+      UI.toast((json && json.error) || 'Export failed', 'error');
+      return;
+    }
+    var ta = document.getElementById('export-ta');
+    if (ta) ta.value = json;
+    var a = document.getElementById('save-dl');
+    if (a && window.URL && URL.createObjectURL) {
+      if (UI.state.saveUrl) { try { URL.revokeObjectURL(UI.state.saveUrl); } catch (e) { /* ignore */ } }
+      UI.state.saveUrl = URL.createObjectURL(new Blob([json], { type: 'application/json' }));
+      a.href = UI.state.saveUrl;
+      a.hidden = false;
+    }
+    UI.toast('Save exported', 'success');
+  }
+
+  function doImport() {
+    var ta = document.getElementById('import-ta');
+    var str = ta ? ta.value.replace(/^\s+|\s+$/g, '') : '';
+    if (!str) { UI.toast('Paste a save (or pick a file) first', 'info'); return; }
+
+    var running = false;
+    try {
+      var st = Engine.getState();
+      running = !!(st && !(st.flags && st.flags.gameOver));
+    } catch (e) { /* no game yet */ }
+
+    var apply = function () {
+      var r = tryCall(function () { return Engine.importSave(str); });
+      if (!r || r.ok === false) {
+        UI.toast((r && r.error) || 'Import failed — that does not look like a valid save', 'error');
+        return;
+      }
+      UI.toast('Save imported', 'success');
+      UI.state.activeTab = 'offers';
+      UI.switchTab('offers');
+      UI.refresh();
+    };
+
+    if (running) {
+      UI.confirm('Importing will overwrite your current game in progress. Continue?', apply,
+        { yesLabel: 'Import over it', title: 'Overwrite current game?' });
+    } else {
+      apply();
+    }
+  }
+
+  function readImportFile(input) {
+    var f = input.files && input.files[0];
+    if (!f) return;
+    var rd = new FileReader();
+    rd.onload = function () {
+      var ta = document.getElementById('import-ta');
+      if (ta) ta.value = String(rd.result || '');
+      UI.toast('File loaded — press Import to apply it', 'info');
+    };
+    rd.onerror = function () { UI.toast('Could not read that file', 'error'); };
+    rd.readAsText(f);
+  }
+
+})();

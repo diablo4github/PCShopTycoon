@@ -640,3 +640,141 @@ rent, equipment, upgrade costs. Keep all magic numbers in `Engine.CONFIG` (core.
   export→import→export round-trips identically. Exits non-zero on failure with details.
 - Both scripts must pass before integration sign-off. `node tools/validate-data.js &&
   node tools/sim-test.js`.
+
+---
+
+# v2 Feature Addendum (playtest round 1)
+
+Binding contract changes for the v2 workstreams. Where this section conflicts with
+§1-§8, this section wins. Save `version` bumps to **2**; `importSave` must migrate v1
+saves by filling new fields with defaults (never reject a valid v1 save).
+
+## 9.1 Part schema additions (DATA)
+
+Every part gains:
+- `brand: "Seagate"` — REQUIRED on all categories (os brands: Microsoft/IBM/Digital
+  Research/etc; generic parts use brands like "ValuTech", "Shenzhen OEM").
+- `desc` — now REQUIRED, 1-2 sentences of period-accurate historical color written for
+  the in-game Wiki ("The drive that made 40 MB affordable…"). ≥40 chars.
+
+Catalog expansion: grow to **600-700 parts** by (a) adding brand variants of existing
+silicon — same chip, different brand/price/reliability/style (e.g., Voodoo1 as Diamond
+Monster 3D vs Orchid Righteous 3D; RAM/HDD/PSU across 3-4 brands per era) and (b)
+filling thin spots. New minimum per era bucket: ≥5 parts AND ≥2 distinct brands per
+major category (cpu/mobo/ram/storage/gpu/psu/case); ≥3 cooling/os/peripheral.
+Validator enforces brand+desc presence and the ≥2-brands rule.
+
+## 9.2 Customer alignment & tastes (DATA + ENGINE)
+
+- `DATA.FLAVOR.jobBlurbs` entries become `{ text, customers: ["gamer","student"] | null }`
+  (null = anyone). Provide enough per job type that every allowed customer type has ≥2
+  fitting blurbs. Engine picks customer type FIRST (era-gated), then a blurb whose
+  `customers` includes it (or null).
+- Engine constant `CUSTOMER_JOB_AFFINITY`: which customer types can receive which job
+  type/subtype (gaming builds/overclock/aesthetic → gamer/student/creator; contracts →
+  smallbiz/office; CAD-workstation builds → smallbiz/office/creator; printer/crt →
+  office/smallbiz/home; everything else broad). Job titles/blurbs must no longer
+  mismatch the customer type.
+- **Tastes**: ~35% of generated jobs get
+  `taste: { brand, category|null, bonusPct (10-20), label: "Swears by Seagate drives" }`,
+  brand drawn from catalog brands actually available that year in a category relevant
+  to the job (repair: fault category; upgrade: upgraded category; build: cpu/gpu/case;
+  refurb/callbacks/cleaning: none). If any part used/installed matches brand (+category
+  when set): payout × (1+bonusPct/100) and job score +0.2. Never a penalty when unmet.
+  UI shows the taste chip on offers & workbench cards, and marks matching options in
+  pickers/build catalog (`options[].tasteMatch: true`).
+
+## 9.3 Upgrade minimum specs (ENGINE + UI)
+
+Upgrade jobs must populate `needs[].minPerf` (e.g., `{ramMB: 8}`, `{gpu: 300}`,
+`{storageGB: 0.5}`) chosen sensibly vs the year baseline, and the need `label` states
+it ("RAM upgrade — at least 8 MB"). `installPart` rejects parts below minPerf with a
+readable error; `getJobNeeds` options gain `meets: bool` (UI greys non-qualifying).
+
+## 9.4 Overtime (ENGINE + UI)
+
+`Engine.CONFIG.overtimeCap = 3`. Any hour-consuming action may proceed while
+`hoursLeft > -cap` even if its cost exceeds what remains (diagnose with 0.2h left is
+fine); hoursLeft may go negative, floored at -cap — an action whose cost would break
+the floor is refused ("Too exhausted — call it a day"). Next morning
+`hoursLeft = 8 + carried negative` (min 5). Morning summary notes overtime worked. UI
+pip bar renders negative hours as red overtime pips and the header shows "OT" state.
+
+## 9.5 Refurb & as-is changes (ENGINE + UI)
+
+- Slower market: churn ≈8%/night per listing; ≤1 new arrival/night (~1 per 3 nights),
+  2-week typical shelf life, cap 4 listings; each listing shows age. Machine gains
+  `specSummary: "486DX2-66 · 8 MB RAM · 340 MB HDD"` (engine-computed).
+- `Engine.getMachineParts(jobId)` → `[ { partId, name, category, status:
+  "ok"|"faulty"|"unknown", value } ]` — status "unknown" for the fault slot until
+  diagnosed. Workbench refurb cards list their components.
+- **Strip for parts**: `Engine.stripRefurb(jobId)` — costs 1.5h (overtime rules apply),
+  rolls each non-faulty part into inventory at 90% survival (ESD setup → 97%); faulty
+  part is lost; job removed, no rep effect. UI: refurb cards replace the "Abandon"
+  button with "Strip for Parts" (+ confirm listing expected parts). Non-refurb jobs
+  keep Abandon.
+
+## 9.6 Balance: era-1 jobs vs flips (ENGINE)
+
+Playtest: flipping dominates era 1 because job pay is too low. Retune so honest labor
+is the era-1 backbone: repairs bill a diagnostic/bench fee (≈0.5 × laborRate) on top of
+labor+parts markup, raise repair/software TYPE_MULT so a typical 1983 repair lands
+$60-110; as-is ask prices rise to 40-55% of parts value and flip sale premium drops
+(≈laborRate×3). Add a sim-test metric: average net $/labor-hour for jobs vs flips in
+the 1983 run; flips should land 1.2-1.8× jobs' rate (riskier + slower market), not 3×+.
+Keep the 40-day 1983 bot inside a sane band (final cash $2k-$10k).
+
+## 9.7 Part Wiki (ENGINE + UI + DATA descs)
+
+- `Engine.getPartInfo(partId)` → `{ partId, name, brand, category, tier, tags,
+  tagLabels: ["Socket 7","DDR4"...], perf, reliability, powerDraw|watts, introYear,
+  eolYear, desc, status: "new"|"current"|"fading"|"legacy"|"scarce", price, change30,
+  spark, inStockQty }` — only for parts already released (era-appropriate knowledge).
+- `Engine.getWiki({category?, search?})` → array of the above for all released parts,
+  sorted category → introYear.
+- New **Wiki** tab (tab id `wiki`, between Market and Shop): category chips + search,
+  dense table (name, brand, year span, key stats, reliability, status chip, current
+  price) with expandable detail rows showing full stats, readable platform tags,
+  sparkline, and the historical `desc`. This doubles as the education layer — a 1985
+  player browses period hardware with period commentary.
+- Market/build/needs pickers reuse `getPartInfo` for an info popover (ⓘ button) per part.
+
+## 9.8 Audio (UI only — new file `js/ui/audio.js`, loads after ui.js)
+
+All WebAudio-synthesized, zero external assets (CSP/file:// safe). `UI.audio`:
+- SFX: click, accept, decline, complete (cash register), error, endDay chime, callback
+  sting, mishap, purchase. Short (<400ms), subtle, default volume 0.5.
+- Era music: generative background loops per era skin (era-early: slow square-wave
+  arpeggio; 90s: FM-ish pad; 00s: soft saw; modern: airy sine pad + sparse hats),
+  default volume 0.15, default ON but only starts after first user gesture (browser
+  autoplay policy — init AudioContext on first pointerdown).
+- Header gets music 🎵 and SFX 🔊 mute toggles; System tab gets volume sliders.
+  Settings persist in `localStorage["cst-audio"]` (NOT in the save).
+
+## 9.9 UI scaling & action feedback (UI only)
+
+- Auto scale: `--ui-zoom` = clamp(viewportWidth/1440, 0.8, 1.4) applied via body zoom
+  (Chromium/FF126+) with transform-scale fallback; recompute on resize. User override
+  Auto/80/100/115/130% persisted in `localStorage["cst-zoom"]`, control in System tab.
+- Action feedback: UI.api captures cash & hoursLeft before/after every mutation and
+  spawns floating deltas ("-1.5h" amber near the hours pips, "+$85"/-"$120" green/red
+  near cash), pip bar pulse on spend, progress bars animate via CSS transition, End Day
+  button brief disabled shimmer while the summary opens. Keep them fast (<700ms) and
+  non-blocking.
+
+## 9.10 Tabs & System
+
+Tab order becomes: Offers, Workbench, Inventory, Parts Market, **Wiki**, Shop, Ledger,
+News, **System** (formerly Save/Load; keeps tab id `save`). System tab = save/export/
+import cards + Settings card (UI scale, music/SFX volumes) + debug sim button.
+
+## 9.11 Testing additions
+
+- validate-data: brand/desc required, ≥2 brands per major category per bucket, blurb
+  `customers` ids all exist.
+- sim-test: overtime borrow works & floors at cap; stripRefurb yields inventory parts;
+  a taste-matched job pays the bonus; upgrade installPart rejects below-minPerf part
+  with readable error; jobs-vs-flips $/hour metric printed for 1983 and within 1.2-1.8×;
+  v1 save fixture migrates through importSave.
+- E2E (overseer): wiki tab renders; strip button on refurb; overtime pips; zoom applies;
+  no console errors.

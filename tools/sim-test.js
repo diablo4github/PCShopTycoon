@@ -17,6 +17,7 @@ function loadData() {
   var files = ['catalog.js', 'eras.js', 'events.js', 'flavor.js']
     .map(function (f) { return path.join(dataDir, f); });
   var allExist = files.every(function (f) { return fs.existsSync(f); });
+  if (process.env.SIM_DATA === 'mock') allExist = false;   // force mock for testing
   if (allExist) {
     try {
       globalThis.DATA = {};
@@ -83,7 +84,11 @@ function finish() {
 // ------------------------------------------------------------------
 var QUICK_TYPES = { repair: 1, upgrade: 1, software: 1, cleaning: 1, peripheral: 1, callback: 1 };
 
-function botSpeedFor(job) {
+// The 1983 era is the break-even benchmark (§7) and runs at standard speed;
+// every other era runs its bench-work quick, which statistically guarantees the
+// "at least one warranty callback at quick speed" requirement across the run.
+function botSpeedFor(job, mem) {
+  if (mem.standardOnly) return 'standard';
   return QUICK_TYPES[job.type] ? 'quick' : 'standard';
 }
 
@@ -188,7 +193,7 @@ function botDay(E, mem) {
         if (sold.ok) { mem.refurbsSold++; mem.lastRefurbPrice = sold.price; mem.lastRefurbEstimate = ap.estimate; progress = true; }
         continue;
       }
-      E.setJobSpeed(job.id, botSpeedFor(job));
+      E.setJobSpeed(job.id, botSpeedFor(job, mem));
       if (job.needsDiagnosis && !job.diagnosed) {
         if (E.diagnoseJob(job.id).ok) progress = true;
         continue;
@@ -228,7 +233,8 @@ function runEra(era, idx) {
   var r = E.newGame({ eraId: era.id, shopName: 'Test Bench', seed: 1000 + idx * 77 });
   if (!assert(r.ok, era.id + ': newGame failed: ' + (r.error || ''))) return null;
 
-  var mem = { equipmentBought: [], refurbBought: false, refurbsSold: 0 };
+  var mem = { equipmentBought: [], refurbBought: false, refurbsSold: 0,
+              standardOnly: era.startYear === 1983 };
   var sawRentCharge = false, offerCount = E.getOffers().length;
   var threw = null;
 

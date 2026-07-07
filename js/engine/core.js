@@ -77,22 +77,22 @@
     // Job pay (§5.4). Multipliers tuned so a typical 2h 1983 repair lands ~$45-80
     // and the month-1 target of §7 (roughly break-even) holds for a busy shop.
     TYPE_MULT: {
-      repair: 0.85, upgrade: 0.78, software: 0.78, cleaning: 0.7, peripheral: 0.78,
-      data_recovery: 1.5, enthusiast: 1.25, contract: 0.95, build: 0, refurb: 0,
+      repair: 0.75, upgrade: 0.7, software: 0.7, cleaning: 0.62, peripheral: 0.7,
+      data_recovery: 1.45, enthusiast: 1.25, contract: 0.85, build: 0, refurb: 0,
       callback: 0
     },
     // Relative frequency of repair fault sources; labor-only & cheap-part faults
     // dominate so the 1.25x parts markup doesn't print money in expensive-part eras.
     FAULT_CATEGORY_WEIGHTS: {
-      laborOnly: 3.5, cooling: 1.5, psu: 1.4, ram: 1.2, storage: 0.9,
-      gpu: 0.9, cpu: 0.7, motherboard: 0.6
+      laborOnly: 4, cooling: 1.5, psu: 1.4, ram: 1.1, storage: 0.8,
+      gpu: 0.8, cpu: 0.6, motherboard: 0.5
     },
     DIFF_MULT: [0.9, 1.05, 1.2, 1.4, 1.6],  // index difficulty-1
     RUSH_CHANCE: 0.08, RUSH_PAY_MULT: 1.8,
     OFFER_BASE: 2, OFFER_HARD_MAX: 6,       // clamp(…, 2, 6+offerBonus)
     DEADLINE_MIN: 2, DEADLINE_MAX: 7,
     CONTRACT_DEADLINE_MIN: 12, CONTRACT_DEADLINE_MAX: 25,
-    CONTRACT_UNITS_MIN: 5, CONTRACT_UNITS_MAX: 15,
+    CONTRACT_UNITS_MIN: 4, CONTRACT_UNITS_MAX: 10,
     CONTRACT_MIN_DAYS_BETWEEN: 7,           // <=1/week
     CONTRACT_UNIT_HOURS_MIN: 1, CONTRACT_UNIT_HOURS_MAX: 2,
 

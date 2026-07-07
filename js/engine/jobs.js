@@ -124,7 +124,7 @@
     var upgCats = ['ram', 'storage', 'gpu'].filter(function (c) {
       return purchasableByCategory(state, c).length > 0;
     });
-    if (upgCats.length) add('upgrade', null, 3.5);
+    if (upgCats.length) add('upgrade', null, 3);
     if (purchasableByCategory(state, 'os').length) add('software', 'os_install', 2);
     if (year >= 1988 && Engine.equipmentOwned(state, 'software-station'))
       add('software', 'virus', (year >= 1995 && year <= 2010) ? 6 : 2);

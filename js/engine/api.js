@@ -37,7 +37,7 @@
     if (!isFinite(seed)) seed = 42;
     var startDi = null;
     var state = {
-      version: 2,
+      version: 3,
       seed: seed, rngState: seed | 0,
       shopName: String(opts.shopName ||
         ((DATA.FLAVOR && DATA.FLAVOR.shopNameSuggestions) ?
@@ -67,7 +67,10 @@
                     jobsCompleted: 0, jobsFailed: 0, buildsDelivered: 0,
                     refurbsSold: 0, daysPlayed: 0 }
       },
-      workedToday: [], declinesToday: 0, lastContractDay: null, injuryDaysLeft: 0
+      workedToday: [], declinesToday: 0, lastContractDay: null, injuryDaysLeft: 0,
+      // §10.7 staff
+      staff: [], staffMarket: [], staffNextRefreshDay: Engine.CONFIG.STAFF_REFRESH_DAYS,
+      staffNextId: 1
     };
     Engine._state = state;
     startDi = Engine.dateInfo(0, state);
@@ -76,10 +79,12 @@
       revenue: 0, partsCost: 0, fixedCosts: 0, other: 0, net: 0
     });
 
-    // Day-0 world: events in-window, prices/history, as-is stock, first offers.
+    // Day-0 world: events in-window, prices/history, as-is stock, candidates,
+    // first offers.
     Engine.Sim.updateEvents(state);
     Engine.Pricing.nightlyUpdate(state);
     Engine.Jobs.seedAsIsMarket(state);
+    Engine.Sim.refreshStaffMarket(state);
     Engine.Jobs.generateOffers(state, null);
     Engine.pushNews(state, 'system', 'Grand opening: ' + state.shopName,
       (era.name || era.id) + ' — ' + startDi.label + '. ' + (era.blurb || ''));
@@ -135,9 +140,7 @@
     return S() ? JSON.stringify(S()) : '';
   };
   // v1 -> v2 migration (§9 addendum): fill every new field with defaults.
-  // Never rejects a valid v1 save; idempotent on v2 saves.
-  function migrateSave(obj) {
-    if (obj.version === 2) return obj;
+  function migrateV1toV2(obj) {
     obj.version = 2;
     function fixJob(job) {
       if (!job || typeof job !== 'object') return;
@@ -163,11 +166,49 @@
     });
     return obj;
   }
+  // v2 -> v3 migration (§10): staff fields + step checklists. Steps for jobs in
+  // flight are synthesized generically with prior progress replayed; customer
+  // machines on old repair/upgrade jobs stay null (fully playable without them).
+  function migrateV2toV3(obj) {
+    obj.version = 3;
+    if (!Array.isArray(obj.staff)) obj.staff = [];
+    if (!Array.isArray(obj.staffMarket)) obj.staffMarket = [];
+    if (obj.staffNextRefreshDay == null) obj.staffNextRefreshDay = obj.day; // refresh next night
+    if (obj.staffNextId == null) obj.staffNextId = 1;
+    function fixJob(job) {
+      if (!job || typeof job !== 'object') return;
+      if (!('peripheral' in job)) job.peripheral = null;
+      if (!Array.isArray(job.steps) || !job.steps.length) {
+        var steps = Engine.Jobs.synthesizeSteps(job.hoursRequired || 2, job);
+        // map the install step to need 0 when the job installs parts
+        var needsInstall = (job.needs || []).length > 0 ||
+                           (job.fault && job.fault.partCategory);
+        for (var i = 0; i < steps.length; i++) {
+          if (steps[i].install && needsInstall) steps[i].needIndex = 0;
+          delete steps[i].install;
+        }
+        // replay prior progress (installs already happened at v2 assign time)
+        var left = Math.min(job.hoursRequired || 0, job.hoursDone || 0);
+        var idx = 0;
+        while (left > 0 && idx < steps.length) {
+          if (left >= steps[idx].hours - 1e-9) {
+            steps[idx].progress = 1; steps[idx].done = true;
+            left -= steps[idx].hours; idx++;
+          } else { steps[idx].progress = left / steps[idx].hours; left = 0; }
+        }
+        job.steps = steps;
+        job.stepIndex = idx;
+      }
+    }
+    (obj.jobs.offers || []).forEach(fixJob);
+    (obj.jobs.active || []).forEach(fixJob);
+    return obj;
+  }
   Engine.importSave = function (str) {
     var obj;
     try { obj = JSON.parse(String(str)); }
     catch (e) { return err('Not valid save JSON'); }
-    if (!obj || (obj.version !== 1 && obj.version !== 2))
+    if (!obj || (obj.version !== 1 && obj.version !== 2 && obj.version !== 3))
       return err('Unsupported save version');
     var required = ['seed', 'rngState', 'eraId', 'startDate', 'day', 'cash',
                     'hoursLeft', 'flags', 'reputation', 'shop', 'inventory',
@@ -175,7 +216,9 @@
     for (var i = 0; i < required.length; i++) {
       if (!(required[i] in obj)) return err('Save is missing "' + required[i] + '"');
     }
-    Engine._state = migrateSave(obj);
+    if (obj.version === 1) migrateV1toV2(obj);
+    if (obj.version === 2) migrateV2toV3(obj);
+    Engine._state = obj;
     return { ok: true };
   };
   function autosave() {
@@ -222,9 +265,18 @@
   Engine.getJobNeeds = function (jobId) {
     return S() ? Engine.Jobs.getJobNeeds(S(), jobId) : [];
   };
-  Engine.installPart = function (jobId, needIndex, partId) {
+  // §10.3: assign reserves the part; the install happens at its step.
+  Engine.assignPart = function (jobId, needIndex, partId) {
     var bad = needLive(); if (bad) return bad;
-    return Engine.Jobs.installPart(S(), jobId, needIndex, partId);
+    return Engine.Jobs.assignPart(S(), jobId, needIndex, partId);
+  };
+  Engine.unassignPart = function (jobId, needIndex, partId) {
+    var bad = needLive(); if (bad) return bad;
+    return Engine.Jobs.unassignPart(S(), jobId, needIndex, partId);
+  };
+  // Deprecated alias for assignPart (one release, §10.3)
+  Engine.installPart = function (jobId, needIndex, partId) {
+    return Engine.assignPart(jobId, needIndex, partId);
   };
   Engine.workJob = function (jobId, hours) {
     var bad = needLive(); if (bad) return bad;
@@ -460,6 +512,90 @@
     var bad = needLive(); if (bad) return bad;
     S().shop.insurance = !!on;
     return { ok: true };
+  };
+
+  // ------------------------------------------------------------------
+  // Staff (§10.7)
+  // ------------------------------------------------------------------
+  function staffEffectNote(entry, role) {
+    if (!role) return '';
+    if (Engine.isApprenticeRole(role)) {
+      var pctA = Math.round((1 - 1 / (1 + entry.skill * Engine.CONFIG.APPRENTICE_EFFECT)) * 100);
+      return 'Everything ' + pctA + '% faster';
+    }
+    var pct = Math.round((1 - 1 / (1 + entry.skill)) * 100);
+    var kinds = (role.jobTypes || []).slice(0, 3).join('/');
+    return (kinds ? kinds : 'work') + ' up to ' + pct + '% faster';
+  }
+  Engine.getStaffView = function () {
+    var state = S();
+    if (!state) return { staff: [], candidates: [], slots: 0, slotsUsed: 0,
+                         totalMonthlyWages: 0, nextRefreshDay: 0 };
+    var C = Engine.CONFIG;
+    var slots = C.STAFF_SLOTS[Engine.clamp(state.shop.tier, 0, C.STAFF_SLOTS.length - 1)] || 0;
+    var total = 0;
+    var staff = (state.staff || []).map(function (m) {
+      total += m.wageMonthly || 0;
+      var role = Engine.staffRoleById(m.role);
+      return { id: m.id, name: m.name, role: m.role,
+               roleName: role ? role.name : m.role,
+               desc: role ? (role.desc || '') : '',
+               skill: m.skill, hiredDay: m.hiredDay, wageMonthly: m.wageMonthly,
+               effectNote: staffEffectNote(m, role) };
+    });
+    var candidates = (state.staffMarket || []).map(function (c) {
+      var role = Engine.staffRoleById(c.role);
+      return { id: c.id, name: c.name, role: c.role,
+               roleName: role ? role.name : c.role,
+               desc: role ? (role.desc || '') : '',
+               skill: c.skill, wageMonthly: c.wageMonthly,
+               effectNote: staffEffectNote(c, role) };
+    });
+    return { staff: staff, candidates: candidates,
+             slots: slots, slotsUsed: (state.staff || []).length,
+             totalMonthlyWages: Engine.round2(total),
+             nextRefreshDay: state.staffNextRefreshDay || 0 };
+  };
+  Engine.hireStaff = function (candidateId) {
+    var bad = needLive(); if (bad) return bad;
+    var state = S();
+    var C = Engine.CONFIG;
+    var slots = C.STAFF_SLOTS[Engine.clamp(state.shop.tier, 0, C.STAFF_SLOTS.length - 1)] || 0;
+    if ((state.staff || []).length >= slots) {
+      return err(slots === 0 ? 'No room for staff in a garage — upgrade the shop first'
+                             : 'All staff slots are filled');
+    }
+    var cand = null;
+    for (var i = 0; i < (state.staffMarket || []).length; i++) {
+      if (String(state.staffMarket[i].id) === String(candidateId)) { cand = state.staffMarket[i]; break; }
+    }
+    if (!cand) return err('That candidate is gone');
+    state.staffMarket.splice(state.staffMarket.indexOf(cand), 1);
+    state.staff.push({ id: cand.id, name: cand.name, role: cand.role,
+                       skill: cand.skill, hiredDay: state.day,
+                       wageMonthly: cand.wageMonthly });
+    Engine.pushNews(state, 'system', 'Hired: ' + cand.name,
+      'Joins the shop as ' + ((Engine.staffRoleById(cand.role) || {}).name || cand.role) +
+      ' at ' + Engine.fmtMoney(cand.wageMonthly) + '/month.');
+    return { ok: true };
+  };
+  Engine.fireStaff = function (staffId) {
+    var bad = needLive(); if (bad) return bad;
+    var state = S();
+    var member = null;
+    for (var i = 0; i < (state.staff || []).length; i++) {
+      if (String(state.staff[i].id) === String(staffId)) { member = state.staff[i]; break; }
+    }
+    if (!member) return err('No such employee');
+    var severance = Engine.round2((member.wageMonthly || 0) *
+                                  Engine.CONFIG.SEVERANCE_MONTHS);
+    Engine.addCash(state, -severance);
+    if (severance > 0) Engine.ledgerAdd(state, 'other', severance);
+    state.staff.splice(state.staff.indexOf(member), 1);
+    Engine.pushScore(state, Engine.CONFIG.FIRE_REP_SCORE);   // small rep ding
+    Engine.pushNews(state, 'system', 'Let go: ' + member.name,
+      'Two weeks severance paid (' + Engine.fmtMoney(severance) + '). Word gets around.');
+    return { ok: true, severance: severance };
   };
 
   // ------------------------------------------------------------------

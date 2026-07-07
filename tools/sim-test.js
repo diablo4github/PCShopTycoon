@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 /* Circuit & Solder — tools/sim-test.js (ENGINE workstream)
- * Headless sim test per SPEC §8 + §9.11: for each era preset, run a 40-day
- * greedy bot. Prefers the real js/data/*.js files when they all exist and load;
- * otherwise falls back to tools/mock-data.js. Exits non-zero with details.
+ * Headless sim test per SPEC §8 + §9.11 + §10.8: for each era preset, run a
+ * 40-day greedy bot. Prefers the real js/data/*.js files when they all exist
+ * and load; otherwise falls back to tools/mock-data.js. Exits non-zero.
  *
- * v2 additions: overtime borrow & floor, stripRefurb salvage, taste bonus,
- * upgrade minPerf rejection, 1983 jobs-vs-flips $/labor-hour metric,
- * v1 -> v2 save migration.
+ * v3 additions: steps drive completion, assign/unassign round-trip, overspend
+ * fire & waive, Sunday rules over 60 days, staff scenario, integer offer pay,
+ * v2 fixture migration.
  */
 'use strict';
 var path = require('path');
@@ -55,6 +55,7 @@ loadData();
 });
 var Engine = globalThis.Engine;
 var DATA = globalThis.DATA;
+var REAL = function () { return DATA_SOURCE.indexOf('real') === 0; };
 
 // Tuning hooks (harness-only): sweep seeds/ratios without editing files.
 // Default gate seed chosen so the deterministic run sits near the median of
@@ -88,16 +89,18 @@ function finish() {
     failures.forEach(function (f) { console.error('  - ' + f); });
     process.exit(1);
   }
-  console.log('sim-test PASSED (' + DATA_SOURCE + ')');
+  console.log('sim-test PASSED (' + DATA_SOURCE + ', engine v' + Engine.VERSION + ')');
   process.exit(0);
 }
 
 // Cross-era trackers
 var globals = {
-  tasteBonusJobs: 0,          // completed jobs that paid a taste bonus
+  tasteBonusJobs: 0,
   tasteSampleNotes: null,
-  minPerfRejected: false,     // installPart refused a below-spec part readably
-  minPerfRejectMsg: ''
+  minPerfRejected: false,
+  minPerfRejectMsg: '',
+  badPayOffer: null,         // §10.2: offer pay must be whole dollars
+  badStepsOffer: null        // §10.1: every offer carries a checklist
 };
 
 // ------------------------------------------------------------------
@@ -185,7 +188,7 @@ function chooseOption(E, job, need) {
   if (!globals.minPerfRejected) {
     var below = need.options.filter(function (o) { return !o.meets; })[0];
     if (below) {
-      var r = E.installPart(job.id, need.index, below.partId);
+      var r = E.assignPart(job.id, need.index, below.partId);
       if (!r.ok && /below the required spec/i.test(r.error || '')) {
         globals.minPerfRejected = true;
         globals.minPerfRejectMsg = r.error;
@@ -219,6 +222,11 @@ function botDay(E, mem) {
   var offers = E.getOffers().slice();
   for (var i = 0; i < offers.length; i++) {
     var o = offers[i];
+    // §10.2/§10.1 sweeps: integer pay + checklist on every offer
+    if (o.pay != null && !Number.isInteger(o.pay) && !globals.badPayOffer)
+      globals.badPayOffer = o.title + ' pay=' + o.pay;
+    if ((!o.steps || o.steps.length < 3) && !globals.badStepsOffer)
+      globals.badStepsOffer = o.title + ' steps=' + (o.steps ? o.steps.length : 'none');
     if (o.crt && !ownsCrtKit) { E.declineOffer(o.id); continue; }
     // Benchmark-era bot skips sub-$20 cleaning gigs — bench time goes to repairs
     if (mem.standardOnly && o.type === 'cleaning') { E.declineOffer(o.id); continue; }
@@ -226,9 +234,8 @@ function botDay(E, mem) {
     if (!res.ok) break; // workstations full
   }
 
-  // Refurb flips: 1983 flips up to 4 machines (one at a time) so the §9.6
-  // jobs-vs-flips metric has a real sample; other eras do one flip. The bot
-  // buys the most valuable listing it can afford — flipping junk is a dud.
+  // Refurb flips: the metric run flips repeatedly (one machine at a time) so
+  // §9.6 has a real sample; other runs do one flip.
   var hasRefurb = E.getActiveJobs().some(function (j) { return j.type === 'refurb'; });
   var wantsFlip = mem.multiFlip ? mem.flipsStarted < 6 : !mem.refurbBought;
   if (!hasRefurb && wantsFlip) {
@@ -237,7 +244,7 @@ function botDay(E, mem) {
     // bar rather than the juiciest — max-margin picking amplifies tail luck.
     var C = E.getConfig();
     var year = E.dateInfo(E.getState().day).y;
-    var best = null, bestMargin = 0;
+    var best = null;
     E.getAsIsMarket().forEach(function (m) {
       if (best) return;
       if (E.getState().cash <= m.askPrice + 600) return;
@@ -246,16 +253,16 @@ function botDay(E, mem) {
       if (m.faultPartIdx != null) {
         var dead = Engine.partById(m.partIds[m.faultPartIdx]);
         if (dead) {
-          var cheapest = Engine.Jobs.purchasableByCategory(E.getState(), dead.category)
+          var cheapestRepl = Engine.Jobs.purchasableByCategory(E.getState(), dead.category)
             .map(function (p) { return Engine.Pricing.priceOf(p, E.getState(), { buy: true }); })
             .sort(function (a, b) { return a - b; })[0];
-          replCost = cheapest || 150;
+          replCost = cheapestRepl || 150;
         }
       }
       var margin = C.REFURB_SALE_RATIO * v +
                    Engine.laborRate(year) * C.REFURB_PREMIUM_HOURS -
                    m.askPrice - replCost;
-      if (margin >= 150) { bestMargin = margin; best = m; }
+      if (margin >= 150) best = m;
     });
     if (best) {
       var rr = tracked(E, mem, true, function () { return E.buyAsIsMachine(best.id); });
@@ -290,7 +297,7 @@ function botDay(E, mem) {
         else if (bc === 'impossible') { E.abandonJob(job.id); progress = true; }
         continue;
       }
-      // Fill missing parts
+      // Assign missing parts (§10.3)
       var needs = E.getJobNeeds(job.id);
       var blocked = false;
       for (var n = 0; n < needs.length; n++) {
@@ -300,18 +307,18 @@ function botDay(E, mem) {
         if (!opt) { blocked = true; continue; }
         if (opt.source === 'market' && opt.price > E.getState().cash - 200) { blocked = true; continue; }
         var ir = tracked(E, mem, isFlip, function () {
-          return E.installPart(job.id, need.index, opt.partId);
+          return E.assignPart(job.id, need.index, opt.partId);
         });
         if (ir.ok && (ir.filledNow > 0 || ir.mishap)) progress = true;
         if (!ir.ok) blocked = true;
       }
-      if (blocked) continue;
       var w = tracked(E, mem, isFlip, function () { return E.workJob(job.id); });
       if (w.ok && (w.hoursSpent > 0 || w.completed)) progress = true;
       if (w.ok && w.completed && w.result && w.result.tasteMatched) {
         globals.tasteBonusJobs++;
         if (!globals.tasteSampleNotes) globals.tasteSampleNotes = (w.result.notes || []).join(' | ');
       }
+      if (blocked) continue;
     }
   }
 }
@@ -373,7 +380,7 @@ function runEra(era, idx, metricRun) {
   assert(mem.equipmentBought.length >= 1, era.id + ': bot never bought equipment');
   assert(!s.flags.gameOver, era.id + ': went bankrupt during the sim');
 
-  // Wiki sanity (§9.7): entries only for released parts, with labels & status
+  // Wiki sanity (§9.7)
   var wiki = E.getWiki({});
   assert(wiki.length > 0, era.id + ': empty wiki');
   var wikiBad = wiki.filter(function (w) {
@@ -383,7 +390,7 @@ function runEra(era, idx, metricRun) {
   assert(wikiBad.length === 0, era.id + ': malformed wiki entries: ' +
          wikiBad.slice(0, 3).map(function (w) { return w.partId; }).join(','));
 
-  // Save round-trip must be byte-identical (v2 saves)
+  // Save round-trip must be byte-identical (v3 saves)
   var s1 = E.exportSave();
   var imp = E.importSave(s1);
   assert(imp.ok, era.id + ': importSave failed: ' + (imp.error || ''));
@@ -393,7 +400,7 @@ function runEra(era, idx, metricRun) {
   // 1983 balance sanity band (§9.6: final cash $2k-$10k) — asserted on the
   // canonical single-flip greedy bot against the REAL catalog. The §9.6
   // balance targets are catalog-tuned; the tiny mock only verifies mechanics.
-  if (era.startYear === 1983 && !metricRun && DATA_SOURCE.indexOf('real') === 0) {
+  if (era.startYear === 1983 && !metricRun && REAL()) {
     assert(s.cash >= 2000 && s.cash <= 10000,
            era.id + ': final cash ' + s.cash + ' outside sanity band [2000, 10000]');
   }
@@ -433,7 +440,7 @@ function runEra(era, idx, metricRun) {
       ratio.toFixed(2) + 'x');
     assert(mem.refurbsSold >= 2, era.id + ': too few flips completed to measure (' +
            mem.refurbsSold + ')');
-    if (DATA_SOURCE.indexOf('real') === 0) {
+    if (REAL()) {
       assert(ratio >= 1.2 && ratio <= 1.8,
              era.id + ': flips/jobs $-per-hour ratio ' + ratio.toFixed(2) +
              ' outside [1.2, 1.8]');
@@ -520,7 +527,6 @@ function overtimeScenario(era) {
   if (!assert(r.ok, 'overtime: newGame failed')) return;
   var cap = E.getConfig().overtimeCap;
   assert(cap === 3, 'CONFIG.overtimeCap must be 3, got ' + cap);
-  // Find a diagnosable repair job
   var job = null;
   for (var d = 0; d < 12 && !job; d++) {
     var offers = E.getOffers().slice();
@@ -541,7 +547,6 @@ function overtimeScenario(era) {
   assert(dr.ok, 'overtime: diagnose with 0.2h left should borrow into overtime, got: ' + (dr.error || ''));
   assert(s.hoursLeft < 0 && s.hoursLeft >= -cap,
          'overtime: hoursLeft should be negative within the cap, got ' + s.hoursLeft);
-  // An action whose cost would break the floor is refused
   s.hoursLeft = -2.9;
   s.supplyRunDoneToday = false;
   var anyPart = E.getMarket()[0];
@@ -549,7 +554,6 @@ function overtimeScenario(era) {
   assert(!br.ok && /exhausted/i.test(br.error || ''),
          'overtime: floor-breaking action should be refused with the exhaustion message, got: ' +
          JSON.stringify(br));
-  // Next morning: 8 + carried, min 5
   s.hoursLeft = -cap;
   var res = E.endDay();
   assert(res.ok, 'overtime: endDay failed');
@@ -582,84 +586,409 @@ function stripScenario(era) {
   if (!assert(buy.ok, 'strip: buyAsIsMachine failed: ' + (buy.error || ''))) return;
   var parts = E.getMachineParts(buy.jobId);
   assert(parts.length >= 4, 'strip: getMachineParts returned too few parts');
-  var unknowns = parts.filter(function (p) { return p.status === 'unknown'; });
-  assert(unknowns.length <= 1, 'strip: more than one unknown slot before diagnosis');
+  // §10.4 knowledge model: EVERYTHING unknown before diagnosis (the v0.2 bug)
+  var notUnknown = parts.filter(function (p) { return p.status !== 'unknown'; });
+  assert(notUnknown.length === 0,
+         'strip: all statuses must be "unknown" before diagnosis, got ' +
+         JSON.stringify(parts.map(function (p) { return p.status; })));
   var invBefore = E.getState().inventory.reduce(function (a, e) { return a + e.qty; }, 0);
   var hoursBefore = E.getState().hoursLeft;
   var sr = E.stripRefurb(buy.jobId);
   if (!assert(sr.ok, 'strip: stripRefurb failed: ' + (sr.error || ''))) return;
   assert(sr.hoursSpent === 1.5 && Engine.round2(hoursBefore - E.getState().hoursLeft) === 1.5,
-         'strip: should cost exactly 1.5h');
+         'strip: should cost exactly 1.5h with no staff');
   var invAfter = E.getState().inventory.reduce(function (a, e) { return a + e.qty; }, 0);
   assert(sr.recovered.length >= 1, 'strip: nothing recovered (survival roll bug?)');
   assert(invAfter - invBefore === sr.recovered.length,
          'strip: inventory delta ' + (invAfter - invBefore) + ' != recovered ' + sr.recovered.length);
   assert(!E.getActiveJobs().some(function (j) { return j.id === buy.jobId; }),
          'strip: job should be removed');
-  console.log('  recovered ' + sr.recovered.length + ' part(s), lost ' + sr.lost.length +
-              ', 1.5h spent');
+  console.log('  all-unknown before diagnosis ok; recovered ' + sr.recovered.length +
+              ' part(s), lost ' + sr.lost.length + ', 1.5h spent');
 }
 
 // ------------------------------------------------------------------
-// Scenario (§9.11): v1 save fixture migrates through importSave
+// Scenario (§10.1): steps drive completion exactly
+// ------------------------------------------------------------------
+function stepScenario(era) {
+  console.log('--- Step checklist (§10.1/§10.3) ---');
+  var E = Engine;
+  var r = E.newGame({ eraId: era.id, shopName: 'Step Test', seed: 91919 });
+  if (!assert(r.ok, 'steps: newGame failed')) return;
+  E.getState().cash = 100000;
+  // Find a part-fault repair job
+  var job = null;
+  for (var d = 0; d < 25 && !job; d++) {
+    var offers = E.getOffers().slice();
+    for (var i = 0; i < offers.length; i++) {
+      var o = offers[i];
+      if (o.type !== 'repair' || o.rush || o.crt) continue;
+      if (E.acceptOffer(o.id).ok) {
+        var cand = E.getActiveJobs().filter(function (j) { return j.id === o.id; })[0];
+        E.getState().hoursLeft = 8;   // debug: plenty of bench time
+        var dg = E.diagnoseJob(cand.id);
+        if (dg.ok && dg.fault.partCategory) { job = cand; break; }
+        E.abandonJob(cand.id);
+      }
+    }
+    if (!job) E.endDay();
+  }
+  if (!assert(!!job, 'steps: no part-fault repair found in 25 days')) return;
+  assert(job.steps.length >= 3, 'steps: repair checklist too short');
+  job.steps.forEach(function (st) {
+    assert(st.progress >= 0 && st.progress <= 1, 'steps: progress out of [0,1]');
+  });
+  // Work until the unassigned install step blocks
+  E.getState().hoursLeft = 8;
+  var blockedErr = null, guard = 0;
+  while (guard++ < 20) {
+    var w = E.workJob(job.id, 0.5);
+    if (!w.ok) { blockedErr = w.error; break; }
+    if (w.completed) break;
+  }
+  assert(blockedErr != null && /assign/i.test(blockedErr),
+         'steps: expected an /assign/i block at the install step, got: ' + blockedErr);
+  assert(!job.steps[job.stepIndex].done && job.steps[job.stepIndex].needIndex === 0,
+         'steps: block should sit on the install step');
+  // Assign, then verify completion lands exactly when the checklist is done
+  var needs = E.getJobNeeds(job.id);
+  var opt = needs[0].options.filter(function (o2) { return o2.meets; })[0];
+  if (!assert(!!opt, 'steps: no assignable option')) return;
+  var ar = E.assignPart(job.id, 0, opt.partId);
+  while (ar.ok && ar.mishap && needs[0].qty > (ar.filled || 0)) {
+    ar = E.assignPart(job.id, 0, opt.partId);   // re-source after an ESD zap
+  }
+  assert(ar.ok, 'steps: assign failed: ' + (ar.error || ''));
+  assert(needs[0].replaces == null || typeof needs[0].replaces.value === 'number',
+         'steps: replaces info malformed');
+  var remainingStd = Engine.round2(job.hoursRequired - job.hoursDone);
+  var spent = 0, completed = false;
+  E.getState().hoursLeft = 8;
+  guard = 0;
+  while (guard++ < 40 && !completed) {
+    if (E.getState().hoursLeft < 1) E.getState().hoursLeft = 8;   // debug refill
+    var w2 = E.workJob(job.id, 0.5);
+    if (!assert(w2.ok, 'steps: work failed: ' + (w2.error || ''))) return;
+    spent += w2.hoursSpent;
+    completed = w2.completed;
+    if (!completed) {
+      assert(spent < remainingStd + 0.5,
+             'steps: job should have completed by ' + remainingStd + 'h, spent ' + spent);
+    }
+  }
+  assert(completed, 'steps: never completed');
+  assert(Math.abs(spent - remainingStd) <= 0.5 + 1e-9,
+         'steps: completion at ' + spent + 'h vs checklist sum ' + remainingStd + 'h');
+  assert(job.steps.every(function (st) { return st.done; }), 'steps: not all steps done');
+  console.log('  blocked at install until assigned; completed at ' + spent +
+              'h vs checklist ' + remainingStd + 'h');
+}
+
+// ------------------------------------------------------------------
+// Scenario (§10.3): assign -> unassign -> reassign preserves inventory
+// ------------------------------------------------------------------
+function assignScenario(era) {
+  console.log('--- Assign / unassign (§10.3) ---');
+  var E = Engine;
+  var r = E.newGame({ eraId: era.id, shopName: 'Assign Test', seed: 24242 });
+  if (!assert(r.ok, 'assign: newGame failed')) return;
+  E.getState().cash = 100000;
+  var job = null;
+  for (var d = 0; d < 20 && !job; d++) {
+    var offers = E.getOffers().slice();
+    for (var i = 0; i < offers.length; i++) {
+      if (offers[i].type === 'upgrade' && E.acceptOffer(offers[i].id).ok) {
+        job = E.getActiveJobs().filter(function (j) { return j.id === offers[i].id; })[0];
+        break;
+      }
+    }
+    if (!job) E.endDay();
+  }
+  if (!assert(!!job, 'assign: no upgrade offer in 20 days')) return;
+  var needs = E.getJobNeeds(job.id);
+  var opt = needs[0].options.filter(function (o) { return o.meets; })[0];
+  if (!assert(!!opt, 'assign: no viable option')) return;
+  var pid = opt.partId;
+  function invQty() {
+    var e = E.getState().inventory.filter(function (x) { return x.partId === pid; })[0];
+    return e ? e.qty : 0;
+  }
+  // Order & assign (market)
+  var a1 = E.assignPart(job.id, 0, pid);
+  var guard = 0;
+  while (a1.ok && a1.mishap && a1.filled < 1 && guard++ < 8) a1 = E.assignPart(job.id, 0, pid);
+  if (!assert(a1.ok && needs[0].qty >= 1, 'assign: order+assign failed: ' + (a1.error || ''))) return;
+  var view1 = E.getJobNeeds(job.id)[0];
+  assert(view1.assigned.length === 1 && view1.assigned[0].source === 'ordered',
+         'assign: assigned[] should show one "ordered" entry, got ' + JSON.stringify(view1.assigned));
+  assert(invQty() === 0, 'assign: ordered part should not sit in inventory');
+  // Unassign -> part returns to inventory
+  var u1 = E.unassignPart(job.id, 0);
+  assert(u1.ok && u1.returned === pid, 'assign: unassign failed: ' + (u1.error || ''));
+  assert(invQty() === 1, 'assign: unassigned part should be in inventory');
+  var basis = E.getState().inventory.filter(function (x) { return x.partId === pid; })[0].avgCost;
+  // Reassign from stock
+  var a2 = E.assignPart(job.id, 0, pid);
+  guard = 0;
+  while (a2.ok && a2.mishap && a2.filled < 1 && guard++ < 8) a2 = E.assignPart(job.id, 0, pid);
+  if (!assert(a2.ok, 'assign: reassign failed')) return;
+  var view2 = E.getJobNeeds(job.id)[0];
+  assert(view2.assigned.length === 1 && view2.assigned[0].source === 'stock',
+         'assign: reassigned entry should be "stock", got ' + JSON.stringify(view2.assigned));
+  assert(invQty() === 0, 'assign: stock part should leave inventory when assigned');
+  // Round-trip back out: inventory + basis preserved
+  var u2 = E.unassignPart(job.id, 0);
+  assert(u2.ok && invQty() === 1, 'assign: second unassign failed');
+  var basis2 = E.getState().inventory.filter(function (x) { return x.partId === pid; })[0].avgCost;
+  assert(Math.abs(basis - basis2) < 0.01,
+         'assign: inventory cost basis drifted (' + basis + ' -> ' + basis2 + ')');
+  // Deprecated alias still works
+  var a3 = E.installPart(job.id, 0, pid);
+  assert(a3.ok, 'assign: deprecated installPart alias broken');
+  console.log('  order/assign/unassign/reassign round-trip ok, basis stable at ' +
+              Engine.fmtMoney(basis2));
+}
+
+// ------------------------------------------------------------------
+// Scenario (§10.4): overspend penalty fires & is waived
+// ------------------------------------------------------------------
+function overspendScenario(era) {
+  console.log('--- Overspend (§10.4) ---');
+  var E = Engine;
+  function runOnce(seed, waive) {
+    var r = E.newGame({ eraId: era.id, shopName: 'Overspend Test', seed: seed });
+    if (!assert(r.ok, 'overspend: newGame failed')) return null;
+    E.getState().cash = 200000;
+    var job = null;
+    for (var d = 0; d < 25 && !job; d++) {
+      var offers = E.getOffers().slice();
+      for (var i = 0; i < offers.length; i++) {
+        var o = offers[i];
+        if (o.type === 'upgrade' && o.machine && !o.rush && E.acceptOffer(o.id).ok) {
+          job = E.getActiveJobs().filter(function (j) { return j.id === o.id; })[0];
+          break;
+        }
+      }
+      if (!job) E.endDay();
+    }
+    if (!assert(!!job, 'overspend: no machine-backed upgrade in 25 days')) return null;
+    // Force a wide value gap: pretend the original was the cheapest of the category
+    var need = job.needs[0];
+    var cheap = Engine.Jobs.purchasableByCategory(E.getState(), need.category)
+      .sort(function (a, b) {
+        return Engine.Pricing.priceOf(a, E.getState()) - Engine.Pricing.priceOf(b, E.getState());
+      })[0];
+    need.originalPartId = cheap.id;
+    var needsView = E.getJobNeeds(job.id)[0];
+    var pricey = needsView.options.filter(function (o) { return o.meets && o.overspend; })
+      .sort(function (a, b) { return b.price - a.price; })[0];
+    if (!assert(!!pricey, 'overspend: no option flagged overspend even vs cheapest original')) return null;
+    if (waive) {
+      var pPart = Engine.partById(pricey.partId);
+      job.taste = { brand: pPart.brand || 'ValuTech', category: pPart.category,
+                    bonusPct: 10, label: 'Fan of ' + (pPart.brand || 'it') };
+    } else {
+      job.taste = null;
+    }
+    var a = E.assignPart(job.id, 0, pricey.partId);
+    var guard = 0;
+    while (a.ok && a.mishap && a.filled < 1 && guard++ < 8) a = E.assignPart(job.id, 0, pricey.partId);
+    if (!assert(a.ok, 'overspend: assign failed: ' + (a.error || ''))) return null;
+    var res = null, guard2 = 0;
+    while (guard2++ < 30) {
+      E.getState().hoursLeft = 8;
+      var w = E.workJob(job.id);
+      if (!assert(w.ok, 'overspend: work failed: ' + (w.error || ''))) return null;
+      if (w.completed) { res = w.result; break; }
+    }
+    return res;
+  }
+  var hit = runOnce(35353, false);
+  if (hit) {
+    assert(hit.notes.some(function (n) { return /Did it really need/i.test(n); }),
+           'overspend: grumble note missing, notes: ' + JSON.stringify(hit.notes));
+    console.log('  penalty fired: score ' + hit.score);
+  }
+  var waived = runOnce(35353, true);
+  if (waived) {
+    assert(!waived.notes.some(function (n) { return /Did it really need/i.test(n); }),
+           'overspend: taste match should waive the grumble');
+    assert(waived.score > (hit ? hit.score : 0),
+           'overspend: waived score should beat penalized score');
+    console.log('  taste waiver ok: score ' + waived.score + ' vs ' + (hit && hit.score));
+  }
+}
+
+// ------------------------------------------------------------------
+// Scenario (§10.6): Sundays — no offers, no deadlines, over 60 days
+// ------------------------------------------------------------------
+function sundayScenario(era) {
+  console.log('--- Sunday rules (§10.6) ---');
+  var E = Engine;
+  var r = E.newGame({ eraId: era.id, shopName: 'Sunday Test', seed: 46464 });
+  if (!assert(r.ok, 'sunday: newGame failed')) return;
+  E.getState().cash = 1000000;   // idle observer
+  var offerOnSunday = null, deadlineOnSunday = null;
+  for (var d = 0; d < 60; d++) {
+    var res = E.endDay();
+    if (!assert(res.ok, 'sunday: endDay failed')) return;
+    var s = E.getState();
+    var all = s.jobs.offers.concat(s.jobs.active);
+    for (var i = 0; i < all.length; i++) {
+      var j = all[i];
+      if (Engine.dateInfo(j.offeredDay).isSunday && !offerOnSunday)
+        offerOnSunday = j.title + ' offered ' + Engine.dateInfo(j.offeredDay).iso;
+      if (j.deadlineDay != null && Engine.dateInfo(j.deadlineDay).isSunday && !deadlineOnSunday)
+        deadlineOnSunday = j.title + ' due ' + Engine.dateInfo(j.deadlineDay).iso;
+    }
+  }
+  assert(offerOnSunday == null, 'sunday: offer generated on a Sunday: ' + offerOnSunday);
+  assert(deadlineOnSunday == null, 'sunday: deadline landed on a Sunday: ' + deadlineOnSunday);
+  console.log('  60 days clean: no Sunday offers, no Sunday deadlines');
+}
+
+// ------------------------------------------------------------------
+// Scenario (§10.7): staff — hire, speedup, wages, severance
+// ------------------------------------------------------------------
+function staffScenario() {
+  console.log('--- Staff (§10.7) ---');
+  var E = Engine;
+  var era = DATA.ERAS.filter(function (e) { return e.startYear >= 1991; })[0] || DATA.ERAS[0];
+  var r = E.newGame({ eraId: era.id, shopName: 'Staff Test', seed: 57575 });
+  if (!assert(r.ok, 'staff: newGame failed')) return;
+  var s = E.getState();
+  s.cash = 100000;
+  // Garage has zero staff slots
+  var sv0 = E.getStaffView();
+  assert(sv0.slots === 0, 'staff: garage should have 0 slots, got ' + sv0.slots);
+  var deny = E.hireStaff((sv0.candidates[0] || {}).id);
+  assert(!deny.ok && /garage/i.test(deny.error || ''),
+         'staff: hiring in a garage should fail with the garage note, got ' + JSON.stringify(deny));
+  // Move up a tier (debug poke — prestige gates are not under test here)
+  s.shop.tier = 1;
+  var sv = E.getStaffView();
+  assert(sv.slots === 1, 'staff: tier 1 should have 1 slot');
+  assert(sv.candidates.length >= 2 && sv.candidates.length <= 4,
+         'staff: candidate market should hold 2-4, got ' + sv.candidates.length);
+  assert(sv.candidates.every(function (c) { return c.effectNote && c.desc != null; }),
+         'staff: candidates missing effectNote/desc');
+  // Hire a technician (or first candidate) & verify the time multiplier
+  var cand = sv.candidates.filter(function (c) { return c.role === 'tech'; })[0] || sv.candidates[0];
+  var role = Engine.staffRoleById(cand.role);
+  var affectedType = Engine.isApprenticeRole(role) ? 'repair' : role.jobTypes[0];
+  assert(Engine.staffTimeMult(s, affectedType) === 1, 'staff: mult should be 1 before hiring');
+  var h = E.hireStaff(cand.id);
+  assert(h.ok, 'staff: hire failed: ' + (h.error || ''));
+  var mult = Engine.staffTimeMult(s, affectedType);
+  assert(mult < 1 && mult >= 1 / (1 + 0.35),
+         'staff: time multiplier should be <1, got ' + mult);
+  var deny2 = E.hireStaff((E.getStaffView().candidates[0] || {}).id);
+  assert(!deny2.ok, 'staff: hiring past the slot cap should fail');
+  // Wages billed with rent on the 1st
+  var sawWages = false, wageAmount = 0;
+  for (var d = 0; d < 35 && !sawWages; d++) {
+    var res = E.endDay();
+    if (!res.ok) break;
+    res.summary.charges.forEach(function (c) {
+      if (/^Wages/.test(c.label)) { sawWages = true; wageAmount = -c.amount; }
+    });
+  }
+  assert(sawWages && wageAmount > 0, 'staff: wages never billed on the 1st');
+  // Fire with two weeks severance + rep ding
+  var member = E.getStaffView().staff[0];
+  var cashBefore = E.getState().cash;
+  var f = E.fireStaff(member.id);
+  assert(f.ok, 'staff: fire failed: ' + (f.error || ''));
+  assert(Math.abs(f.severance - Engine.round2(member.wageMonthly / 2)) < 0.01,
+         'staff: severance should be wageMonthly/2, got ' + f.severance);
+  assert(Math.abs((cashBefore - E.getState().cash) - f.severance) < 0.01,
+         'staff: severance not charged to cash');
+  assert(E.getStaffView().staff.length === 0, 'staff: roster should be empty after firing');
+  console.log('  garage blocked, hired ' + cand.name + ' (' + cand.role + '), mult ' +
+              mult.toFixed(3) + ', wages ' + Engine.fmtMoney(wageAmount) +
+              ', severance ' + Engine.fmtMoney(f.severance));
+}
+
+// ------------------------------------------------------------------
+// Scenario (§10.8): v1 AND v2 fixtures migrate to v3 and play
 // ------------------------------------------------------------------
 function migrationScenario(era) {
-  console.log('--- v1 save migration ---');
+  console.log('--- Save migration (v1/v2 -> v3) ---');
   var E = Engine;
   var r = E.newGame({ eraId: era.id, shopName: 'Migrate Test', seed: 73737 });
   if (!assert(r.ok, 'migration: newGame failed')) return;
-  // Get some jobs & a refurb into the state so migration has work to do
   var offers = E.getOffers().slice(0, 2);
   offers.forEach(function (o) { E.acceptOffer(o.id); });
   E.getState().cash = 50000;
   var listing = E.getAsIsMarket()[0];
   if (listing) E.buyAsIsMachine(listing.id);
-  // Downgrade a v2 export into a faithful v1 fixture
-  var obj = JSON.parse(E.exportSave());
-  obj.version = 1;
-  function strip(job) {
-    if (!job) return;
-    delete job.taste;
-    if (job.machine) { delete job.machine.specSummary; delete job.machine.faultRepaired; }
+  var v3snapshot = E.exportSave();
+
+  function downgrade(version) {
+    var obj = JSON.parse(v3snapshot);
+    obj.version = version;
+    delete obj.staff; delete obj.staffMarket;
+    delete obj.staffNextRefreshDay; delete obj.staffNextId;
+    function strip(job) {
+      if (!job) return;
+      delete job.steps; delete job.stepIndex; delete job.peripheral;
+      if (version === 1) {
+        delete job.taste;
+        if (job.machine) { delete job.machine.specSummary; delete job.machine.faultRepaired; }
+      }
+      // v1/v2 jobs never carried customer machines on repair/upgrade
+      if (job.type === 'repair' || job.type === 'upgrade') job.machine = null;
+      (job.needs || []).forEach(function (n) { delete n.originalPartId; });
+      (job.partsUsed || []).forEach(function (e) {
+        delete e.needIndex; delete e.cost; delete e.fromStock; delete e.stockCost;
+      });
+    }
+    (obj.jobs.offers || []).forEach(strip);
+    (obj.jobs.active || []).forEach(strip);
+    if (version === 1) (obj.asIsMarket || []).forEach(function (m) { delete m.specSummary; });
+    return JSON.stringify(obj);
   }
-  (obj.jobs.offers || []).forEach(strip);
-  (obj.jobs.active || []).forEach(strip);
-  (obj.asIsMarket || []).forEach(function (m) { delete m.specSummary; });
-  var fixture = JSON.stringify(obj);
-  var imp = E.importSave(fixture);
-  if (!assert(imp.ok, 'migration: importSave rejected a valid v1 save: ' + (imp.error || ''))) return;
-  var s = E.getState();
-  assert(s.version === 2, 'migration: version should be bumped to 2');
-  var allJobs = s.jobs.offers.concat(s.jobs.active);
-  var missingTaste = allJobs.filter(function (j) { return !('taste' in j); });
-  assert(missingTaste.length === 0, 'migration: jobs missing taste default');
-  var badMachines = allJobs.filter(function (j) {
-    return j.machine && (typeof j.machine.specSummary !== 'string' ||
-                         typeof j.machine.faultRepaired !== 'boolean');
+
+  [1, 2].forEach(function (ver) {
+    var imp = E.importSave(downgrade(ver));
+    if (!assert(imp.ok, 'migration: v' + ver + ' fixture rejected: ' + (imp.error || ''))) return;
+    var s = E.getState();
+    assert(s.version === 3, 'migration: v' + ver + ' should land on version 3');
+    assert(Array.isArray(s.staff) && Array.isArray(s.staffMarket),
+           'migration: v' + ver + ' missing staff fields');
+    var allJobs = s.jobs.offers.concat(s.jobs.active);
+    assert(allJobs.every(function (j) { return Array.isArray(j.steps) && j.steps.length >= 3; }),
+           'migration: v' + ver + ' jobs missing synthesized steps');
+    var day = E.endDay();
+    assert(day.ok, 'migration: v' + ver + ' endDay failed: ' + (day.error || ''));
+    // Play a job end-to-end on the migrated save
+    var act = E.getActiveJobs()[0];
+    if (act) {
+      if (act.needsDiagnosis && !act.diagnosed) E.diagnoseJob(act.id);
+      var w = E.workJob(act.id);
+      assert(w.ok || /assign|cash|time|exhaust/i.test(w.error || ''),
+             'migration: v' + ver + ' workJob broke: ' + (w.error || ''));
+    }
+    console.log('  v' + ver + ' fixture migrated & playable');
   });
-  assert(badMachines.length === 0, 'migration: refurb machines missing v2 fields');
-  var badListings = s.asIsMarket.filter(function (m) { return typeof m.specSummary !== 'string'; });
-  assert(badListings.length === 0, 'migration: as-is listings missing specSummary');
-  var day = E.endDay();
-  assert(day.ok, 'migration: endDay on migrated save failed: ' + (day.error || ''));
-  // Idempotence: a v2 save round-trips byte-identically through import
-  var v2a = E.exportSave();
-  E.importSave(v2a);
-  assert(E.exportSave() === v2a, 'migration: v2 re-import not byte-identical');
-  console.log('  v1 fixture migrated, played a day, v2 round-trip stable');
+  // Idempotence: v3 round-trips byte-identically
+  E.importSave(v3snapshot);
+  var v3b = E.exportSave();
+  E.importSave(v3b);
+  assert(E.exportSave() === v3b, 'migration: v3 re-import not byte-identical');
 }
 
 // ------------------------------------------------------------------
 // Main
 // ------------------------------------------------------------------
-console.log('sim-test using: ' + DATA_SOURCE);
+console.log('sim-test using: ' + DATA_SOURCE + ' | engine v' + Engine.VERSION);
+assert(Engine.VERSION === '0.3', 'Engine.VERSION must be "0.3"');
 var lines = [];
 try {
   DATA.ERAS.forEach(function (era, idx) {
     var line = runEra(era, idx, false);
     if (line) lines.push(line);
-    // §9.6: dedicated flip-metric run for the 1983 benchmark era
-    if (era.startYear === 1983) runEra(era, idx, true);
+    if (era.startYear === 1983) runEra(era, idx, true);   // §9.6 metric run
   });
 } catch (e) {
   fatal('era loop crashed: ' + e.stack);
@@ -679,9 +1008,11 @@ var totalCallbacks = lines.reduce(function (a, l) {
 assert(totalCallbacks >= 1,
        'no warranty callback occurred/was scheduled across the whole run (quick-speed jobs)');
 
-// §9.2: a taste-matched job paid its bonus somewhere in the run. Tastes only
-// exist when the catalog carries brands (§9.1) — old catalogs get a pass here
-// (the mock run proves the feature until the real brand pass lands).
+// §10.2: whole-dollar offers; §10.1: checklists everywhere
+assert(globals.badPayOffer == null, 'non-integer offer pay: ' + globals.badPayOffer);
+assert(globals.badStepsOffer == null, 'offer without a step checklist: ' + globals.badStepsOffer);
+
+// §9.2: a taste-matched job paid its bonus somewhere in the run
 var catalogHasBrands = DATA.PARTS.some(function (p) { return !!p.brand; });
 if (catalogHasBrands) {
   assert(globals.tasteBonusJobs >= 1,
@@ -695,7 +1026,7 @@ if (catalogHasBrands) {
 
 // §9.3: a below-spec part was rejected with a readable error
 assert(globals.minPerfRejected,
-       'installPart never rejected a below-minPerf part during the runs');
+       'installPart/assignPart never rejected a below-minPerf part during the runs');
 if (globals.minPerfRejected)
   console.log('minPerf rejection sample: "' + globals.minPerfRejectMsg + '"');
 
@@ -705,6 +1036,11 @@ if (era1983) unlockScenario(era1983);
 else console.log('(no 1983 era preset — unlock scenario skipped)');
 overtimeScenario(DATA.ERAS[0]);
 stripScenario(DATA.ERAS[0]);
+stepScenario(DATA.ERAS[0]);
+assignScenario(DATA.ERAS[DATA.ERAS.length - 1]);
+overspendScenario(DATA.ERAS[DATA.ERAS.length - 1]);
+sundayScenario(DATA.ERAS[0]);
+staffScenario();
 migrationScenario(DATA.ERAS[DATA.ERAS.length - 1]);
 
 finish();

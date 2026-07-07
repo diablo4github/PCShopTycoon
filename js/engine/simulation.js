@@ -59,11 +59,17 @@
     // 6. As-is market churn
     Engine.Jobs.refreshAsIsMarket(state);
 
-    // 7. New offers
-    Engine.Jobs.generateOffers(state, summary);
+    // 6b. Staff candidate market refreshes weekly (§10.7)
+    if (state.staffNextRefreshDay == null || state.day >= state.staffNextRefreshDay) {
+      Sim.refreshStaffMarket(state);
+      state.staffNextRefreshDay = state.day + C.STAFF_REFRESH_DAYS;
+    }
+
+    // 7. New offers — §10.6: the shop is closed on Sunday, no offer batch
+    var di = Engine.dateInfo(state.day, state);
+    if (!di.isSunday) Engine.Jobs.generateOffers(state, summary);
 
     // 8. Monthly billing on the 1st
-    var di = Engine.dateInfo(state.day, state);
     if (di.isFirstOfMonth) Sim.monthlyBilling(state, summary, di);
 
     // 9. Custom-build unlock check
@@ -195,6 +201,43 @@
     var st = Engine.storageInfo(state);
     if (st.overage > 0) charge('Storage overage (' + st.overage + ' slots)',
                                st.overage * st.feePerSlot);
+    // §10.7: staff wages, year-rescaled on the 1st, listed in the summary
+    for (var w = 0; w < (state.staff || []).length; w++) {
+      var member = state.staff[w];
+      var role = Engine.staffRoleById(member.role);
+      member.wageMonthly = Engine.staffWageFor(year, member.skill,
+                                               role ? role.wageFactor : 1);
+      charge('Wages — ' + member.name + ' (' + (role ? role.name : member.role) + ')',
+             member.wageMonthly);
+    }
+  };
+
+  // ------------------------------------------------------------------
+  // §10.7: staff candidate market (2-4 candidates, weekly refresh)
+  // ------------------------------------------------------------------
+  Sim.refreshStaffMarket = function (state) {
+    var C = CFG();
+    var F = Engine.getData().FLAVOR || {};
+    var year = Engine.currentYear(state);
+    var roles = Engine.staffRoles().filter(function (r) {
+      return r.minYear == null || year >= r.minYear;
+    });
+    if (!roles.length) { state.staffMarket = []; return; }
+    var n = Engine.randInt(C.STAFF_CANDIDATES_MIN, C.STAFF_CANDIDATES_MAX);
+    var out = [];
+    for (var i = 0; i < n; i++) {
+      var role = Engine.pick(roles);
+      var skill = Engine.round2(Engine.uniform(C.STAFF_SKILL_MIN, C.STAFF_SKILL_MAX));
+      out.push({
+        id: 'c' + (state.staffNextId = (state.staffNextId || 1) + 1),
+        name: (Engine.pick(F.firstNames || ['Jo']) || 'Jo') + ' ' +
+              (Engine.pick(F.lastNames || ['Doe']) || 'Doe'),
+        role: role.id,
+        skill: skill,
+        wageMonthly: Engine.staffWageFor(year, skill, role.wageFactor)
+      });
+    }
+    state.staffMarket = out;
   };
 
   // ------------------------------------------------------------------

@@ -743,16 +743,23 @@
       }
     }
 
+    // §10.1: assemble the step checklist (sets hoursRequired deterministically),
+    // then derive difficulty (§10.2) and price from the real time on the bench.
+    assembleSteps(state, job);
+    job.difficulty = deriveDifficulty(state, job);
     if (!isBuildJob(job) && job.type !== 'contract') {
-      job.pay = basePay(state, job.type, job.hoursRequired, job.difficulty);
+      job.pay = Math.round(basePay(state, job.type, job.hoursRequired, job.difficulty));
     } else if (job.type === 'contract') {
-      job.pay = basePay(state, 'contract', job.hoursRequired, job.difficulty);
+      job.pay = Math.round(basePay(state, 'contract', job.hoursRequired, job.difficulty));
+    } else {
+      job.pay = Math.round(job.pay);   // builds: budget, whole dollars (§10.2)
     }
 
-    // §9.2: customer type first (era + affinity gated), then a fitting blurb,
-    // then maybe a brand taste relevant to the job.
+    // §9.2: customer type first (era + affinity gated), then a fitting blurb —
+    // §10.5: subject-derived complaint copy wins over generic blurbs.
     job.customer = customerFor(state, year, affinityKeyFor(job));
-    job.blurb = blurbFor(job.type, job.customer.type);
+    job.blurb = job.blurbOverride || blurbFor(job.type, job.customer.type);
+    delete job.blurbOverride;
     job.taste = maybeTaste(state, job);
 
     // Rush jobs: repair/software/upgrade, 8%: due today, pay x1.8 (§5.4)
@@ -760,9 +767,11 @@
         Engine.chance(C.RUSH_CHANCE)) {
       job.rush = true;
       job.deadlineDay = job.offeredDay;
-      job.pay = Engine.round2(job.pay * C.RUSH_PAY_MULT);
+      job.pay = Math.round(job.pay * C.RUSH_PAY_MULT);
       job.title = 'RUSH — ' + job.title;
     }
+    // §10.6: deadlines never land on Sunday
+    if (job.deadlineDay != null) job.deadlineDay = shiftOffSunday(state, job.deadlineDay);
     return job;
   }
 
@@ -835,16 +844,20 @@
     if (!job.needsDiagnosis) return err('Nothing to diagnose');
     if (job.diagnosed) return err('Already diagnosed');
     var equip = Engine.equipEffects(state);
-    var hours = Engine.round2(1 * equip.diagHoursMult);
+    // §10.7: staff speed up diagnosis too (diagnosis counts as the job's type)
+    var hours = Engine.round2(1 * equip.diagHoursMult *
+                              Engine.staffTimeMult(state, job.type));
+    hours = Math.max(0.25, hours);
     var spent = Engine.spendHours(state, hours);   // overtime rules apply (§9.4)
     if (!spent.ok) return spent;
     job.diagnosed = true;
     var fault = job.fault || { desc: 'No fault found', partCategory: null, laborHours: 1 };
     if (fault.partCategory) {
       var need = { category: fault.partCategory, anyOfTags: null, minPerf: null,
-                   qty: 1, filledPartIds: [], label: 'Replacement ' + fault.partCategory };
-      // Refurbs: replacement must fit the machine's motherboard.
-      if (job.type === 'refurb' && job.machine) {
+                   qty: 1, filledPartIds: [], label: 'Replacement ' + fault.partCategory,
+                   originalPartId: null };
+      // §10.4: replacements must fit the machine's motherboard (refurb & repair)
+      if (job.machine) {
         var mobo = null;
         for (var i = 0; i < job.machine.partIds.length; i++) {
           var mp = Engine.partById(job.machine.partIds[i]);
@@ -855,6 +868,8 @@
           var tags = Engine.Compat.tagsInNamespace(mobo, prefix);
           if (tags.length) need.anyOfTags = tags;
         }
+        if (job.machine.faultPartIdx != null)
+          need.originalPartId = job.machine.partIds[job.machine.faultPartIdx];
       }
       job.needs = [need];
     }
@@ -907,28 +922,51 @@
   Jobs.getJobNeeds = function (state, jobId) {
     var job = Jobs.findActive(state, jobId);
     if (!job) return [];
+    var C = CFG();
+    var year = Engine.currentYear(state);
     var out = [];
     for (var i = 0; i < job.needs.length; i++) {
       var need = job.needs[i];
+      // §10.4: the original part being replaced, and its overspend threshold
+      var orig = need.originalPartId ? Engine.partById(need.originalPartId) : null;
+      var origVal = orig ? P().priceOf(orig, state) : 0;
+      var threshold = orig ?
+        Math.max(C.OVERSPEND_MULT * origVal, origVal + Engine.laborRate(year)) : Infinity;
+      var replaces = orig ? { name: orig.name, value: origVal } : null;
       var options = [];
       var cands = purchasableByCategory(state, need.category);
       for (var c = 0; c < cands.length; c++) {
         var part = cands[c];
         if (!candidateListed(part, need, state)) continue;
         var inv = Engine.inventoryEntry(state, part.id);
+        var marketVal = P().priceOf(part, state);
         var opt = {
           partId: part.id, name: part.name,
           source: (inv && inv.qty > 0) ? 'inventory' : 'market',
           price: (inv && inv.qty > 0) ? 0 : P().priceOf(part, state, { buy: true }),
           inStock: inv ? inv.qty : 0,
           meets: meetsMinPerf(part, need),                // §9.3
-          tasteMatch: tasteMatchesPart(job.taste, part)   // §9.2
+          tasteMatch: tasteMatchesPart(job.taste, part),  // §9.2
+          replaces: replaces,                             // §10.4
+          overspend: replaces ? marketVal > threshold : false
         };
         options.push(opt);
       }
       options.sort(function (a, b) { return a.price - b.price; });
+      // §10.3: what's currently assigned (stock vs ordered), unassignable until
+      // the install step completes.
+      var assigned = [];
+      var used = job.partsUsed || [];
+      for (var a = 0; a < used.length; a++) {
+        if (used[a].needIndex !== i) continue;
+        var ap = Engine.partById(used[a].partId);
+        assigned.push({ partId: used[a].partId,
+                        name: ap ? ap.name : used[a].partId,
+                        source: used[a].fromStock ? 'stock' : 'ordered' });
+      }
       out.push({ index: i, label: need.label, category: need.category,
-                 qty: need.qty, filled: need.filledPartIds.length, options: options });
+                 qty: need.qty, filled: need.filledPartIds.length,
+                 assigned: assigned, replaces: replaces, options: options });
     }
     return out;
   };
@@ -944,9 +982,20 @@
     return { ok: true, hours: h };
   }
 
-  Jobs.installPart = function (state, jobId, needIndex, partId) {
+  // Find the step that installs a given need (null if unmapped).
+  function installStepFor(job, needIndex) {
+    for (var i = 0; i < (job.steps || []).length; i++)
+      if (job.steps[i].needIndex === needIndex) return job.steps[i];
+    return null;
+  }
+
+  /* §10.3: ASSIGN a part to a need — reserves it from stock or orders it from
+   * the market (cash out now). The physical install happens when the matching
+   * step completes. installPart remains as a deprecated alias. */
+  Jobs.assignPart = function (state, jobId, needIndex, partId) {
     var job = Jobs.findActive(state, jobId);
     if (!job) return err('Job not active');
+    Jobs.ensureSteps(state, job);
     var idx = Number(needIndex);
     var need = job.needs[idx];
     if (!need) return err('No such part slot');
@@ -964,7 +1013,10 @@
     for (var u = 0; u < toFill; u++) {
       var inv = Engine.inventoryEntry(state, part.id);
       var chargePrice = P().priceOf(part, state); // customer-markup basis (undiscounted)
-      if (inv && inv.qty > 0) {
+      var fromStock = !!(inv && inv.qty > 0);
+      var stockCost = fromStock ? inv.avgCost : 0;
+      var paid = 0;
+      if (fromStock) {
         Engine.inventoryRemove(state, part.id, 1);
       } else {
         var buyPrice = P().priceOf(part, state, { buy: true });
@@ -977,8 +1029,9 @@
         Engine.addCash(state, -buyPrice);
         Engine.ledgerAdd(state, 'partsCost', buyPrice);
         spent = Engine.round2(spent + buyPrice);
+        paid = buyPrice;
       }
-      // ESD / handling mishap: part destroyed, must re-source (§5.5)
+      // ESD / handling mishap while prepping: part destroyed, must re-source (§5.5)
       if (Engine.chance(mishapP)) {
         mishaps++;
         if (state.shop.insurance) {
@@ -987,24 +1040,56 @@
           Engine.ledgerAdd(state, 'other', -refund);
         }
         Engine.pushNews(state, 'mishap', 'Static zap on the bench',
-          'A ' + part.name + ' died during installation' +
+          'A ' + part.name + ' died on the bench' +
           (state.shop.insurance ? ' — insurance covered most of it.' : '.'));
         continue;
       }
       need.filledPartIds.push(part.id);
       job.partsUsed = job.partsUsed || [];
-      job.partsUsed.push({ partId: part.id, price: chargePrice });
+      job.partsUsed.push({ partId: part.id, price: chargePrice, cost: paid,
+                           fromStock: fromStock, stockCost: stockCost,
+                           needIndex: idx });
       filledNow++;
-      // Refurb: swap the replacement into the machine
-      if (job.type === 'refurb' && job.machine && job.machine.faultPartIdx != null) {
-        job.machine.partIds[job.machine.faultPartIdx] = part.id;
-        job.machine.faultRepaired = true;
-        job.machine.specSummary = specSummaryFor(job.machine.partIds);
-      }
+      // §10.1: premium parts add bench time to their install step
+      if (part.tier === 'premium') nudgeStep(job, idx, C.PREMIUM_STEP_NUDGE);
     }
     return { ok: true, cost: spent, filledNow: filledNow,
              mishap: mishaps > 0, mishaps: mishaps,
              filled: need.filledPartIds.length, qty: need.qty };
+  };
+  Jobs.installPart = Jobs.assignPart;   // deprecated alias (one release, §10.3)
+
+  /* §10.3: UNASSIGN a part — returns it to inventory (ordered parts too; you
+   * own them). Allowed until the step that installs it has completed. */
+  Jobs.unassignPart = function (state, jobId, needIndex, partId) {
+    var job = Jobs.findActive(state, jobId);
+    if (!job) return err('Job not active');
+    var idx = Number(needIndex);
+    var need = job.needs[idx];
+    if (!need) return err('No such part slot');
+    if (!need.filledPartIds.length) return err('Nothing assigned to that slot');
+    var st = installStepFor(job, idx);
+    if (st && st.done) return err('Already installed — too late to unassign');
+    var pid = partId != null ? String(partId) :
+              need.filledPartIds[need.filledPartIds.length - 1];
+    var at = need.filledPartIds.lastIndexOf(pid);
+    if (at === -1) return err('That part is not assigned to this slot');
+    need.filledPartIds.splice(at, 1);
+    // Remove the matching reservation record & work out the inventory basis
+    var basis = 0, part = Engine.partById(pid);
+    var used = job.partsUsed || [];
+    for (var i = used.length - 1; i >= 0; i--) {
+      var e = used[i];
+      if (e.partId === pid && (e.needIndex === idx || e.needIndex == null)) {
+        basis = e.fromStock ? (e.stockCost || 0) :
+                (e.cost != null ? e.cost : (e.price || 0));
+        used.splice(i, 1);
+        break;
+      }
+    }
+    Engine.inventoryAdd(state, pid, 1, basis);
+    if (part && part.tier === 'premium') nudgeStep(job, idx, -CFG().PREMIUM_STEP_NUDGE);
+    return { ok: true, returned: pid, filled: need.filledPartIds.length, qty: need.qty };
   };
 
   // ------------------------------------------------------------------
@@ -1166,10 +1251,8 @@
     if (job.needsDiagnosis && !job.diagnosed) return 'Diagnose it first';
     if (isBuildJob(job) && job.build && !job.build.committed)
       return 'Configure and commit the build first';
-    for (var i = 0; i < job.needs.length; i++) {
-      if (job.needs[i].filledPartIds.length < job.needs[i].qty)
-        return 'Missing parts: ' + job.needs[i].label;
-    }
+    // §10.3: unassigned needs no longer block starting work — they block the
+    // install STEP instead (see workableStdHours).
     return null;
   }
 
@@ -1178,12 +1261,63 @@
     var m = C.SPEED[job.speed] ? C.SPEED[job.speed].hoursMult : 1;
     if (job.type === 'software')
       m *= Engine.equipEffects(state).softwareHoursMult;
+    m *= Engine.staffTimeMult(state, job.type);   // §10.7
     // Soft workstation cap: beyond slots on the same day => +50% hours (§2.5)
     var slots = Engine.tierInfo(state).workstationSlots;
     var worked = state.workedToday || [];
     if (worked.indexOf(job.id) === -1 && worked.length >= slots)
       m *= C.SOFT_CAP_HOURS_MULT;
     return m;
+  }
+
+  // §10.1/§10.3: standard-speed hours workable from the current step until the
+  // first install step whose need is not fully assigned.
+  function workableStdHours(job) {
+    var total = 0, blocked = false;
+    for (var i = job.stepIndex; i < job.steps.length; i++) {
+      var st = job.steps[i];
+      if (st.needIndex != null) {
+        var nd = job.needs[st.needIndex];
+        if (!nd || nd.filledPartIds.length < nd.qty) { blocked = true; break; }
+      }
+      total += st.hours * (1 - (st.progress || 0));
+    }
+    return { hours: total, blocked: blocked };
+  }
+
+  // Consume std-hours across the checklist; installs fire as steps complete.
+  function advanceSteps(state, job, stdHours) {
+    var left = stdHours + 1e-9;
+    while (left > 0 && job.stepIndex < job.steps.length) {
+      var st = job.steps[job.stepIndex];
+      if (st.needIndex != null) {
+        var nd = job.needs[st.needIndex];
+        if (!nd || nd.filledPartIds.length < nd.qty) break;   // blocked install
+      }
+      var rem = st.hours * (1 - (st.progress || 0));
+      if (left >= rem - 1e-9) {
+        left -= rem;
+        st.progress = 1; st.done = true;
+        if (st.needIndex != null) performInstall(state, job, st.needIndex);
+        job.stepIndex++;
+      } else {
+        st.progress = Math.min(1, (st.hours * (st.progress || 0) + left) / st.hours);
+        st.progress = Math.round(st.progress * 1000) / 1000;
+        left = 0;
+      }
+    }
+    recomputeHours(job);
+  }
+
+  // §10.3: the actual install — swap the replacement into the machine.
+  function performInstall(state, job, needIndex) {
+    var need = job.needs[needIndex];
+    if (!need || !need.filledPartIds.length) return;
+    if (job.machine && job.machine.faultPartIdx != null && !job.machine.faultRepaired) {
+      job.machine.partIds[job.machine.faultPartIdx] = need.filledPartIds[0];
+      job.machine.faultRepaired = true;
+      job.machine.specSummary = specSummaryFor(job.machine.partIds);
+    }
   }
 
   Jobs.workJob = function (state, jobId, hours) {
@@ -1214,8 +1348,15 @@
       return { ok: true, hoursSpent: 0, completed: false, mishap: true, mishapKind: 'crt' };
     }
 
+    Jobs.ensureSteps(state, job);   // migrated saves get a checklist lazily
     var m = effectiveMult(state, job);
-    var remainingEff = Math.max(0, (job.hoursRequired - job.hoursDone) * m);
+    // §10.1/§10.3: work runs the checklist; an unassigned install step blocks.
+    var wk = workableStdHours(job);
+    if (wk.hours <= 1e-9) {
+      return err(wk.blocked ? 'Assign a replacement part first'
+                            : 'Nothing left to work on');
+    }
+    var remainingEff = Math.max(0, wk.hours * m);
     var want = (hours == null) ? remainingEff : Math.max(0, Number(hours) || 0);
     // Default sessions stop at the regular day's end; explicit hour requests may
     // dip into overtime down to the -overtimeCap floor (§9.4).
@@ -1226,15 +1367,14 @@
     if (spend < 0.5) return err('Not enough time for a work session');
 
     state.hoursLeft = Engine.round2(state.hoursLeft - spend);
-    job.hoursDone = Math.min(job.hoursRequired,
-                             Engine.round2(job.hoursDone + spend / m) * 1);
+    advanceSteps(state, job, spend / m);   // also recomputes hoursDone
     state.workedToday = state.workedToday || [];
     if (state.workedToday.indexOf(job.id) === -1) state.workedToday.push(job.id);
     if (job.perUnitHours) {
       job.unitsDone = Math.min(job.units, Math.floor(job.hoursDone / job.perUnitHours));
     }
 
-    var completed = job.hoursDone >= job.hoursRequired - 1e-9;
+    var completed = job.stepIndex >= job.steps.length;
     var result = null;
     if (completed) result = completeJob(state, job);
     return { ok: true, hoursSpent: spend, completed: completed, result: result };
@@ -1329,6 +1469,32 @@
                      '% (' + Engine.fmtMoney(payout - before) + ')');
         }
       }
+      // §10.4: overspend grumble — replacing a part with something far pricier
+      // than what died. Waived for matching tastes (fanboys) and enthusiasts.
+      if (job.type !== 'enthusiast') {
+        for (var ov = 0; ov < job.needs.length; ov++) {
+          var nd = job.needs[ov];
+          if (!nd.originalPartId || !nd.filledPartIds.length) continue;
+          var orig = Engine.partById(nd.originalPartId);
+          if (!orig) continue;
+          var origVal = P().priceOf(orig, state);
+          var thresh = Math.max(C.OVERSPEND_MULT * origVal,
+                                origVal + Engine.laborRate(year));
+          var usedList = job.partsUsed || [];
+          for (var ou = 0; ou < usedList.length; ou++) {
+            var ue = usedList[ou];
+            if (ue.needIndex != null && ue.needIndex !== ov) continue;
+            if (nd.filledPartIds.indexOf(ue.partId) === -1) continue;
+            if (ue.price <= thresh) continue;
+            var uePart = Engine.partById(ue.partId);
+            if (tasteMatchesPart(job.taste, uePart)) continue;   // fanboy waiver
+            score -= C.OVERSPEND_SCORE;
+            notes.push('"Did it really need a ' + Engine.fmtMoney(ue.price) +
+                       ' part? The old one was worth ' + Engine.fmtMoney(origVal) + '..."');
+            break;   // one grumble per slot
+          }
+        }
+      }
       if (isBuildJob(job) && job.build) {
         // Build pay = budget; bonuses for overdelivering (§5.5)
         var mp = job.build.minPerf || {};
@@ -1356,14 +1522,19 @@
       }
     }
 
+    if (job.units > 1) job.unitsDone = job.units;
     score = Engine.clamp(score, 0, 5);
     Engine.pushScore(state, score);
     state.reputation.jobsCompleted++;
     state.ledger.lifetime.jobsCompleted++;
 
-    // Warranty callback roll (§5.5) — real customer work only
+    // Warranty callback roll — §10.2 risk matrix: base + perDiff x difficulty
+    // (ESD setup softens the difficulty term), x reliability x test-bench.
     if (job.type !== 'callback' && !drFailed) {
-      var cb = speed.callbackBase * avgReliabilityFactor(job) *
+      var mtx = C.CALLBACK_MATRIX[job.speed] || C.CALLBACK_MATRIX.standard;
+      var esdTerm = Engine.equipmentOwned(state, 'esd-setup') ? C.ESD_DIFF_TERM_MULT : 1;
+      var cb = (mtx.base + mtx.perDiff * (job.difficulty || 2) * esdTerm) *
+               avgReliabilityFactor(job) *
                Engine.equipEffects(state).callbackMult;
       cb = Engine.clamp(cb, C.CALLBACK_MIN, C.CALLBACK_MAX);
       var fired = Engine.chance(cb);
@@ -1447,15 +1618,19 @@
           blurb: '"It is doing it again."',
           customer: { name: 'Returning customer', type: 'home' },
           pay: 0,
-          offeredDay: state.day, deadlineDay: state.day + 3,
+          offeredDay: state.day,
+          deadlineDay: Jobs.shiftOffSunday(state, state.day + 3),   // §10.6
           difficulty: 2, speed: 'standard', status: 'active',
           hoursRequired: Math.max(0.5, Engine.round2((e.origHours || 2) * C.CALLBACK_HOURS_FRACTION)),
           hoursDone: 0,
+          steps: [], stepIndex: 0,
           diagnosed: true, needsDiagnosis: false,
           fault: null, needs: [], build: null,
-          units: 1, unitsDone: 0, machine: null, drTier: 0, crt: false,
+          units: 1, unitsDone: 0, machine: null, peripheral: null,
+          drTier: 0, crt: false,
           taste: null, result: null
         };
+        assembleSteps(state, job);   // §10.1 (callback template or fallback)
         state.jobs.active.push(job);      // auto-accepted, pay 0
         state.reputation.callbacks++;
         Engine.pushScore(state, C.CALLBACK_ARRIVAL_SCORE);  // rep ding on arrival
@@ -1508,29 +1683,9 @@
   function generateMachine(state) {
     var C = CFG();
     var year = Engine.currentYear(state);
-    var mobos = purchasableByCategory(state, 'motherboard').filter(function (m) {
-      return year - m.introYear <= C.ASIS_MAX_AGE_YEARS;
-    });
-    if (!mobos.length) mobos = purchasableByCategory(state, 'motherboard');
-    var mobo = Engine.pick(mobos);
-    if (!mobo) return null;
-    var partIds = [mobo.id];
-    var cats = ['cpu', 'ram', 'storage', 'psu', 'case'];
-    for (var c = 0; c < cats.length; c++) {
-      var options = purchasableByCategory(state, cats[c]).filter(function (p) {
-        return Engine.Compat.fits(p, mobo).fits;
-      });
-      var part = Engine.pick(options);
-      if (!part) return null; // can't assemble an era machine
-      partIds.push(part.id);
-    }
-    if (!mobo.integratedVideo) {
-      var gpus = purchasableByCategory(state, 'gpu').filter(function (p) {
-        return Engine.Compat.fits(p, mobo).fits;
-      });
-      var gpu = Engine.pick(gpus);
-      if (gpu) partIds.push(gpu.id);
-    }
+    var built = assembleMachineParts(state);
+    if (!built) return null;
+    var partIds = built.partIds, mobo = built.mobo;
     // Fault: usually one dead part (never the board — replacements must fit it)
     var faultIdx = null;
     if (Engine.chance(0.75)) {
@@ -1625,8 +1780,9 @@
       offeredDay: state.day, deadlineDay: null,
       difficulty: faultPart ? 3 : 2,
       speed: 'standard', status: 'active',
-      hoursRequired: Engine.randInt(C.REFURB_HOURS_MIN, C.REFURB_HOURS_MAX),
+      hoursRequired: (C.REFURB_HOURS_MIN + C.REFURB_HOURS_MAX) / 2,  // fallback sizing
       hoursDone: 0,
+      steps: [], stepIndex: 0,
       diagnosed: false, needsDiagnosis: true,
       fault: faultPart ?
         { desc: 'Dead ' + faultPart.name, partCategory: faultPart.category,
@@ -1640,25 +1796,30 @@
                  faultPartIdx: machine.faultPartIdx, condition: null,
                  faultRepaired: false,
                  specSummary: machine.specSummary || specSummaryFor(machine.partIds) },
-      drTier: 0, crt: false, taste: null, result: null
+      peripheral: null, drTier: 0, crt: false, taste: null, result: null
     };
+    assembleSteps(state, job);                       // §10.1
+    job.difficulty = deriveDifficulty(state, job);   // §10.2
     state.jobs.active.push(job);
     return { ok: true, jobId: job.id };
   };
 
-  // §9.5: component list for a refurb job's machine. The fault slot stays
-  // "unknown" until diagnosed, then "faulty" until a replacement goes in.
+  /* §10.4 knowledge model: before diagnosis EVERY component reads "unknown" —
+   * you haven't opened the box yet (fixes the v0.2 refurb bug). After
+   * diagnosis the fault part is "faulty", the rest "ok". Jobs that need no
+   * diagnosis (upgrades) show all ok. Works for repair/upgrade/refurb. */
   Jobs.getMachineParts = function (state, jobId) {
     var job = Jobs.findActive(state, jobId);
-    if (!job || job.type !== 'refurb' || !job.machine) return [];
+    if (!job || !job.machine) return [];
+    var preDiagnosis = job.needsDiagnosis && !job.diagnosed;
     var out = [];
     for (var i = 0; i < job.machine.partIds.length; i++) {
       var part = Engine.partById(job.machine.partIds[i]);
       if (!part) continue;
       var status = 'ok';
-      if (job.machine.faultPartIdx === i && !job.machine.faultRepaired) {
-        status = job.diagnosed ? 'faulty' : 'unknown';
-      }
+      if (preDiagnosis) status = 'unknown';
+      else if (job.fault && job.machine.faultPartIdx === i && !job.machine.faultRepaired)
+        status = 'faulty';
       out.push({ partId: part.id, name: part.name, category: part.category,
                  status: status, value: P().priceOf(part, state) });
     }
@@ -1673,7 +1834,9 @@
     var job = Jobs.findActive(state, jobId);
     if (!job || job.type !== 'refurb' || !job.machine) return err('Not a refurb job');
     if (job.status === 'sold') return err('Already sold');
-    var spent = Engine.spendHours(state, C.STRIP_HOURS);
+    var stripHours = Math.max(0.25, Engine.round2(
+      C.STRIP_HOURS * Engine.staffTimeMult(state, 'refurb')));   // §10.7
+    var spent = Engine.spendHours(state, stripHours);
     if (!spent.ok) return spent;
     var survival = Engine.equipmentOwned(state, 'esd-setup') ?
         C.STRIP_SURVIVAL_ESD : C.STRIP_SURVIVAL;
@@ -1695,7 +1858,7 @@
       recovered.length + ' part' + (recovered.length === 1 ? '' : 's') +
       ' recovered into inventory' +
       (lost.length ? ', ' + lost.length + ' lost' : '') + '.');
-    return { ok: true, recovered: recovered, lost: lost, hoursSpent: C.STRIP_HOURS };
+    return { ok: true, recovered: recovered, lost: lost, hoursSpent: stripHours };
   };
 
   function refurbEstimate(state, job) {

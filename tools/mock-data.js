@@ -214,6 +214,118 @@
       desc: 'Callback rate down 40%.', effects: { callbackMult: 0.6 } }
   ];
 
+  // §10.1 step templates (compact but real-shaped: wildcards + era windows + conds)
+  DATA.TASK_STEPS = [
+    { type: 'repair', partCategory: null, subtype: null, minYear: null, maxYear: null,
+      steps: [
+        { label: 'Interview customer & log symptoms', hours: 0.25 },
+        { label: 'Open case & ground yourself', hours: 0.25 },
+        { label: 'Reseat, clean & correct the fault', hours: 0.75 },
+        { label: 'Set jumpers & CMOS options', hours: 0.25, maxYear: 1997 },
+        { label: 'POST test & button up', hours: 0.5 }
+      ] },
+    { type: 'repair', partCategory: 'storage', subtype: null, minYear: null, maxYear: null,
+      steps: [
+        { label: 'Back up readable data first', hours: 0.5 },
+        { label: 'Open case & ground yourself', hours: 0.25 },
+        { label: 'Swap the drive', hours: 0.5 },
+        { label: 'Low-level format & verify', hours: 0.5, maxYear: 1992 },
+        { label: 'Restore data & test', hours: 0.5 }
+      ] },
+    { type: 'upgrade', partCategory: null, subtype: null, minYear: null, maxYear: null,
+      steps: [
+        { label: 'Confirm compatibility & clearances', hours: 0.25 },
+        { label: 'Install the new part', hours: 0.5 },
+        { label: 'Update drivers & configuration', hours: 0.25, minYear: 1995 },
+        { label: 'Burn-in & hand-off', hours: 0.5 }
+      ] },
+    { type: 'software', partCategory: null, subtype: null, minYear: null, maxYear: null,
+      steps: [
+        { label: 'Back up user files', hours: 0.5 },
+        { label: 'Install & configure software', hours: 0.75 },
+        { label: 'Verify boot & applications', hours: 0.25 }
+      ] },
+    { type: 'cleaning', partCategory: null, subtype: null, minYear: null, maxYear: null,
+      steps: [
+        { label: 'Blow out dust & vacuum filters', hours: 0.25 },
+        { label: 'Clean contacts & fans', hours: 0.25 },
+        { label: 'Reassemble & smoke test', hours: 0.25 }
+      ] },
+    { type: 'peripheral', partCategory: null, subtype: 'crt', minYear: null, maxYear: null,
+      steps: [
+        { label: 'Discharge the tube safely', hours: 0.25, cond: 'crt-kit' },
+        { label: 'Open chassis & inspect boards', hours: 0.5 },
+        { label: 'Repair fault & re-solder joints', hours: 0.75 },
+        { label: 'Calibrate & soak test', hours: 0.5 }
+      ] },
+    { type: 'peripheral', partCategory: null, subtype: null, minYear: null, maxYear: null,
+      steps: [
+        { label: 'Strip down & inspect', hours: 0.5 },
+        { label: 'Replace worn mechanism', hours: 0.5 },
+        { label: 'Reassemble & test feed', hours: 0.5 }
+      ] },
+    { type: 'data_recovery', partCategory: null, subtype: null, minYear: null, maxYear: null,
+      steps: [
+        { label: 'Image the failing media', hours: 1 },
+        { label: 'Reconstruct file tables', hours: 1 },
+        { label: 'Verify & deliver recovered data', hours: 0.5 }
+      ] },
+    { type: 'build', partCategory: null, subtype: null, minYear: null, maxYear: null,
+      steps: [
+        { label: 'Lay out parts & prep case', hours: 0.5 },
+        { label: 'Mount board, CPU & memory', hours: 1 },
+        { label: 'Fit drives, PSU & cards', hours: 1 },
+        { label: 'Cable up & first POST', hours: 0.5 },
+        { label: 'Install OS & drivers', hours: 1 },
+        { label: 'Benchmark & stability pass', hours: 0.5, minYear: 1997 }
+      ] },
+    { type: 'enthusiast', partCategory: null, subtype: null, minYear: null, maxYear: null,
+      steps: [
+        { label: 'Baseline benchmarks', hours: 0.5 },
+        { label: 'Fit upgraded cooling', hours: 0.5 },
+        { label: 'Tune clocks & voltages', hours: 0.75 },
+        { label: 'Stress test overnight pass', hours: 0.5 }
+      ] },
+    { type: 'refurb', partCategory: null, subtype: null, minYear: null, maxYear: null,
+      steps: [
+        { label: 'Strip, clean & inventory the box', hours: 1 },
+        { label: 'Swap the dead part', hours: 1 },
+        { label: 'Reassemble & configure', hours: 1 },
+        { label: 'Burn-in before sale', hours: 1 }
+      ] },
+    { type: 'contract', partCategory: null, subtype: null, minYear: null, maxYear: null,
+      steps: [
+        { label: 'Prep unit on the bench', hours: 0.5 },
+        { label: 'Install per-unit hardware', hours: 0.5 },
+        { label: 'Configure & QA to spec', hours: 0.5 }
+      ] },
+    { type: 'callback', partCategory: null, subtype: null, minYear: null, maxYear: null,
+      steps: [
+        { label: 'Review original work ticket', hours: 0.25 },
+        { label: 'Reproduce & rework the fault', hours: 0.75 },
+        { label: 'Extended test before return', hours: 0.5 }
+      ] }
+  ];
+
+  // §10.7 staff roles (ids match the engine fallbacks / real data)
+  DATA.STAFF_ROLES = [
+    { id: 'tech', name: 'Technician',
+      desc: 'Bench work: repairs, upgrades, refurbs, peripherals, cleaning.',
+      jobTypes: ['repair', 'upgrade', 'refurb', 'peripheral', 'cleaning', 'callback'],
+      wageFactor: 1 },
+    { id: 'software', name: 'Software Specialist',
+      desc: 'OS installs, virus cleanup, data recovery.',
+      jobTypes: ['software', 'data_recovery'], wageFactor: 1.05 },
+    { id: 'builder', name: 'Builder',
+      desc: 'Custom builds, contracts, enthusiast work.',
+      jobTypes: ['build', 'contract', 'enthusiast'], wageFactor: 1.1 },
+    { id: 'apprentice', name: 'Apprentice',
+      desc: 'Helps with everything at half effect. Cheap.',
+      jobTypes: ['repair', 'upgrade', 'refurb', 'peripheral', 'cleaning', 'callback',
+                 'software', 'data_recovery', 'build', 'contract', 'enthusiast'],
+      wageFactor: 0.5 }
+  ];
+
   DATA.HISTORICAL_EVENTS = [
     { id: 'dram-1988', startDate: '1988-01-15', durationDays: 420,
       headline: 'DRAM shortage bites: memory prices triple',
@@ -270,38 +382,74 @@
     ],
     faults: {
       ram: [
-        { desc: 'Random crashes and parity errors', laborHours: 1 },
-        { desc: 'Memory count comes up short at POST', laborHours: 2 }
+        { desc: 'Random crashes and parity errors', laborHours: 1,
+          complaints: ['"It crashes at random moments, no pattern at all."',
+                       '"Sometimes it locks up with a weird beep."'] },
+        { desc: 'Memory count comes up short at POST', laborHours: 2,
+          complaints: ['"The number it shows at startup got smaller."',
+                       '"It says something about memory when it boots."'] }
       ],
       storage: [
-        { desc: 'Drive grinds and fails to spin up', laborHours: 2 },
-        { desc: 'Read errors all over the disk', laborHours: 2 }
+        { desc: 'Drive grinds and fails to spin up', laborHours: 2,
+          complaints: ['"It makes a horrible grinding noise and gives up."',
+                       '"There is a clunk-clunk sound and nothing loads."'] },
+        { desc: 'Read errors all over the disk', laborHours: 2,
+          complaints: ['"Half my files will not open anymore."',
+                       '"It keeps saying error reading drive."'] }
       ],
       gpu: [
-        { desc: 'Garbage characters all over the screen', laborHours: 1 },
-        { desc: 'No video signal at power-on', laborHours: 2 }
+        { desc: 'Garbage characters all over the screen', laborHours: 1,
+          complaints: ['"The screen fills with confetti nonsense."',
+                       '"Everything on screen looks scrambled."'] },
+        { desc: 'No video signal at power-on', laborHours: 2,
+          complaints: ['"The screen stays black but the fans run."',
+                       '"It powers on but shows nothing at all."'] }
       ],
       psu: [
-        { desc: 'Dead — no fan, no lights', laborHours: 1 },
-        { desc: 'Random reboots under load', laborHours: 2 }
+        { desc: 'Dead — no fan, no lights', laborHours: 1,
+          complaints: ['"It is completely dead. Nothing. Silence."',
+                       '"No lights, no fan, no anything."'] },
+        { desc: 'Random reboots under load', laborHours: 2,
+          complaints: ['"It restarts itself whenever I do real work."',
+                       '"It reboots out of nowhere, mostly when busy."'] }
       ],
       motherboard: [
-        { desc: 'No POST, no beeps', laborHours: 3 },
-        { desc: 'Intermittent lockups, swollen caps', laborHours: 3 }
+        { desc: 'No POST, no beeps', laborHours: 3,
+          complaints: ['"It powers up but never gets anywhere."',
+                       '"No beep, no picture, just fans."'] },
+        { desc: 'Intermittent lockups, swollen caps', laborHours: 3,
+          complaints: ['"It freezes a few times a day, then works fine."',
+                       '"Some days fine, some days it just stops."'] }
       ],
       cpu: [
-        { desc: 'Halts during boot, overheating CPU', laborHours: 2 }
+        { desc: 'Halts during boot, overheating CPU', laborHours: 2,
+          complaints: ['"It gets partway through starting and stops."',
+                       '"It boots, runs a minute, then freezes solid."'] }
       ],
       cooling: [
-        { desc: 'Screaming fan bearing, thermal shutdowns', laborHours: 1 }
+        { desc: 'Screaming fan bearing, thermal shutdowns', laborHours: 1,
+          complaints: ['"It sounds like a jet engine, then turns off."',
+                       '"The fan screams and then it shuts itself down."'] }
       ],
       laborOnly: [
-        { desc: 'Loose seating on expansion cards', laborHours: 1 },
-        { desc: 'Corroded edge connectors need cleaning', laborHours: 2 },
-        { desc: 'Cable mixed up after a move', laborHours: 1 },
-        { desc: 'BIOS settings scrambled', laborHours: 1 },
-        { desc: 'Jammed floppy eject mechanism', laborHours: 1 },
-        { desc: 'Dust-choked and overheating', laborHours: 1 }
+        { desc: 'Loose seating on expansion cards', laborHours: 1,
+          complaints: ['"It works if I wiggle it. That is bad, right?"',
+                       '"A thump on the desk fixes it. Usually."'] },
+        { desc: 'Corroded edge connectors need cleaning', laborHours: 2,
+          complaints: ['"It has been flaky ever since the damp winter."',
+                       '"Sometimes the keyboard just is not there."'] },
+        { desc: 'Cable mixed up after a move', laborHours: 1,
+          complaints: ['"It has not worked since we moved offices."',
+                       '"My nephew rearranged the plugs. Sorry."'] },
+        { desc: 'BIOS settings scrambled', laborHours: 1,
+          complaints: ['"It asks strange questions when it starts now."',
+                       '"The date resets and then it will not boot right."'] },
+        { desc: 'Jammed floppy eject mechanism', laborHours: 1,
+          complaints: ['"The disk went in and never came back out."',
+                       '"There might be two disks in there. Maybe three."'] },
+        { desc: 'Dust-choked and overheating', laborHours: 1,
+          complaints: ['"It gets hot and slow by the afternoon."',
+                       '"It smells warm. Is that normal? It is not, is it."'] }
       ]
     },
     machineAdjectives: ['dusty', 'smoke-stained', 'barn-find', 'office-surplus'],
@@ -344,9 +492,29 @@
       ]
     },
     peripheralItems: [
-      { name: 'dot-matrix printer', minYear: 1979, maxYear: 1996 },
-      { name: 'CRT monitor', minYear: 1979, maxYear: 2006, crt: true },
-      { name: 'inkjet printer', minYear: 1990 }
+      { name: 'dot-matrix printer', minYear: 1979, maxYear: 1996, kind: 'printer',
+        complaints: ['"It eats every third sheet of paper."',
+                     '"The printing goes faint then stops mid-page."'],
+        faultDescs: ['Worn platen feed rollers', 'Print head pins jammed with ink'] },
+      { name: 'CRT monitor', minYear: 1979, maxYear: 2006, crt: true, kind: 'crt',
+        complaints: ['"The picture shrinks and flickers and hums."',
+                     '"It smells hot and the picture bends sideways."'],
+        faultDescs: ['Dried-out flyback joints need re-soldering',
+                     'Failing capacitors in the deflection board'] },
+      { name: 'inkjet printer', minYear: 1990, kind: 'printer',
+        complaints: ['"It prints stripes instead of words."',
+                     '"Everything comes out the wrong colour."'],
+        faultDescs: ['Clogged print head & dried ink lines',
+                     'Failed carriage position sensor'] },
+      { name: 'external modem', minYear: 1983, maxYear: 2004, kind: 'modem',
+        complaints: ['"It dials, screams, then gives up."',
+                     '"It has not connected since the thunderstorm."'],
+        faultDescs: ['Lightning-struck line driver chip', 'Cooked voltage regulator'] },
+      { name: 'mechanical keyboard', minYear: 1979, kind: 'input',
+        complaints: ['"Some keys need a real hammer blow to work."',
+                     '"The spacebar sticks and repeats forever."'],
+        faultDescs: ['Corroded switch contacts under the worst keys',
+                     'Cracked solder joints on the controller row'] }
     ],
     shopNameSuggestions: ['Circuit & Solder', 'Byte Works']
   };

@@ -204,4 +204,76 @@
   Pricing.getPriceHistory = function (state, partId) {
     return (state.market.hist[partId] || []).slice();
   };
+
+  // ------------------------------------------------------------------
+  // Part Wiki (§9.7)
+  // ------------------------------------------------------------------
+  // Lifecycle status: new -> current -> fading -> (post-EOL) scarce|legacy.
+  Pricing.partStatus = function (part, state) {
+    var y = Engine.yearFloat(state.day, state);
+    var intro = introYearFloat(part);
+    if (y < intro) return null;
+    if ((y - intro) * 365.25 < Engine.CONFIG.NEW_BADGE_DAYS) return 'new';
+    var eol = part.eolYear || part.introYear + 1;
+    if (y <= eol) {
+      var L = Math.max(1, eol - part.introYear);
+      return y >= part.introYear + 0.75 * L ? 'fading' : 'current';
+    }
+    return isLegacy(part) ? 'scarce' : 'legacy';
+  };
+
+  // Era-appropriate knowledge: only released parts have a wiki entry.
+  Pricing.getPartInfo = function (state, partId) {
+    var part = typeof partId === 'string' ? Engine.partById(partId) : partId;
+    if (!part || !state || !Pricing.isReleased(part, state)) return null;
+    var tags = (part.platformTags || []).slice();
+    var h = state.market.hist[part.id] || [];
+    var price = Pricing.priceOf(part, state);
+    var change30 = 0;
+    if (h.length >= 2 && h[0] > 0)
+      change30 = Engine.round2(100 * (price - h[0]) / h[0]);
+    var inv = Engine.inventoryEntry(state, part.id);
+    return {
+      partId: part.id, name: part.name, brand: part.brand || null,
+      category: part.category, tier: part.tier || 'mainstream',
+      tags: tags,
+      tagLabels: tags.map(Engine.tagLabel),
+      perf: part.perf || {},
+      reliability: part.reliability || 0,
+      powerDraw: part.powerDraw || 0,
+      watts: part.watts || 0,
+      introYear: part.introYear, eolYear: part.eolYear || part.introYear + 1,
+      desc: part.desc || '',
+      status: Pricing.partStatus(part, state),
+      price: price, change30: change30,
+      spark: h.slice(-14),
+      inStockQty: inv ? inv.qty : 0
+    };
+  };
+
+  var WIKI_CAT_ORDER = ['cpu', 'motherboard', 'ram', 'storage', 'gpu', 'psu',
+                        'case', 'cooling', 'os', 'peripheral'];
+  Pricing.getWiki = function (state, filter) {
+    filter = filter || {};
+    var parts = (Engine.getData().PARTS) || [];
+    var search = filter.search ? String(filter.search).toLowerCase() : null;
+    var out = [];
+    for (var i = 0; i < parts.length; i++) {
+      var part = parts[i];
+      if (!Pricing.isReleased(part, state)) continue;
+      if (filter.category && part.category !== filter.category) continue;
+      if (search &&
+          part.name.toLowerCase().indexOf(search) === -1 &&
+          String(part.brand || '').toLowerCase().indexOf(search) === -1 &&
+          part.id.indexOf(search) === -1) continue;
+      out.push(Pricing.getPartInfo(state, part));
+    }
+    out.sort(function (a, b) {
+      var ca = WIKI_CAT_ORDER.indexOf(a.category), cb = WIKI_CAT_ORDER.indexOf(b.category);
+      if (ca !== cb) return ca - cb;
+      if (a.introYear !== b.introYear) return a.introYear - b.introYear;
+      return a.name < b.name ? -1 : 1;
+    });
+    return out;
+  };
 })(typeof window !== 'undefined' ? window : globalThis);

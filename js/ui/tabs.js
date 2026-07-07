@@ -1,12 +1,16 @@
 /* ==========================================================================
  * Circuit & Solder: PC Shop Tycoon — js/ui/tabs.js
- * Renderers + delegated event handling for the 8 main tabs:
- * Offers, Workbench (incl. As-Is Market), Inventory, Parts Market,
- * Shop, Ledger, News, Save/Load.
+ * Renderers + delegated event handling for the 9 main tabs (§9.10 order):
+ * Offers, Workbench (incl. As-Is Market), Inventory, Parts Market, Wiki,
+ * Shop, Ledger, News, System (save/settings; tab id stays "save").
  *
  * Pattern: each render replaces the panel's innerHTML; exactly three
  * delegated listeners (click/change/input) live on #tab-panels forever,
  * so re-renders never leak listeners.
+ * v2: taste chips & matches (§9.2), minPerf greying (§9.3), refurb
+ * components / strip-for-parts (§9.5), Part Wiki + ⓘ popovers (§9.7),
+ * zoom & volume settings (§9.8/§9.9) — all feature-detected so the UI
+ * degrades gracefully while the engine lands.
  * ========================================================================== */
 (function () {
   'use strict';
@@ -46,6 +50,13 @@
 
   var marketTimer = null;
   var refocusMarketSearch = false;
+  var wikiTimer = null;
+  var refocusWikiSearch = false;
+
+  /** Feature-detection for v2 engine APIs still landing (§9). */
+  function has(fnName) {
+    return !!(window.Engine && typeof Engine[fnName] === 'function');
+  }
 
   /* ------------------------------------------------------------------ *
    * Render dispatch
@@ -56,6 +67,7 @@
     workbench: renderWorkbench,
     inventory: renderInventory,
     market: renderMarket,
+    wiki: renderWiki,
     shop: renderShop,
     ledger: renderLedger,
     news: renderNews,
@@ -68,11 +80,31 @@
     if (!panel || !fn) return;
     try {
       fn(panel);
+      runBarAnimations(panel);
     } catch (e) {
       if (window.console && console.error) console.error(e);
       panel.innerHTML = '<div class="error-box">Could not render this tab: ' + esc(e && e.message) + '</div>';
     }
   };
+
+  /* §9.9 — progress bars animate: bars carrying data-animw start at their
+   * previous render's width and transition to the new one. */
+  var prevBarPct = {};
+  function animatedBar(key, val, max, cls) {
+    var p = (Number(max) > 0) ? Math.max(0, Math.min(100, (Number(val) || 0) / Number(max) * 100)) : 0;
+    var from = (prevBarPct[key] !== undefined) ? prevBarPct[key] : p;
+    prevBarPct[key] = p;
+    return '<span class="bar ' + (cls || '') + '"><i data-animw="' + p.toFixed(1) + '" style="width:' + from.toFixed(1) + '%"></i></span>';
+  }
+  function runBarAnimations(panel) {
+    var els = panel.querySelectorAll('.bar i[data-animw]');
+    if (!els.length) return;
+    window.requestAnimationFrame(function () {
+      for (var i = 0; i < els.length; i++) {
+        els[i].style.width = els[i].getAttribute('data-animw') + '%';
+      }
+    });
+  }
 
   /* ------------------------------------------------------------------ *
    * Delegated events (bound once from UI.init)
@@ -101,23 +133,26 @@
 
     switch (action) {
       /* ---- Offers ---- */
-      case 'accept':
-        UI.api(tryCall(function () { return Engine.acceptOffer(jobId); }), 'Job accepted — it is on your Workbench');
+      case 'accept': {
+        var ac = UI.act(function () { return Engine.acceptOffer(jobId); }, 'Job accepted — it is on your Workbench');
+        if (ac && ac.ok !== false && UI.audio && UI.audio.sfx) UI.audio.sfx('accept');
         break;
-      case 'decline':
-        UI.api(tryCall(function () { return Engine.declineOffer(jobId); }));
+      }
+      case 'decline': {
+        var dc = UI.act(function () { return Engine.declineOffer(jobId); });
+        if (dc && dc.ok !== false && UI.audio && UI.audio.sfx) UI.audio.sfx('decline');
         break;
+      }
 
       /* ---- Workbench ---- */
       case 'diagnose': {
-        var dr = tryCall(function () { return Engine.diagnoseJob(jobId); });
+        var dr = UI.act(function () { return Engine.diagnoseJob(jobId); });
         if (dr && dr.ok !== false && dr.fault) {
           UI.toast('Diagnosis (' + (dr.hoursSpent != null ? dr.hoursSpent + 'h' : 'done') + '): ' +
             (dr.fault.desc || 'fault found') +
             (dr.fault.partCategory ? ' — needs a ' + (CAT_LABELS[dr.fault.partCategory] || dr.fault.partCategory) + ' part' : ' — labor only'),
             'info', 6500);
         }
-        UI.api(dr);
         break;
       }
       case 'work1':
@@ -126,15 +161,27 @@
       case 'workall':
         workAndReport(jobId, null);
         break;
-      case 'abandon': {
-        var isRefurb = el.getAttribute('data-refurb') === '1';
+      case 'abandon':
         UI.confirm(
-          isRefurb
-            ? 'Abandon this refurb? The machine is scrapped for a fraction of its parts value and your reputation takes a hit.'
-            : 'Abandon this job? The customer will not be happy — your reputation takes a hit.',
-          function () { UI.api(tryCall(function () { return Engine.abandonJob(jobId); }), 'Job abandoned'); },
+          'Abandon this job? The customer will not be happy — your reputation takes a hit.',
+          function () { UI.act(function () { return Engine.abandonJob(jobId); }, 'Job abandoned'); },
           { yesLabel: 'Abandon job', title: 'Abandon job' }
         );
+        break;
+      case 'strip': { /* §9.5 refurb strip-for-parts */
+        var salvage = [];
+        if (has('getMachineParts')) {
+          arr(tryCall(function () { return Engine.getMachineParts(jobId); })).forEach(function (p) {
+            if (p && p.status !== 'faulty') salvage.push(p.name);
+          });
+        }
+        var msg = 'Strip this machine for parts? Takes 1.5h. ' +
+          (salvage.length
+            ? 'Expected salvage (most survive the bench): ' + salvage.join(', ') + '.'
+            : 'Working parts roll into your inventory; the faulty one is lost.');
+        UI.confirm(msg, function () {
+          UI.act(function () { return Engine.stripRefurb(jobId); }, 'Machine stripped — salvage moved to inventory');
+        }, { yesLabel: 'Strip for Parts', title: 'Strip for parts' });
         break;
       }
       case 'install': {
@@ -142,20 +189,18 @@
         var sel = document.getElementById('need-sel-' + jobId + '-' + needIdx);
         var pid = sel && sel.value;
         if (!pid) { UI.toast('Pick a part first', 'info'); break; }
-        var ir = tryCall(function () { return Engine.installPart(jobId, needIdx, pid); });
+        var ir = UI.act(function () { return Engine.installPart(jobId, needIdx, pid); });
         if (ir && ir.ok !== false) {
-          var msg = 'Part installed';
-          if (ir.cost) msg += ' — ' + fm(ir.cost);
-          if (ir.filledNow !== null && ir.filledNow !== undefined) msg += ' (' + ir.filledNow + ' filled this batch)';
-          UI.toast(msg, 'success');
+          var msg2 = 'Part installed';
+          if (ir.cost) msg2 += ' — ' + fm(ir.cost);
+          if (ir.filledNow !== null && ir.filledNow !== undefined) msg2 += ' (' + ir.filledNow + ' filled this batch)';
+          UI.toast(msg2, 'success');
         }
-        UI.api(ir);
         break;
       }
       case 'sell-refurb': {
-        var sr = tryCall(function () { return Engine.sellRefurb(jobId); });
+        var sr = UI.act(function () { return Engine.sellRefurb(jobId); });
         if (sr && sr.ok !== false) UI.toast('Machine sold for ' + fm(sr.price), 'success', 5000);
-        UI.api(sr);
         break;
       }
       case 'appraise': {
@@ -165,12 +210,12 @@
         break; // read-only — no refresh needed
       }
       case 'commit-build':
-        UI.api(tryCall(function () { return Engine.commitBuild(jobId); }),
+        UI.act(function () { return Engine.commitBuild(jobId); },
           'Build locked in — parts sourced. Work the job to assemble it.');
         break;
       case 'buy-asis': {
         var mid = el.getAttribute('data-machine');
-        UI.api(tryCall(function () { return Engine.buyAsIsMachine(mid); }),
+        UI.act(function () { return Engine.buyAsIsMachine(mid); },
           'Machine bought — it is on your Workbench as a refurb job');
         break;
       }
@@ -179,9 +224,8 @@
       case 'sell-part': {
         var spid = el.getAttribute('data-part');
         var sqty = parseInt(el.getAttribute('data-qty'), 10) || 1;
-        var pr = tryCall(function () { return Engine.sellPart(spid, sqty); });
+        var pr = UI.act(function () { return Engine.sellPart(spid, sqty); });
         if (pr && pr.ok !== false) UI.toast('Sold ' + sqty + ' for ' + fm(pr.proceeds), 'success');
-        UI.api(pr);
         break;
       }
 
@@ -193,9 +237,36 @@
       case 'buy': {
         var bpid = el.getAttribute('data-part');
         var bqty = parseInt(el.getAttribute('data-qty'), 10) || 1;
-        var br = tryCall(function () { return Engine.buyPart(bpid, bqty); });
+        var br = UI.act(function () { return Engine.buyPart(bpid, bqty); });
         if (br && br.ok !== false) UI.toast('Bought ' + bqty + ' — ' + fm(br.cost), 'success');
-        UI.api(br);
+        break;
+      }
+
+      /* ---- Part info popover (§9.7) ---- */
+      case 'partinfo': {
+        var ppid = el.getAttribute('data-part');
+        var fromSel = el.getAttribute('data-from-select');
+        if (fromSel) {
+          var srcSel = document.getElementById(fromSel);
+          ppid = srcSel ? srcSel.value : null;
+        }
+        if (ppid) showPartInfo(ppid);
+        else UI.toast('Pick a part first', 'info');
+        break;
+      }
+
+      /* ---- Wiki (§9.7) ---- */
+      case 'wcat':
+        UI.state.wikiCat = el.getAttribute('data-cat') || 'all';
+        T.render('wiki');
+        break;
+      case 'wiki-toggle': {
+        var wpid = el.getAttribute('data-part');
+        if (wpid) {
+          if (UI.state.wikiOpen[wpid]) delete UI.state.wikiOpen[wpid];
+          else UI.state.wikiOpen[wpid] = true;
+          T.render('wiki');
+        }
         break;
       }
 
@@ -205,18 +276,18 @@
         var cost = el.getAttribute('data-cost') || '';
         UI.confirm(
           'Upgrade the shop to ' + label + (cost ? ' for ' + cost : '') + '? Rent and utilities go up with the bigger space.',
-          function () { UI.api(tryCall(function () { return Engine.upgradeShop(); }), 'Shop upgraded!'); },
+          function () { UI.act(function () { return Engine.upgradeShop(); }, 'Shop upgraded!'); },
           { yesLabel: 'Upgrade', title: 'Upgrade shop', danger: false }
         );
         break;
       }
       case 'buy-equip': {
         var eid = el.getAttribute('data-id');
-        UI.api(tryCall(function () { return Engine.buyEquipment(eid); }), 'Equipment purchased');
+        UI.act(function () { return Engine.buyEquipment(eid); }, 'Equipment purchased');
         break;
       }
 
-      /* ---- Save / Load ---- */
+      /* ---- System (save/load + settings) ---- */
       case 'export':
         doExport();
         break;
@@ -245,27 +316,48 @@
     var jobId = jobIdOf(el);
 
     if (action === 'speed') {
-      UI.api(tryCall(function () { return Engine.setJobSpeed(jobId, el.value); }));
+      UI.act(function () { return Engine.setJobSpeed(jobId, el.value); });
     } else if (action === 'buildpart') {
       var cat = el.getAttribute('data-cat');
       var pid = el.value || null;
-      UI.api(tryCall(function () { return Engine.setBuildPart(jobId, cat, pid); }));
+      UI.act(function () { return Engine.setBuildPart(jobId, cat, pid); });
     } else if (action === 'insurance') {
-      UI.api(tryCall(function () { return Engine.setInsurance(!!el.checked); }));
+      UI.act(function () { return Engine.setInsurance(!!el.checked); });
     } else if (action === 'import-file') {
       readImportFile(el);
+    } else if (action === 'zoom-mode') {
+      /* §9.9 user override Auto/80/100/115/130% */
+      if (UI.zoom) UI.zoom.set(el.value);
+      T.render('save'); // refresh the "(currently N%)" hint
     }
   }
 
   function onPanelInput(e) {
     var t = e.target;
-    if (t && t.id === 'market-search') {
+    if (!t) return;
+    if (t.id === 'market-search') {
       UI.state.marketSearch = t.value;
       if (marketTimer) window.clearTimeout(marketTimer);
       marketTimer = window.setTimeout(function () {
         refocusMarketSearch = true;
         T.render('market');
       }, 170);
+    } else if (t.id === 'wiki-search') {
+      UI.state.wikiSearch = t.value;
+      if (wikiTimer) window.clearTimeout(wikiTimer);
+      wikiTimer = window.setTimeout(function () {
+        refocusWikiSearch = true;
+        T.render('wiki');
+      }, 170);
+    } else if (t.id === 'music-vol') {
+      /* live volume drag — no re-render, keep the slider silky */
+      if (UI.audio && UI.audio.setMusicVol) UI.audio.setMusicVol(parseFloat(t.value));
+      var mv = document.getElementById('music-vol-val');
+      if (mv) mv.textContent = Math.round(parseFloat(t.value) * 100) + '%';
+    } else if (t.id === 'sfx-vol') {
+      if (UI.audio && UI.audio.setSfxVol) UI.audio.setSfxVol(parseFloat(t.value));
+      var sv = document.getElementById('sfx-vol-val');
+      if (sv) sv.textContent = Math.round(parseFloat(t.value) * 100) + '%';
     }
   }
 
@@ -274,7 +366,7 @@
    * ------------------------------------------------------------------ */
 
   function workAndReport(jobId, hours) {
-    var r = tryCall(function () {
+    var r = UI.act(function () {
       return (hours === null || hours === undefined) ? Engine.workJob(jobId) : Engine.workJob(jobId, hours);
     });
     if (r && r.ok !== false) {
@@ -286,11 +378,11 @@
         if (res.onTime === false) msg += ' • LATE';
         if (res.notes) msg += ' • ' + res.notes;
         UI.toast(msg, 'success', 6500);
+        if (UI.audio && UI.audio.sfx && !res.payout) UI.audio.sfx('complete');
       } else if (r.hoursSpent) {
         UI.toast('Worked ' + r.hoursSpent + 'h', 'info', 1600);
       }
     }
-    UI.api(r);
   }
 
   function simulateDays(n) {
@@ -314,6 +406,15 @@
     var label = TYPE_LABELS[j.type] || j.type || '';
     if (j.subtype && SUBTYPE_LABELS[j.subtype]) label = SUBTYPE_LABELS[j.subtype];
     return '<span class="chip chip-type t-' + esc(j.type) + '">' + esc(label) + '</span>';
+  }
+
+  /** §9.2 customer taste chip (never a penalty — bonus when matched). */
+  function tasteChip(j) {
+    if (!j.taste || !j.taste.label) return '';
+    var bonus = j.taste.bonusPct ? '+' + j.taste.bonusPct + '% pay' : 'bonus pay';
+    return ' <span class="chip chip-taste" title="Use a matching ' +
+      esc(j.taste.brand || '') + (j.taste.category ? ' ' + esc(j.taste.category) : '') +
+      ' part for ' + esc(bonus) + ' and a happier customer">♥ ' + esc(j.taste.label) + '</span>';
   }
 
   function custTypeLabel(typeId) {
@@ -364,7 +465,7 @@
       html += '<div class="card job-card">' +
         '<div class="card-title">' + esc(j.title) +
           (j.rush ? ' <span class="badge b-rush">RUSH</span>' : '') + '</div>' +
-        '<div class="meta-row">' + typeChip(j) + UI.wrenches(j.difficulty) + '</div>' +
+        '<div class="meta-row">' + typeChip(j) + UI.wrenches(j.difficulty) + tasteChip(j) + '</div>' +
         (j.blurb ? '<div class="blurb">&ldquo;' + esc(j.blurb) + '&rdquo;</div>' : '') +
         '<div class="meta-row">' + customerLine(j) + '</div>' +
         '<div class="meta-row flex-between">' +
@@ -418,10 +519,14 @@
     } else {
       html += '<div class="cards">';
       machines.forEach(function (m) {
+        var age = (m.listedDay !== null && m.listedDay !== undefined) ? (st.day - m.listedDay) : null;
+        var ageTxt = age === null ? '' : (age <= 0 ? 'listed today' : 'listed ' + age + ' day' + (age === 1 ? '' : 's') + ' ago');
         html += '<div class="card">' +
           '<div class="card-title">' + esc(m.name) + ' <span class="muted small">(' + esc(m.year) + ')</span></div>' +
+          (m.specSummary ? '<div class="asis-spec">' + esc(m.specSummary) + '</div>' : '') +
           (m.hint ? '<div class="blurb">&ldquo;' + esc(m.hint) + '&rdquo;</div>' : '') +
-          '<div class="meta-row"><span class="muted small">' + arr(m.partIds).length + ' parts inside • sold as-is, no returns</span></div>' +
+          '<div class="meta-row"><span class="muted small">' + arr(m.partIds).length + ' parts inside • sold as-is, no returns</span>' +
+            (ageTxt ? '<span class="asis-age">' + esc(ageTxt) + '</span>' : '') + '</div>' +
           '<div class="job-actions">' +
             '<button type="button" class="btn btn-primary btn-sm" data-action="buy-asis" data-machine="' + esc(m.id) + '">Buy — ' + fm(m.askPrice) + '</button>' +
           '</div>' +
@@ -439,7 +544,16 @@
     var undiagnosed = !!(j.needsDiagnosis && !j.diagnosed);
     var buildPending = !!(j.build && !j.build.validated);
     var ready = j.status === 'done';
-    var noHours = (Number(st.hoursLeft) || 0) <= 0;
+    /* §9.4 overtime: actions may proceed while hoursLeft > -overtimeCap;
+     * only disable at the exhaustion floor (engine enforces the real rule). */
+    var otCap = 3;
+    try {
+      var cfg = Engine.getConfig && Engine.getConfig();
+      if (cfg && typeof cfg.overtimeCap === 'number') otCap = cfg.overtimeCap;
+    } catch (ecfg) { /* ignore */ }
+    var hoursNow = Number(st.hoursLeft) || 0;
+    var noHours = hoursNow <= -otCap;
+    var otWarn = hoursNow <= 0 && !noHours;
 
     var h = '<div class="card job-card-full">';
 
@@ -452,7 +566,7 @@
 
     /* meta row */
     h += '<div class="meta-row">' + typeChip(j) + UI.wrenches(j.difficulty) +
-      customerLine(j) +
+      customerLine(j) + tasteChip(j) +
       '<span class="pay num">' + (j.pay !== null && j.pay !== undefined
         ? (j.type === 'callback' ? 'Warranty — no pay' : fm(j.pay))
         : 'Market-priced at sale') + '</span>' +
@@ -462,15 +576,15 @@
 
     if (j.blurb) h += '<div class="blurb">&ldquo;' + esc(j.blurb) + '&rdquo;</div>';
 
-    /* progress */
+    /* progress (animated across renders, §9.9) */
     h += '<div class="bar-row"><span class="muted small">Progress</span>' +
-      UI.barHTML(j.hoursDone, j.hoursRequired, 'wide') +
+      animatedBar('job-' + j.id, j.hoursDone, j.hoursRequired, 'wide') +
       '<span class="num small">' + esc(j.hoursDone) + ' / ' + esc(j.hoursRequired) + 'h <span class="muted">(at standard pace)</span></span></div>';
 
     /* contract units */
     if (j.units && j.units > 1) {
       h += '<div class="bar-row"><span class="muted small">Units</span>' +
-        UI.barHTML(j.unitsDone || 0, j.units, 'wide good') +
+        animatedBar('units-' + j.id, j.unitsDone || 0, j.units, 'wide good') +
         '<span class="num small">' + esc(j.unitsDone || 0) + ' / ' + esc(j.units) + ' machines</span></div>';
     }
 
@@ -496,13 +610,29 @@
         '</div>';
     }
 
-    /* refurb machine info */
+    /* refurb machine info + component list (§9.5) */
     if (isRefurb && j.machine) {
       h += '<div class="refurb-box"><span class="muted small">Machine:</span> ' + esc(j.machine.name) +
         ' <span class="muted small">(' + esc(j.machine.year) + ')</span>' +
         (j.machine.boughtFor !== null && j.machine.boughtFor !== undefined
-          ? ' <span class="muted small">— bought for <span class="num">' + esc(fm(j.machine.boughtFor)) + '</span></span>' : '') +
-        '</div>';
+          ? ' <span class="muted small">— bought for <span class="num">' + esc(fm(j.machine.boughtFor)) + '</span></span>' : '');
+      if (has('getMachineParts')) {
+        var mparts = arr(tryCall(function () { return Engine.getMachineParts(j.id); }));
+        if (mparts.length) {
+          h += '<div class="machine-parts">';
+          mparts.forEach(function (p) {
+            var stt = p.status === 'ok' ? 'ok' : (p.status === 'faulty' ? 'faulty' : 'unknown');
+            h += '<div class="mp-row">' +
+              '<span class="mp-status ' + stt + '">' + (stt === 'ok' ? 'OK' : (stt === 'faulty' ? 'FAULTY' : '?')) + '</span>' +
+              '<span>' + esc(p.name) + '</span>' +
+              '<span class="muted small">' + esc(CAT_LABELS[p.category] || p.category || '') + '</span>' +
+              (p.value !== null && p.value !== undefined ? '<span class="num muted small">' + esc(fm(p.value)) + '</span>' : '') +
+              '</div>';
+          });
+          h += '</div>';
+        }
+      }
+      h += '</div>';
     }
 
     /* needs part-picker */
@@ -518,22 +648,31 @@
 
     /* actions */
     h += '<div class="job-actions">';
+    var hourAttr = noHours
+      ? ' disabled title="Too exhausted — call it a day"'
+      : (otWarn ? ' title="You are into overtime — tomorrow starts short"' : '');
     if (undiagnosed) {
       h += '<button type="button" class="btn btn-primary btn-sm" data-action="diagnose" data-job="' + j.id + '"' +
-        (noHours ? ' disabled title="No hours left today — End Day"' : '') + '>Diagnose</button>';
+        hourAttr + '>Diagnose</button>';
     }
     if (ready && isRefurb) {
       h += '<button type="button" class="btn btn-primary btn-sm" data-action="sell-refurb" data-job="' + j.id + '">Sell machine</button>';
     } else if (!undiagnosed && !buildPending) {
       h += '<button type="button" class="btn btn-sm" data-action="work1" data-job="' + j.id + '"' +
-        (noHours ? ' disabled title="No hours left today — End Day"' : '') + '>Work 1h</button>' +
+        hourAttr + '>Work 1h</button>' +
         '<button type="button" class="btn btn-primary btn-sm" data-action="workall" data-job="' + j.id + '"' +
-        (noHours ? ' disabled title="No hours left today — End Day"' : '') + '>Work All</button>';
+        hourAttr + '>Work All</button>';
     }
     if (isRefurb) {
       h += '<button type="button" class="btn btn-sm btn-ghost" data-action="appraise" data-job="' + j.id + '">Appraise</button>';
     }
-    h += '<button type="button" class="btn btn-sm btn-ghost" data-action="abandon" data-job="' + j.id + '" data-refurb="' + (isRefurb ? 1 : 0) + '">Abandon</button>';
+    /* §9.5: refurbs get Strip for Parts instead of Abandon (fallback to
+     * Abandon while the engine API is still landing). */
+    if (isRefurb && has('stripRefurb')) {
+      h += '<button type="button" class="btn btn-sm btn-ghost" data-action="strip" data-job="' + j.id + '" title="1.5h — working parts roll into inventory">Strip for Parts</button>';
+    } else {
+      h += '<button type="button" class="btn btn-sm btn-ghost" data-action="abandon" data-job="' + j.id + '">Abandon</button>';
+    }
     h += '</div></div>';
     return h;
   }
@@ -557,17 +696,36 @@
       } else if (!n.options || !n.options.length) {
         h += '<span class="muted">No compatible part available right now — check back after prices refresh.</span>';
       } else {
-        h += '<select class="sel" id="need-sel-' + j.id + '-' + n.index + '">';
+        var selId = 'need-sel-' + j.id + '-' + n.index;
+        h += '<select class="sel" id="' + selId + '">';
         n.options.forEach(function (o) {
-          h += '<option value="' + esc(o.partId) + '">' + esc(o.name) + ' — ' + esc(fm(o.price)) +
-            (o.source === 'inventory' ? ' (in stock)' : ' (buy from market)') + '</option>';
+          var below = o.meets === false;                       // §9.3
+          var label = (o.tasteMatch ? '♥ ' : '') + o.name +    // §9.2
+            ' — ' + fm(o.price) +
+            (o.source === 'inventory' ? ' (in stock)' : ' (buy from market)') +
+            (below ? ' — below spec' : '');
+          h += '<option value="' + esc(o.partId) + '"' + (below ? ' disabled' : '') + '>' +
+            esc(label) + '</option>';
         });
         h += '</select>' +
+          (has('getPartInfo')
+            ? '<button type="button" class="info-btn" data-action="partinfo" data-from-select="' + selId + '" title="Part details">i</button>'
+            : '') +
           '<button type="button" class="btn btn-primary btn-sm" data-action="install" data-job="' + j.id + '" data-need="' + n.index + '">Install</button>';
+        if (hasTasteOption(n.options)) {
+          h += '<span class="taste-hit small" title="Matches the customer\'s taste for bonus pay">♥ = customer favorite</span>';
+        }
       }
       h += '</div>';
     });
     return h + '</div>';
+  }
+
+  function hasTasteOption(options) {
+    for (var i = 0; i < options.length; i++) {
+      if (options[i] && options[i].tasteMatch) return true;
+    }
+    return false;
   }
 
   /* ---- custom build configurator ---- */
@@ -613,19 +771,24 @@
 
     /* category selects */
     h += '<div class="build-grid">';
+    var infoOk = has('getPartInfo');
     cats.forEach(function (c) {
+      var selId = 'build-sel-' + j.id + '-' + c;
       h += '<span class="build-lbl">' + esc(CAT_LABELS[c] || c) + '</span>' +
-        '<select data-action="buildpart" data-job="' + j.id + '" data-cat="' + esc(c) + '">' +
+        '<span class="need-row">' +
+        '<select id="' + selId + '" data-action="buildpart" data-job="' + j.id + '" data-cat="' + esc(c) + '">' +
         '<option value="">— none —</option>';
       arr(bc.categories[c]).forEach(function (o) {
-        var label = o.name + ' — ' + fm(o.price) + (o.inStock ? ' (in stock)' : '');
+        var label = (o.tasteMatch ? '♥ ' : '') + o.name + ' — ' + fm(o.price) + (o.inStock ? ' (in stock)' : '');
         if (o.compatible === false) {
           label = '✕ ' + label + (o.why ? ' — ' + o.why : '');
         }
         h += '<option value="' + esc(o.partId) + '"' + (selected[c] === o.partId ? ' selected' : '') + '>' +
           esc(label) + '</option>';
       });
-      h += '</select>';
+      h += '</select>' +
+        (infoOk ? '<button type="button" class="info-btn" data-action="partinfo" data-from-select="' + selId + '" title="Part details">i</button>' : '') +
+        '</span>';
     });
     h += '</div>';
 
@@ -792,6 +955,9 @@
           '<td><span class="spark-wrap ' + (c30 >= 0 ? 'up' : 'down') + '">' + UI.sparkSVG(r.spark) + '</span></td>' +
           '<td class="num">' + (r.inStockQty || 0) + '</td>' +
           '<td class="actions">' +
+            (has('getPartInfo')
+              ? '<button type="button" class="info-btn" data-action="partinfo" data-part="' + esc(r.partId) + '" title="Part details">i</button> '
+              : '') +
             '<button type="button" class="btn btn-sm" data-action="buy" data-part="' + esc(r.partId) + '" data-qty="1">Buy 1</button> ' +
             '<button type="button" class="btn btn-sm" data-action="buy" data-part="' + esc(r.partId) + '" data-qty="5">Buy 5</button>' +
           '</td>' +
@@ -816,6 +982,145 @@
   function catChip(id, label, current) {
     return '<button type="button" class="chip-btn' + (current === id ? ' active' : '') +
       '" data-action="mcat" data-cat="' + esc(id) + '">' + esc(label) + '</button>';
+  }
+
+  /* ================================================================== *
+   * TAB: Wiki (§9.7) — the education layer
+   * ================================================================== */
+
+  /** Compact human string for a perf object. */
+  function perfStr(perf) {
+    if (!perf) return '';
+    var bits = [];
+    if (perf.cpu !== undefined) bits.push('CPU ' + perf.cpu);
+    if (perf.gpu !== undefined) bits.push('GPU ' + perf.gpu);
+    if (perf.ramMB !== undefined) bits.push(perf.ramMB + ' MB');
+    if (perf.storageGB !== undefined) bits.push(perf.storageGB + ' GB');
+    if (perf.speed !== undefined) bits.push('speed ' + perf.speed);
+    if (perf.cool !== undefined) bits.push('cooling ' + perf.cool);
+    return bits.join(' · ');
+  }
+
+  function statusChip(status) {
+    if (!status) return '';
+    return '<span class="status-chip s-' + esc(status) + '">' + esc(status) + '</span>';
+  }
+
+  function wikiCatChip(id, label, current) {
+    return '<button type="button" class="chip-btn' + (current === id ? ' active' : '') +
+      '" data-action="wcat" data-cat="' + esc(id) + '">' + esc(label) + '</button>';
+  }
+
+  function renderWiki(panel) {
+    var st = getState();
+    if (!st) { panel.innerHTML = emptyBox('Waiting for the engine to load…'); return; }
+    var html = '<h2 class="section-title">Part Wiki <span class="muted small">everything on the market in your era — with period commentary</span></h2>';
+
+    if (!has('getWiki')) {
+      panel.innerHTML = html + emptyBox('The parts wiki is not available yet (engine integration pending).');
+      return;
+    }
+
+    var cat = UI.state.wikiCat || 'all';
+    var q = UI.state.wikiSearch || '';
+
+    html += '<div class="market-controls"><div class="chips">' + wikiCatChip('all', 'All', cat);
+    CATEGORIES.forEach(function (c) { html += wikiCatChip(c, CAT_LABELS[c], cat); });
+    html += '</div>' +
+      '<input type="search" id="wiki-search" placeholder="Search the wiki…" value="' + esc(q) + '" autocomplete="off">' +
+      '</div>';
+
+    var rows = arr(tryCall(function () {
+      return Engine.getWiki({
+        category: cat === 'all' ? undefined : cat,
+        search: q || undefined
+      });
+    }));
+
+    if (!rows.length) {
+      html += emptyBox('Nothing in the wiki matches — try another category or search. Hardware appears here as it hits the market.');
+      panel.innerHTML = html;
+      return;
+    }
+
+    html += '<div class="table-wrap"><table class="data"><thead><tr>' +
+      '<th></th><th>Part</th><th>Brand</th><th>Category</th><th class="num">Years</th>' +
+      '<th>Key stats</th><th class="num">Reliability</th><th>Status</th><th class="num">Price</th>' +
+      '</tr></thead><tbody>';
+
+    rows.forEach(function (r) {
+      var open = !!UI.state.wikiOpen[r.partId];
+      var years = (r.introYear || '?') + '–' + (r.eolYear || '?');
+      html += '<tr class="wiki-row" data-action="wiki-toggle" data-part="' + esc(r.partId) + '" title="Click for details">' +
+        '<td class="muted">' + (open ? '▾' : '▸') + '</td>' +
+        '<td>' + esc(r.name) + '</td>' +
+        '<td class="muted">' + esc(r.brand || '') + '</td>' +
+        '<td><span class="chip">' + esc(CAT_LABELS[r.category] || r.category) + '</span></td>' +
+        '<td class="num muted">' + esc(years) + '</td>' +
+        '<td class="small">' + esc(perfStr(r.perf)) + '</td>' +
+        '<td class="num">' + (r.reliability !== undefined && r.reliability !== null ? esc(r.reliability) : '—') + '</td>' +
+        '<td>' + statusChip(r.status) + '</td>' +
+        '<td class="num"><b>' + esc(fm(r.price)) + '</b></td>' +
+        '</tr>';
+      if (open) {
+        html += '<tr class="wiki-detail"><td colspan="9">' + wikiDetailHTML(r) + '</td></tr>';
+      }
+    });
+    html += '</tbody></table></div>';
+    panel.innerHTML = html;
+
+    if (refocusWikiSearch) {
+      refocusWikiSearch = false;
+      var inp = document.getElementById('wiki-search');
+      if (inp) {
+        inp.focus();
+        var len = inp.value.length;
+        try { inp.setSelectionRange(len, len); } catch (e) { /* ignore */ }
+      }
+    }
+  }
+
+  function wikiDetailHTML(r) {
+    var c30 = Number(r.change30) || 0;
+    var h = '';
+    if (r.desc) h += '<div class="wiki-desc">' + esc(r.desc) + '</div>';
+    if (r.tagLabels && r.tagLabels.length) {
+      h += '<div class="wiki-tags">';
+      r.tagLabels.forEach(function (tl) { h += '<span class="chip">' + esc(tl) + '</span>'; });
+      h += '</div>';
+    }
+    h += '<div class="wiki-stats">' +
+      (r.tier ? '<span>Tier: <b>' + esc(r.tier) + '</b></span>' : '') +
+      (r.perf ? '<span>Perf: <b>' + esc(perfStr(r.perf) || '—') + '</b></span>' : '') +
+      (r.reliability !== undefined && r.reliability !== null ? '<span>Reliability: <b>' + esc(r.reliability) + '/100</b></span>' : '') +
+      (r.watts ? '<span>Output: <b>' + esc(r.watts) + ' W</b></span>'
+        : (r.powerDraw !== undefined && r.powerDraw !== null ? '<span>Power draw: <b>' + esc(r.powerDraw) + ' W</b></span>' : '')) +
+      '<span>Sold: <b>' + esc((r.introYear || '?') + '–' + (r.eolYear || '?')) + '</b></span>' +
+      '<span>Price: <b>' + esc(fm(r.price)) + '</b> <span class="' + (c30 > 0.05 ? 'up' : (c30 < -0.05 ? 'down' : 'muted')) + '">' + esc(UI.pct(c30)) + ' /30d</span></span>' +
+      '<span>In stock: <b>' + (r.inStockQty || 0) + '</b></span>' +
+      '</div>' +
+      '<span class="spark-wrap ' + (c30 >= 0 ? 'up' : 'down') + '">' + UI.sparkSVG(r.spark, 140, 30) + '</span>';
+    return h;
+  }
+
+  /** §9.7 — ⓘ popover, reusing getPartInfo (also used by Market & pickers). */
+  function showPartInfo(partId) {
+    if (!has('getPartInfo')) { UI.toast('Part info not available yet', 'info'); return; }
+    var r = tryCall(function () { return Engine.getPartInfo(partId); });
+    if (!r || r.ok === false) {
+      UI.toast((r && r.error) || 'No information on that part', 'error');
+      return;
+    }
+    var html = '<div class="partinfo">' +
+      '<div class="pi-head">' +
+        '<span class="pi-name">' + esc(r.name) + '</span>' +
+        (r.brand ? '<span class="chip">' + esc(r.brand) + '</span>' : '') +
+        statusChip(r.status) +
+        '<span class="pi-price">' + esc(fm(r.price)) + '</span>' +
+      '</div>' +
+      wikiDetailHTML(r) +
+      '</div>';
+    UI.modal({ title: 'Part details', html: html, buttons: [{ label: 'Close', cls: 'btn btn-primary' }] });
   }
 
   /* ================================================================== *
@@ -1010,14 +1315,38 @@
   }
 
   /* ================================================================== *
-   * TAB: Save / Load
+   * TAB: System (§9.10 — save/load cards + settings; tab id stays "save")
    * ================================================================== */
 
   function renderSave(panel) {
     var hasAuto = false;
     try { hasAuto = !!(window.Engine && Engine.hasAutosave && Engine.hasAutosave()); } catch (e) { /* ignore */ }
 
-    var html = '<h2 class="section-title">Save / Load</h2><div class="save-grid">';
+    var html = '<h2 class="section-title">System</h2><div class="save-grid">';
+
+    /* ---- Settings card (§9.8 volumes + §9.9 UI scale) ---- */
+    html += '<div class="card"><h3>Settings</h3>';
+    var zoomMode = (UI.zoom && UI.zoom.mode) || 'auto';
+    var zoomPct = Math.round(((UI.zoom && UI.zoom.factor) || 1) * 100);
+    html += '<div class="settings-row"><label for="zoom-mode">UI scale</label>' +
+      '<select id="zoom-mode" class="sel" data-action="zoom-mode">' +
+        '<option value="auto"' + (zoomMode === 'auto' ? ' selected' : '') + '>Auto (currently ' + zoomPct + '%)</option>' +
+        '<option value="0.8"' + (zoomMode === '0.8' ? ' selected' : '') + '>80%</option>' +
+        '<option value="1"' + (zoomMode === '1' ? ' selected' : '') + '>100%</option>' +
+        '<option value="1.15"' + (zoomMode === '1.15' ? ' selected' : '') + '>115%</option>' +
+        '<option value="1.3"' + (zoomMode === '1.3' ? ' selected' : '') + '>130%</option>' +
+      '</select></div>';
+    if (UI.audio && UI.audio.getSettings) {
+      var au = UI.audio.getSettings();
+      html += '<div class="settings-row"><label for="music-vol">Music volume</label>' +
+        '<input type="range" id="music-vol" min="0" max="1" step="0.05" value="' + au.musicVol + '">' +
+        '<span class="val" id="music-vol-val">' + Math.round(au.musicVol * 100) + '%</span></div>' +
+        '<div class="settings-row"><label for="sfx-vol">SFX volume</label>' +
+        '<input type="range" id="sfx-vol" min="0" max="1" step="0.05" value="' + au.sfxVol + '">' +
+        '<span class="val" id="sfx-vol-val">' + Math.round(au.sfxVol * 100) + '%</span></div>' +
+        '<p class="muted small">Mute toggles live in the header (🎵 / 🔊). Audio starts after your first click — browser rules.</p>';
+    }
+    html += '</div>';
 
     html += '<div class="card"><h3>Export</h3>' +
       '<p class="muted small">The game autosaves every night. Export a copy to keep or move between browsers.</p>' +

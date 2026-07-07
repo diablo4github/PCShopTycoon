@@ -74,21 +74,89 @@
     return made;
   };
 
-  function customerFor(state, year) {
+  // §9.2: era-gated customer types, intersected with CUSTOMER_JOB_AFFINITY for
+  // the job's most specific key ("build:<useCase>" / "type:subtype" / "type").
+  function affinityKeyFor(job) {
+    var A = CFG().CUSTOMER_JOB_AFFINITY || {};
+    var keys = [];
+    if (job.build && job.build.useCase) keys.push('build:' + job.build.useCase);
+    if (job.subtype) keys.push(job.type + ':' + job.subtype);
+    keys.push(job.type);
+    for (var i = 0; i < keys.length; i++) if (A[keys[i]]) return A[keys[i]];
+    return null; // broad
+  }
+  function customerFor(state, year, allowed) {
     var F = FLAVOR();
     var types = (F.customerTypes || [{ id: 'home', label: 'Home user' }]).filter(function (t) {
       return (t.minYear == null || year >= t.minYear) &&
              (t.maxYear == null || year <= t.maxYear);
     });
+    if (allowed && allowed.length) {
+      var narrowed = types.filter(function (t) { return allowed.indexOf(t.id) !== -1; });
+      if (narrowed.length) types = narrowed;
+    }
     var t = Engine.pick(types) || { id: 'home' };
     var name = (Engine.pick(F.firstNames || ['Sam']) || 'Sam') + ' ' +
                (Engine.pick(F.lastNames || ['Doe']) || 'Doe');
     return { name: name, type: t.id };
   }
-  function blurbFor(type) {
-    var b = (FLAVOR().jobBlurbs || {})[type];
-    return (b && b.length) ? Engine.pick(b) : '';
+  // §9.2: blurbs may be plain strings (v1 data) or { text, customers } (v2).
+  function blurbFor(type, customerType) {
+    var list = (FLAVOR().jobBlurbs || {})[type];
+    if (!list || !list.length) return '';
+    var fitting = list.filter(function (b) {
+      if (typeof b === 'string') return true;
+      if (!b || typeof b.text !== 'string') return false;
+      if (b.customers == null) return true;
+      return b.customers.indexOf(customerType) !== -1;
+    });
+    var chosen = Engine.pick(fitting.length ? fitting : list);
+    if (chosen == null) return '';
+    return typeof chosen === 'string' ? chosen : String(chosen.text || '');
   }
+
+  // §9.2: ~35% of eligible jobs carry a brand taste drawn from parts actually
+  // on the market that year in a category relevant to the job.
+  var TASTE_PLURAL = {
+    cpu: 'CPUs', gpu: 'graphics cards', ram: 'memory', storage: 'drives',
+    motherboard: 'boards', psu: 'power supplies', 'case': 'cases',
+    cooling: 'coolers', os: 'software', peripheral: 'gear'
+  };
+  function tasteCategoryFor(job) {
+    if (job.type === 'refurb' || job.type === 'callback' || job.type === 'cleaning')
+      return null;
+    if (job.type === 'repair') return job.fault ? job.fault.partCategory : null;
+    if (job.type === 'upgrade') return job.needs[0] ? job.needs[0].category : null;
+    if (job.build) return Engine.pick(['cpu', 'gpu', 'case']);
+    if (job.type === 'software' && job.subtype === 'os_install') return 'os';
+    if (job.type === 'enthusiast' && job.subtype === 'overclock') return 'cooling';
+    if (job.type === 'contract') return job.needs[0] ? job.needs[0].category : null;
+    return null;
+  }
+  function maybeTaste(state, job) {
+    var C = CFG();
+    if (!Engine.chance(C.TASTE_CHANCE)) return null;
+    var cat = tasteCategoryFor(job);
+    if (!cat) return null;
+    var parts = purchasableByCategory(state, cat);
+    var brands = [];
+    for (var i = 0; i < parts.length; i++) {
+      var b = parts[i].brand;
+      if (b && brands.indexOf(b) === -1) brands.push(b);
+    }
+    if (!brands.length) return null;   // v1 catalogs have no brands — no tastes
+    var brand = Engine.pick(brands);
+    return {
+      brand: brand, category: cat,
+      bonusPct: Engine.randInt(C.TASTE_BONUS_MIN, C.TASTE_BONUS_MAX),
+      label: 'Swears by ' + brand + ' ' + (TASTE_PLURAL[cat] || cat)
+    };
+  }
+  function tasteMatchesPart(taste, part) {
+    return !!(taste && part && part.brand === taste.brand &&
+              (!taste.category || part.category === taste.category));
+  }
+  Jobs.tasteMatchesPart = tasteMatchesPart;
   function machineFlavor(state, year) {
     var cpus = purchasableByCategory(state, 'cpu').filter(function (p) {
       return year - p.introYear <= 9;
@@ -108,6 +176,24 @@
 
   function requiredDrTier(year) { return year < 1995 ? 1 : (year < 2010 ? 2 : 3); }
   Jobs.requiredDrTier = requiredDrTier;
+
+  // Human formatting for minimum-spec requirements (§9.3)
+  function fmtPerfReq(key, v) {
+    if (key === 'ramMB') return v >= 1024 ? Engine.round2(v / 1024) + ' GB' : Engine.round2(v) + ' MB';
+    if (key === 'storageGB') return v >= 1 ? Engine.round2(v) + ' GB' : Math.round(v * 1000) + ' MB';
+    if (key === 'gpu') return 'graphics score ' + Engine.round2(v);
+    if (key === 'cpu') return 'CPU score ' + Engine.round2(v);
+    return Engine.round2(v) + ' ' + key;
+  }
+  Jobs.fmtPerfReq = fmtPerfReq;
+  function minPerfText(minPerf) {
+    var parts = [];
+    for (var k in minPerf) {
+      if (Object.prototype.hasOwnProperty.call(minPerf, k))
+        parts.push(fmtPerfReq(k, minPerf[k]));
+    }
+    return parts.join(', ');
+  }
 
   function makeOffer(state) {
     var C = CFG();
@@ -151,8 +237,9 @@
       id: state.jobs.nextId++,
       type: choice.type, subtype: choice.subtype || null,
       rush: false,
-      title: '', blurb: blurbFor(choice.type),
-      customer: customerFor(state, year),
+      title: '', blurb: '',
+      customer: null,             // assigned after the switch (affinity, §9.2)
+      taste: null,
       pay: 0,
       offeredDay: state.day, deadlineDay: state.day + Engine.randInt(C.DEADLINE_MIN, C.DEADLINE_MAX),
       difficulty: Engine.randInt(1, 3),
@@ -188,12 +275,31 @@
         break;
       }
       case 'upgrade': {
+        // §9.3: upgrades carry a minimum spec chosen vs the year baseline,
+        // snapped to a real purchasable part so the job is always satisfiable.
         var uc = Engine.pick(upgCats);
-        var label = { ram: 'More memory', storage: 'Bigger storage', gpu: 'Better graphics' }[uc];
-        job.needs = [{ category: uc, anyOfTags: null, minPerf: null, qty: 1,
+        var upgKey = { ram: 'ramMB', storage: 'storageGB', gpu: 'gpu' }[uc];
+        var upgName = { ram: 'RAM upgrade', storage: 'Storage upgrade',
+                        gpu: 'Graphics upgrade' }[uc];
+        var wanted = (bl[upgKey] || 0) * Engine.pick([0.5, 0.75, 1.0]);
+        var perfs = purchasableByCategory(state, uc).map(function (p) {
+          return (p.perf || {})[upgKey] || 0;
+        }).filter(function (v) { return v > 0; }).sort(function (a, b) { return a - b; });
+        var minVal = null;
+        for (var pi = perfs.length - 1; pi >= 0; pi--) {
+          if (perfs[pi] <= wanted) { minVal = perfs[pi]; break; }
+        }
+        if (minVal == null && perfs.length) minVal = perfs[0];
+        var minPerf = null, label = upgName;
+        if (minVal != null) {
+          minPerf = {};
+          minPerf[upgKey] = minVal;
+          label = upgName + ' — at least ' + fmtPerfReq(upgKey, minVal);
+        }
+        job.needs = [{ category: uc, anyOfTags: null, minPerf: minPerf, qty: 1,
                        filledPartIds: [], label: label }];
         job.hoursRequired = 1;
-        job.title = 'Upgrade: ' + label.toLowerCase() + ' for a ' + machineFlavor(state, year);
+        job.title = 'Upgrade: ' + upgName.toLowerCase() + ' for a ' + machineFlavor(state, year);
         break;
       }
       case 'software': {
@@ -326,6 +432,12 @@
       job.pay = basePay(state, 'contract', job.hoursRequired, job.difficulty);
     }
 
+    // §9.2: customer type first (era + affinity gated), then a fitting blurb,
+    // then maybe a brand taste relevant to the job.
+    job.customer = customerFor(state, year, affinityKeyFor(job));
+    job.blurb = blurbFor(job.type, job.customer.type);
+    job.taste = maybeTaste(state, job);
+
     // Rush jobs: repair/software/upgrade, 8%: due today, pay x1.8 (§5.4)
     if ((job.type === 'repair' || job.type === 'software' || job.type === 'upgrade') &&
         Engine.chance(C.RUSH_CHANCE)) {
@@ -407,8 +519,8 @@
     if (job.diagnosed) return err('Already diagnosed');
     var equip = Engine.equipEffects(state);
     var hours = Engine.round2(1 * equip.diagHoursMult);
-    if (state.hoursLeft < hours) return err('Not enough hours left today (' + hours + 'h needed)');
-    state.hoursLeft = Engine.round2(state.hoursLeft - hours);
+    var spent = Engine.spendHours(state, hours);   // overtime rules apply (§9.4)
+    if (!spent.ok) return spent;
     job.diagnosed = true;
     var fault = job.fault || { desc: 'No fault found', partCategory: null, laborHours: 1 };
     if (fault.partCategory) {
@@ -436,7 +548,34 @@
   // ------------------------------------------------------------------
   // Needs & parts
   // ------------------------------------------------------------------
-  function candidateOk(part, need, state) {
+  // Returns null if the part satisfies the need, else a readable problem string.
+  function candidateProblem(part, need, state) {
+    if (!part) return 'Unknown part';
+    if (part.category !== need.category) return 'Wrong kind of part for this slot';
+    if (!purchasable(part, state)) return part.name + ' is not on the market';
+    if (need.anyOfTags && need.anyOfTags.length) {
+      var hit = false, tags = part.platformTags || [];
+      for (var i = 0; i < need.anyOfTags.length; i++)
+        if (tags.indexOf(need.anyOfTags[i]) !== -1) { hit = true; break; }
+      if (!hit) return part.name + ' does not fit this machine (' +
+                       need.anyOfTags.join('/') + ' needed)';
+    }
+    if (!meetsMinPerf(part, need)) {
+      return part.name + ' is below the required spec — needs at least ' +
+             minPerfText(need.minPerf);
+    }
+    return null;
+  }
+  function meetsMinPerf(part, need) {
+    if (!need.minPerf) return true;
+    var keys = Object.keys(need.minPerf);
+    for (var k = 0; k < keys.length; k++) {
+      if (((part.perf || {})[keys[k]] || 0) < need.minPerf[keys[k]]) return false;
+    }
+    return true;
+  }
+  // Category/tag fit only — below-spec parts still appear in pickers, greyed (§9.3).
+  function candidateListed(part, need, state) {
     if (!part || part.category !== need.category) return false;
     if (!purchasable(part, state)) return false;
     if (need.anyOfTags && need.anyOfTags.length) {
@@ -444,12 +583,6 @@
       for (var i = 0; i < need.anyOfTags.length; i++)
         if (tags.indexOf(need.anyOfTags[i]) !== -1) { hit = true; break; }
       if (!hit) return false;
-    }
-    if (need.minPerf) {
-      var keys = Object.keys(need.minPerf);
-      for (var k = 0; k < keys.length; k++) {
-        if (((part.perf || {})[keys[k]] || 0) < need.minPerf[keys[k]]) return false;
-      }
     }
     return true;
   }
@@ -464,15 +597,17 @@
       var cands = purchasableByCategory(state, need.category);
       for (var c = 0; c < cands.length; c++) {
         var part = cands[c];
-        if (!candidateOk(part, need, state)) continue;
+        if (!candidateListed(part, need, state)) continue;
         var inv = Engine.inventoryEntry(state, part.id);
-        if (inv && inv.qty > 0) {
-          options.push({ partId: part.id, name: part.name, source: 'inventory',
-                         price: 0, inStock: inv.qty });
-        } else {
-          options.push({ partId: part.id, name: part.name, source: 'market',
-                         price: P().priceOf(part, state, { buy: true }), inStock: 0 });
-        }
+        var opt = {
+          partId: part.id, name: part.name,
+          source: (inv && inv.qty > 0) ? 'inventory' : 'market',
+          price: (inv && inv.qty > 0) ? 0 : P().priceOf(part, state, { buy: true }),
+          inStock: inv ? inv.qty : 0,
+          meets: meetsMinPerf(part, need),                // §9.3
+          tasteMatch: tasteMatchesPart(job.taste, part)   // §9.2
+        };
+        options.push(opt);
       }
       options.sort(function (a, b) { return a.price - b.price; });
       out.push({ index: i, label: need.label, category: need.category,
@@ -481,13 +616,13 @@
     return out;
   };
 
-  // Supply-run rule: first market/as-is purchase of the day costs 0.5h.
+  // Supply-run rule: first market/as-is purchase of the day costs 0.5h
+  // (overtime rules apply, §9.4).
   function supplyRun(state) {
     if (state.supplyRunDoneToday) return { ok: true, hours: 0 };
     var h = CFG().SUPPLY_RUN_HOURS;
-    if (state.hoursLeft < h)
-      return err('No time left for a supply run today (' + h + 'h needed)');
-    state.hoursLeft = Engine.round2(state.hoursLeft - h);
+    var spent = Engine.spendHours(state, h);
+    if (!spent.ok) return spent;
     state.supplyRunDoneToday = true;
     return { ok: true, hours: h };
   }
@@ -500,8 +635,8 @@
     if (!need) return err('No such part slot');
     if (need.filledPartIds.length >= need.qty) return err('That slot is already filled');
     var part = Engine.partById(partId);
-    if (!candidateOk(part, need, state))
-      return err(part ? part.name + ' does not fit this job' : 'Unknown part');
+    var problem = candidateProblem(part, need, state);
+    if (problem) return err(problem);
 
     var C = CFG();
     var equip = Engine.equipEffects(state);
@@ -546,6 +681,8 @@
       // Refurb: swap the replacement into the machine
       if (job.type === 'refurb' && job.machine && job.machine.faultPartIdx != null) {
         job.machine.partIds[job.machine.faultPartIdx] = part.id;
+        job.machine.faultRepaired = true;
+        job.machine.specSummary = specSummaryFor(job.machine.partIds);
       }
     }
     return { ok: true, cost: spent, filledNow: filledNow,
@@ -594,7 +731,8 @@
           perf: part.perf || {}, tags: (part.platformTags || []).slice(),
           watts: part.watts || 0, style: part.style || 0,
           inStock: inv ? inv.qty : 0,
-          compatible: fit.fits, why: fit.why
+          compatible: fit.fits, why: fit.why,
+          tasteMatch: tasteMatchesPart(job.taste, part)   // §9.2
         });
       }
       list.sort(function (a, b) { return a.price - b.price; });
@@ -737,7 +875,8 @@
     if (job.status === 'done') return err('Already finished — sell it');
     var problem = readinessProblem(state, job);
     if (problem) return err(problem);
-    if (state.hoursLeft < 0.5) return err('No hours left today');
+    var avail = Engine.hoursAvailable(state);      // includes overtime room (§9.4)
+    if (avail < 0.5) return err('Too exhausted — call it a day');
 
     var C = CFG();
     var equip = Engine.equipEffects(state);
@@ -760,9 +899,12 @@
     var m = effectiveMult(state, job);
     var remainingEff = Math.max(0, (job.hoursRequired - job.hoursDone) * m);
     var want = (hours == null) ? remainingEff : Math.max(0, Number(hours) || 0);
-    var spend = Math.min(state.hoursLeft, want, remainingEff);
+    // Default sessions stop at the regular day's end; explicit hour requests may
+    // dip into overtime down to the -overtimeCap floor (§9.4).
+    var budget = (hours == null) ? Math.max(state.hoursLeft, Math.min(avail, 0.5)) : avail;
+    var spend = Math.min(budget, want, remainingEff);
     spend = Math.ceil(spend * 2 - 1e-9) / 2;              // half-hour granularity
-    spend = Math.min(spend, state.hoursLeft);
+    spend = Math.min(spend, avail);
     if (spend < 0.5) return err('Not enough time for a work session');
 
     state.hoursLeft = Engine.round2(state.hoursLeft - spend);
@@ -832,8 +974,15 @@
       }
     }
 
+    var tasteMatched = false;
     if (!drFailed) {
       payout = job.pay || 0;
+      // §9.6: repairs bill a diagnostic/bench fee on top of labor + parts markup
+      if (job.type === 'repair') {
+        var benchFee = Engine.round2(Engine.laborRate(year) * C.BENCH_FEE_LABOR_MULT);
+        payout = Engine.round2(payout + benchFee);
+        notes.push('Bench fee: ' + Engine.fmtMoney(benchFee));
+      }
       // Customer pays parts at 1.25x market for repair/upgrade-style work (§5.4)
       var customerPaysParts = job.type === 'repair' || job.type === 'upgrade' ||
         job.type === 'contract' || job.type === 'callback' ||
@@ -846,6 +995,21 @@
         partsCharge = Engine.round2(partsCharge);
         payout = Engine.round2(payout + partsCharge);
         notes.push('Parts billed at 1.25x: ' + Engine.fmtMoney(partsCharge));
+      }
+      // §9.2: taste bonus when an installed part matches the customer's brand
+      if (job.taste && job.partsUsed && job.partsUsed.length) {
+        for (var tm = 0; tm < job.partsUsed.length; tm++) {
+          if (tasteMatchesPart(job.taste, Engine.partById(job.partsUsed[tm].partId))) {
+            tasteMatched = true; break;
+          }
+        }
+        if (tasteMatched && payout > 0) {
+          var before = payout;
+          payout = Engine.round2(payout * (1 + job.taste.bonusPct / 100));
+          score += C.TASTE_SCORE_BONUS;
+          notes.push(job.taste.label + ' — delighted! +' + job.taste.bonusPct +
+                     '% (' + Engine.fmtMoney(payout - before) + ')');
+        }
       }
       if (isBuildJob(job) && job.build) {
         // Build pay = budget; bonuses for overdelivering (§5.5)
@@ -897,7 +1061,8 @@
 
     job.status = 'done';
     job.result = { onTime: job.deadlineDay == null || state.day <= job.deadlineDay,
-                   score: score, payout: payout, notes: notes };
+                   score: score, payout: payout, notes: notes,
+                   tasteMatched: tasteMatched };
     removeFrom(state.jobs.active, job);
     return job.result;
   }
@@ -970,7 +1135,8 @@
           hoursDone: 0,
           diagnosed: true, needsDiagnosis: false,
           fault: null, needs: [], build: null,
-          units: 1, unitsDone: 0, machine: null, drTier: 0, crt: false, result: null
+          units: 1, unitsDone: 0, machine: null, drTier: 0, crt: false,
+          taste: null, result: null
         };
         state.jobs.active.push(job);      // auto-accepted, pay 0
         state.reputation.callbacks++;
@@ -994,6 +1160,32 @@
     return Engine.round2(v);
   }
   Jobs.machinePartsValue = machinePartsValue;
+
+  // §9.5: "486DX2-66 · 8 MB RAM · 340 MB HDD"
+  function specSummaryFor(partIds) {
+    var cpuName = null, ramMB = 0, storageGB = 0, storageSpeed = 0;
+    for (var i = 0; i < partIds.length; i++) {
+      var p = Engine.partById(partIds[i]);
+      if (!p) continue;
+      if (p.category === 'cpu' && !cpuName) cpuName = p.name;
+      else if (p.category === 'ram') ramMB += (p.perf || {}).ramMB || 0;
+      else if (p.category === 'storage') {
+        storageGB += (p.perf || {}).storageGB || 0;
+        storageSpeed = Math.max(storageSpeed, (p.perf || {}).speed || 0);
+      }
+    }
+    var bits = [];
+    if (cpuName) bits.push(cpuName);
+    if (ramMB > 0) bits.push((ramMB >= 1024 ? Engine.round2(ramMB / 1024) + ' GB'
+                                            : Engine.round2(ramMB) + ' MB') + ' RAM');
+    if (storageGB > 0) {
+      var sLabel = storageGB >= 1 ? Engine.round2(storageGB) + ' GB'
+                                  : Math.round(storageGB * 1000) + ' MB';
+      bits.push(sLabel + (storageSpeed >= 60 ? ' SSD' : ' HDD'));
+    }
+    return bits.join(' · ') || 'bare chassis';
+  }
+  Jobs.specSummaryFor = specSummaryFor;
 
   function generateMachine(state) {
     var C = CFG();
@@ -1051,19 +1243,30 @@
       hint: hints[faultCat],
       partIds: partIds,
       faultPartIdx: faultIdx,
-      listedDay: state.day
+      listedDay: state.day,
+      specSummary: specSummaryFor(partIds)   // §9.5
     };
   }
 
-  // Overnight step 6: churn listings, keep 2-5.
+  // Overnight step 6 (§9.5): slow churn (~2wk shelf life), at most one new
+  // arrival per night (~1 per 3 nights), hard cap on listings.
   Jobs.refreshAsIsMarket = function (state) {
     var C = CFG();
     for (var i = state.asIsMarket.length - 1; i >= 0; i--) {
       if (Engine.chance(C.ASIS_CHURN)) state.asIsMarket.splice(i, 1);
     }
-    var target = Engine.randInt(C.ASIS_MIN, C.ASIS_MAX);
+    if (state.asIsMarket.length < C.ASIS_MAX && Engine.chance(C.ASIS_ARRIVAL_CHANCE)) {
+      var m = generateMachine(state);
+      if (m) state.asIsMarket.push(m);
+    }
+  };
+
+  // Initial stock at newGame.
+  Jobs.seedAsIsMarket = function (state) {
+    var C = CFG();
+    var n = Engine.randInt(C.ASIS_START_MIN, C.ASIS_START_MAX);
     var guard = 0;
-    while (state.asIsMarket.length < target && guard++ < 12) {
+    while (state.asIsMarket.length < n && guard++ < 10) {
       var m = generateMachine(state);
       if (!m) break;
       state.asIsMarket.push(m);
@@ -1109,11 +1312,65 @@
       build: null, units: 1, unitsDone: 0,
       machine: { name: machine.name, year: machine.year, partIds: machine.partIds.slice(),
                  askPrice: machine.askPrice, boughtFor: machine.askPrice,
-                 faultPartIdx: machine.faultPartIdx, condition: null },
-      drTier: 0, crt: false, result: null
+                 faultPartIdx: machine.faultPartIdx, condition: null,
+                 faultRepaired: false,
+                 specSummary: machine.specSummary || specSummaryFor(machine.partIds) },
+      drTier: 0, crt: false, taste: null, result: null
     };
     state.jobs.active.push(job);
     return { ok: true, jobId: job.id };
+  };
+
+  // §9.5: component list for a refurb job's machine. The fault slot stays
+  // "unknown" until diagnosed, then "faulty" until a replacement goes in.
+  Jobs.getMachineParts = function (state, jobId) {
+    var job = Jobs.findActive(state, jobId);
+    if (!job || job.type !== 'refurb' || !job.machine) return [];
+    var out = [];
+    for (var i = 0; i < job.machine.partIds.length; i++) {
+      var part = Engine.partById(job.machine.partIds[i]);
+      if (!part) continue;
+      var status = 'ok';
+      if (job.machine.faultPartIdx === i && !job.machine.faultRepaired) {
+        status = job.diagnosed ? 'faulty' : 'unknown';
+      }
+      out.push({ partId: part.id, name: part.name, category: part.category,
+                 status: status, value: P().priceOf(part, state) });
+    }
+    return out;
+  };
+
+  // §9.5: strip a refurb machine for parts. 1.5h (overtime rules apply); each
+  // non-faulty part survives at 90% (97% with the ESD setup); the faulty part
+  // is lost; the job is removed with no reputation effect.
+  Jobs.stripRefurb = function (state, jobId) {
+    var C = CFG();
+    var job = Jobs.findActive(state, jobId);
+    if (!job || job.type !== 'refurb' || !job.machine) return err('Not a refurb job');
+    if (job.status === 'sold') return err('Already sold');
+    var spent = Engine.spendHours(state, C.STRIP_HOURS);
+    if (!spent.ok) return spent;
+    var survival = Engine.equipmentOwned(state, 'esd-setup') ?
+        C.STRIP_SURVIVAL_ESD : C.STRIP_SURVIVAL;
+    var recovered = [], lost = [];
+    for (var i = 0; i < job.machine.partIds.length; i++) {
+      var pid = job.machine.partIds[i];
+      var part = Engine.partById(pid);
+      if (!part) continue;
+      var isFaulty = job.machine.faultPartIdx === i && !job.machine.faultRepaired;
+      if (isFaulty || !Engine.chance(survival)) {
+        lost.push(pid);
+        continue;
+      }
+      Engine.inventoryAdd(state, pid, 1, 0);   // salvage carries no cost basis
+      recovered.push(pid);
+    }
+    removeFrom(state.jobs.active, job);
+    Engine.pushNews(state, 'job', 'Stripped for parts: ' + job.machine.name,
+      recovered.length + ' part' + (recovered.length === 1 ? '' : 's') +
+      ' recovered into inventory' +
+      (lost.length ? ', ' + lost.length + ' lost' : '') + '.');
+    return { ok: true, recovered: recovered, lost: lost, hoursSpent: C.STRIP_HOURS };
   };
 
   function refurbEstimate(state, job) {

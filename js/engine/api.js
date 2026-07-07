@@ -37,7 +37,7 @@
     if (!isFinite(seed)) seed = 42;
     var startDi = null;
     var state = {
-      version: 1,
+      version: 2,
       seed: seed, rngState: seed | 0,
       shopName: String(opts.shopName ||
         ((DATA.FLAVOR && DATA.FLAVOR.shopNameSuggestions) ?
@@ -79,7 +79,7 @@
     // Day-0 world: events in-window, prices/history, as-is stock, first offers.
     Engine.Sim.updateEvents(state);
     Engine.Pricing.nightlyUpdate(state);
-    Engine.Jobs.refreshAsIsMarket(state);
+    Engine.Jobs.seedAsIsMarket(state);
     Engine.Jobs.generateOffers(state, null);
     Engine.pushNews(state, 'system', 'Grand opening: ' + state.shopName,
       (era.name || era.id) + ' — ' + startDi.label + '. ' + (era.blurb || ''));
@@ -134,18 +134,48 @@
   Engine.exportSave = function () {
     return S() ? JSON.stringify(S()) : '';
   };
+  // v1 -> v2 migration (§9 addendum): fill every new field with defaults.
+  // Never rejects a valid v1 save; idempotent on v2 saves.
+  function migrateSave(obj) {
+    if (obj.version === 2) return obj;
+    obj.version = 2;
+    function fixJob(job) {
+      if (!job || typeof job !== 'object') return;
+      if (!('taste' in job)) job.taste = null;
+      if (job.machine) {
+        if (job.machine.faultRepaired == null) {
+          // v1 refurbs swapped the replacement in when the need was filled
+          var filled = (job.needs || []).length > 0 &&
+            (job.needs || []).every(function (n) {
+              return (n.filledPartIds || []).length >= (n.qty || 1);
+            });
+          job.machine.faultRepaired = !!(job.machine.faultPartIdx != null && filled);
+        }
+        if (!job.machine.specSummary) {
+          job.machine.specSummary = Engine.Jobs.specSummaryFor(job.machine.partIds || []);
+        }
+      }
+    }
+    (obj.jobs.offers || []).forEach(fixJob);
+    (obj.jobs.active || []).forEach(fixJob);
+    (obj.asIsMarket || []).forEach(function (m) {
+      if (m && !m.specSummary) m.specSummary = Engine.Jobs.specSummaryFor(m.partIds || []);
+    });
+    return obj;
+  }
   Engine.importSave = function (str) {
     var obj;
     try { obj = JSON.parse(String(str)); }
     catch (e) { return err('Not valid save JSON'); }
-    if (!obj || obj.version !== 1) return err('Unsupported save version');
+    if (!obj || (obj.version !== 1 && obj.version !== 2))
+      return err('Unsupported save version');
     var required = ['seed', 'rngState', 'eraId', 'startDate', 'day', 'cash',
                     'hoursLeft', 'flags', 'reputation', 'shop', 'inventory',
                     'jobs', 'asIsMarket', 'market', 'news', 'ledger'];
     for (var i = 0; i < required.length; i++) {
       if (!(required[i] in obj)) return err('Save is missing "' + required[i] + '"');
     }
-    Engine._state = obj;
+    Engine._state = migrateSave(obj);
     return { ok: true };
   };
   function autosave() {
@@ -315,6 +345,25 @@
   };
   Engine.appraiseRefurb = function (jobId) {
     return S() ? Engine.Jobs.appraiseRefurb(S(), jobId) : { estimate: 0 };
+  };
+  // §9.5: component list of a refurb job's machine (fault slot hidden until diagnosed)
+  Engine.getMachineParts = function (jobId) {
+    return S() ? Engine.Jobs.getMachineParts(S(), jobId) : [];
+  };
+  // §9.5: strip a refurb machine into inventory parts instead of fixing it
+  Engine.stripRefurb = function (jobId) {
+    var bad = needLive(); if (bad) return bad;
+    return Engine.Jobs.stripRefurb(S(), jobId);
+  };
+
+  // ------------------------------------------------------------------
+  // Part Wiki (§9.7)
+  // ------------------------------------------------------------------
+  Engine.getPartInfo = function (partId) {
+    return S() ? Engine.Pricing.getPartInfo(S(), partId) : null;
+  };
+  Engine.getWiki = function (filter) {
+    return S() ? Engine.Pricing.getWiki(S(), filter) : [];
   };
 
   // ------------------------------------------------------------------

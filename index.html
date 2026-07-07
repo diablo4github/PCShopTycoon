@@ -25,6 +25,8 @@
         <span id="hdr-rating" class="hdr-rating" title="Shop rating"></span>
         <span id="hdr-prestige" class="hdr-chip" title="Prestige"></span>
         <span id="hdr-tier" class="hdr-chip" title="Shop tier"></span>
+        <button id="btn-music" class="hdr-audio-btn" type="button" title="Toggle music" aria-label="Toggle music">🎵</button>
+        <button id="btn-sfx" class="hdr-audio-btn" type="button" title="Toggle sound effects" aria-label="Toggle sound effects">🔊</button>
         <button id="btn-endday" class="btn btn-primary" type="button">End Day</button>
       </div>
     </header>
@@ -34,10 +36,11 @@
       <button class="tab-btn" type="button" data-tab="workbench">Workbench <span class="tab-badge" id="badge-workbench" hidden></span></button>
       <button class="tab-btn" type="button" data-tab="inventory">Inventory</button>
       <button class="tab-btn" type="button" data-tab="market">Parts Market</button>
+      <button class="tab-btn" type="button" data-tab="wiki">Wiki</button>
       <button class="tab-btn" type="button" data-tab="shop">Shop</button>
       <button class="tab-btn" type="button" data-tab="ledger">Ledger</button>
       <button class="tab-btn" type="button" data-tab="news">News</button>
-      <button class="tab-btn" type="button" data-tab="save">Save / Load</button>
+      <button class="tab-btn" type="button" data-tab="save">System</button>
     </nav>
 
     <main id="tab-panels">
@@ -45,6 +48,7 @@
       <section id="tab-workbench" class="tab-panel" hidden></section>
       <section id="tab-inventory" class="tab-panel" hidden></section>
       <section id="tab-market" class="tab-panel" hidden></section>
+      <section id="tab-wiki" class="tab-panel" hidden></section>
       <section id="tab-shop" class="tab-panel" hidden></section>
       <section id="tab-ledger" class="tab-panel" hidden></section>
       <section id="tab-news" class="tab-panel" hidden></section>
@@ -71,6 +75,7 @@
   <script src="js/engine/simulation.js"></script>
   <script src="js/engine/api.js"></script>
   <script src="js/ui/ui.js"></script>
+  <script src="js/ui/audio.js"></script>
   <script src="js/ui/tabs.js"></script>
   <script src="js/ui/screens.js"></script>
   <script>

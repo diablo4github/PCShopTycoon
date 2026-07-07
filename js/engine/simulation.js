@@ -13,16 +13,25 @@
   Sim.newSummary = function () {
     return { dateStr: '', skippedSunday: false, newOffers: [], expired: [],
              callbacks: [], priceMovers: [], news: [], charges: [], payouts: [],
-             graceWarning: null, gameOver: false };
+             graceWarning: null, gameOver: false,
+             overtimeNote: null };
   };
 
   /* Run ONE calendar night. Steps numbered per SPEC §5.3. */
   Sim.processNight = function (state, summary) {
     var C = CFG();
 
-    // 1. Advance the clock
+    // 1. Advance the clock. Overtime (§9.4): a negative hoursLeft carries into
+    // the morning — hoursLeft = 8 + carried, never below OVERTIME_MORNING_MIN.
+    var carried = Math.min(0, state.hoursLeft || 0);
     state.day += 1;
-    state.hoursLeft = state.hoursPerDay;
+    state.hoursLeft = carried < 0 ?
+      Math.max(C.OVERTIME_MORNING_MIN, state.hoursPerDay + carried) :
+      state.hoursPerDay;
+    if (carried < 0 && summary) {
+      summary.overtimeNote = 'Worked ' + Engine.round2(-carried) +
+        'h of overtime — starting today with ' + state.hoursLeft + 'h.';
+    }
     state.supplyRunDoneToday = false;
     state.workedToday = [];
     state.declinesToday = 0;

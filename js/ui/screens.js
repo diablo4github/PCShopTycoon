@@ -202,6 +202,14 @@
     if (summary.skippedSunday) {
       h += '<div class="sum-note">Sunday — shop closed. Two nights passed while you rested.</div>';
     }
+    /* §9.4 — overtime note (engine may send a string or hours number under
+     * either key; rendered only when present). */
+    var ot = summary.overtimeNote !== undefined ? summary.overtimeNote : summary.overtime;
+    if (ot) {
+      h += '<div class="sum-note">' + esc(typeof ot === 'number'
+        ? 'Overtime worked last night: ' + ot + 'h — today starts short.'
+        : ot) + '</div>';
+    }
     if (summary.graceWarning) {
       h += '<div class="sum-grace">' + esc(summary.graceWarning) + '</div>';
     }

@@ -23,6 +23,9 @@
     shopName: '',             // new-game screen input value
     marketCat: 'all',         // Parts Market category filter
     marketSearch: '',         // Parts Market search text
+    wikiCat: 'all',           // Wiki category filter (§9.7)
+    wikiSearch: '',           // Wiki search text
+    wikiOpen: {},             // partId -> true for expanded wiki rows
     saveUrl: null             // objectURL of the last exported save blob
   };
 
@@ -97,6 +100,68 @@
     return res;
   };
 
+  /**
+   * §9.9 — Run a mutator with action feedback: snapshots cash & hoursLeft
+   * before the call, diffs afterwards, and spawns floating "+$85" / "-1.5h"
+   * deltas near the header readouts (plus a pip pulse and purchase/cash SFX).
+   * Then applies standard UI.api handling. Returns the engine result.
+   */
+  UI.act = function (fn, okMsg) {
+    var before = null;
+    if (UI.engineReady()) {
+      try {
+        var st0 = Engine.getState();
+        if (st0) before = { cash: Number(st0.cash) || 0, hours: Number(st0.hoursLeft) || 0 };
+      } catch (e) { /* ignore */ }
+    }
+    var res = UI.tryCall(fn);
+    if (res && res.ok !== false && before) {
+      try {
+        var st1 = Engine.getState();
+        if (st1) {
+          var dc = Math.round(((Number(st1.cash) || 0) - before.cash) * 100) / 100;
+          var dh = Math.round(((Number(st1.hoursLeft) || 0) - before.hours) * 100) / 100;
+          UI.feedback(dc, dh);
+        }
+      } catch (e2) { /* ignore */ }
+    }
+    return UI.api(res, okMsg);
+  };
+
+  /** Spawn the §9.9 floating deltas / pip pulse for a cash & hours change. */
+  UI.feedback = function (cashDelta, hoursDelta) {
+    if (cashDelta) {
+      UI.floatDelta(document.getElementById('hdr-cash'),
+        (cashDelta > 0 ? '+' : '-') + UI.fm(Math.abs(cashDelta)),
+        cashDelta > 0 ? 'd-cash-up' : 'd-cash-down');
+      if (UI.audio && UI.audio.sfx) UI.audio.sfx(cashDelta > 0 ? 'complete' : 'purchase');
+    }
+    if (hoursDelta && hoursDelta < 0) {
+      UI.floatDelta(document.getElementById('hdr-hours'),
+        (Math.round(hoursDelta * 10) / 10) + 'h', 'd-hours');
+      var hoursEl = document.getElementById('hdr-hours');
+      var pips = hoursEl && hoursEl.querySelector('.pips');
+      if (pips) {
+        pips.classList.add('pulse');
+        window.setTimeout(function () { pips.classList.remove('pulse'); }, 500);
+      }
+    }
+  };
+
+  /** Float a short-lived delta label near an anchor element. */
+  UI.floatDelta = function (anchor, text, cls) {
+    if (!anchor || !anchor.getBoundingClientRect) return;
+    var rect = anchor.getBoundingClientRect();
+    var z = (UI.zoom && UI.zoom.factor) || 1;
+    var el = document.createElement('span');
+    el.className = 'float-delta ' + (cls || '');
+    el.textContent = String(text);
+    el.style.left = Math.max(4, (rect.left + rect.width / 2 - 20) / z) + 'px';
+    el.style.top = Math.max(4, (rect.bottom + 6) / z) + 'px';
+    document.body.appendChild(el);
+    window.setTimeout(function () { if (el.parentNode) el.parentNode.removeChild(el); }, 750);
+  };
+
   /* ------------------------------------------------------------------ *
    * Widgets
    * ------------------------------------------------------------------ */
@@ -118,16 +183,32 @@
     return '<span class="stars" title="Rating ' + val.toFixed(2) + ' / 5">' + out + '</span>';
   };
 
-  /** Hours pip bar (8 pips, half pips supported). */
+  /**
+   * Hours pip bar (8 pips, half pips supported).
+   * §9.4: negative hoursLeft (overtime) renders extra red OT pips and an
+   * "OT" badge after the bar.
+   */
   UI.pipBarHTML = function (hoursLeft, total) {
     total = Math.max(1, Math.round(total || 8));
     var hl = Number(hoursLeft) || 0;
-    var html = '<span class="pips" title="' + hl + 'h of ' + total + 'h left today">';
-    for (var i = 0; i < total; i++) {
-      var fill = Math.max(0, Math.min(1, hl - i));
+    var i, fill;
+    var html = '<span class="pips" title="' +
+      (hl < 0 ? Math.abs(hl) + 'h of overtime worked' : hl + 'h of ' + total + 'h left today') + '">';
+    for (i = 0; i < total; i++) {
+      fill = Math.max(0, Math.min(1, hl - i));
       html += '<span class="pip' + (fill >= 1 ? ' full' : (fill > 0 ? ' half' : '')) + '"></span>';
     }
-    return html + '</span>';
+    if (hl < 0) {
+      var ot = Math.abs(hl);
+      var otPips = Math.ceil(ot);
+      for (i = 0; i < otPips; i++) {
+        fill = Math.max(0, Math.min(1, ot - i));
+        html += '<span class="pip ot' + (fill >= 1 ? '' : ' half') + '"></span>';
+      }
+    }
+    html += '</span>';
+    if (hl < 0) html += '<span class="ot-badge" title="Working overtime — tomorrow starts short">OT</span>';
+    return html;
   };
 
   /** Inline SVG sparkline from an array of numbers. */
@@ -181,6 +262,7 @@
     var t = document.createElement('div');
     t.className = 'toast t-' + (kind || 'info');
     t.textContent = String(msg == null ? '' : msg); // textContent: injection-safe
+    if (kind === 'error' && UI.audio && UI.audio.sfx) UI.audio.sfx('error');
     root.appendChild(t);
     while (root.children.length > 5) root.removeChild(root.firstChild);
     window.setTimeout(function () {
@@ -279,6 +361,71 @@
     if (!b.classList.contains(cls)) {
       b.classList.remove('era-early', 'era-90s', 'era-00s', 'era-modern');
       b.classList.add(cls);
+      if (UI.audio && UI.audio.setEra) UI.audio.setEra(cls);
+    }
+  };
+
+  /* ------------------------------------------------------------------ *
+   * §9.9 UI scaling (auto zoom + user override, localStorage "cst-zoom")
+   * ------------------------------------------------------------------ */
+
+  UI.zoom = {
+    KEY: 'cst-zoom',
+    mode: 'auto',        // 'auto' | '0.8' | '1' | '1.15' | '1.3'
+    factor: 1,           // effective zoom currently applied
+    _timer: null,
+
+    load: function () {
+      try {
+        if (typeof localStorage !== 'undefined') {
+          var v = localStorage.getItem(this.KEY);
+          if (v && (v === 'auto' || !isNaN(parseFloat(v)))) this.mode = v;
+        }
+      } catch (e) { /* storage unavailable */ }
+    },
+
+    set: function (mode) {
+      this.mode = mode;
+      try {
+        if (typeof localStorage !== 'undefined') localStorage.setItem(this.KEY, mode);
+      } catch (e) { /* ignore */ }
+      this.apply();
+    },
+
+    compute: function () {
+      if (this.mode !== 'auto') return parseFloat(this.mode) || 1;
+      var w = window.innerWidth || 1440;
+      return Math.min(1.4, Math.max(0.8, w / 1440));
+    },
+
+    apply: function () {
+      var z = Math.round(this.compute() * 1000) / 1000;
+      this.factor = z;
+      var body = document.body;
+      if (!body) return;
+      try { document.documentElement.style.setProperty('--ui-zoom', String(z)); } catch (e) { /* ignore */ }
+      if ('zoom' in body.style) {
+        body.style.zoom = String(z);
+        body.style.transform = '';
+        body.style.transformOrigin = '';
+        body.style.width = '';
+      } else {
+        // transform fallback (pre-126 Firefox etc.)
+        body.style.transform = z === 1 ? '' : 'scale(' + z + ')';
+        body.style.transformOrigin = '0 0';
+        body.style.width = z === 1 ? '' : (100 / z) + '%';
+      }
+    },
+
+    init: function () {
+      var self = this;
+      this.load();
+      this.apply();
+      window.addEventListener('resize', function () {
+        if (self.mode !== 'auto') return;
+        if (self._timer) window.clearTimeout(self._timer);
+        self._timer = window.setTimeout(function () { self.apply(); }, 150);
+      });
     }
   };
 
@@ -420,10 +567,25 @@
 
   UI.endDay = function () {
     if (!UI.engineReady()) { UI.toast('Engine not loaded', 'error'); return; }
+
+    // §9.9: brief disabled shimmer on the button while the summary opens.
+    var btn = document.getElementById('btn-endday');
+    if (btn && !btn.disabled) {
+      btn.classList.add('shimmer');
+      window.setTimeout(function () { btn.classList.remove('shimmer'); }, 700);
+    }
+
     var res = UI.tryCall(function () { return Engine.endDay(); });
     if (!res || res.ok === false) {
+      if (btn) btn.classList.remove('shimmer');
       UI.toast((res && res.error) || 'Could not end the day', 'error');
       return;
+    }
+    if (UI.audio && UI.audio.sfx) {
+      UI.audio.sfx('endday');
+      if (res.summary && res.summary.callbacks && res.summary.callbacks.length) {
+        window.setTimeout(function () { UI.audio.sfx('callback'); }, 450);
+      }
     }
     UI.refresh(); // updates header/tabs (and swaps to game-over screen if needed)
     if (UI.screens && UI.screens.showMorningSummary) UI.screens.showMorningSummary(res.summary);
@@ -437,6 +599,10 @@
     // Reveal data-debug controls with ?debug in the URL.
     if (/[?&]debug/.test(window.location.search)) document.body.classList.add('debug');
 
+    // §9.9 UI scaling and §9.8 audio (both no-ops if unavailable).
+    UI.zoom.init();
+    if (UI.audio && UI.audio.init) UI.audio.init();
+
     // Delegated, one-time listeners (never re-bound across refreshes).
     var bar = document.getElementById('tab-bar');
     if (bar) {
@@ -444,12 +610,25 @@
         var t = e.target;
         if (!t || !t.closest) return;
         var b = t.closest('[data-tab]');
-        if (b) UI.switchTab(b.getAttribute('data-tab'));
+        if (b) {
+          if (UI.audio && UI.audio.sfx) UI.audio.sfx('click');
+          UI.switchTab(b.getAttribute('data-tab'));
+        }
       });
     }
 
     var endBtn = document.getElementById('btn-endday');
     if (endBtn) endBtn.addEventListener('click', function () { UI.endDay(); });
+
+    // §9.8 header mute toggles (audio.js keeps their visual state in sync).
+    var musicBtn = document.getElementById('btn-music');
+    if (musicBtn) musicBtn.addEventListener('click', function () {
+      if (UI.audio && UI.audio.toggleMusic) UI.audio.toggleMusic();
+    });
+    var sfxBtn = document.getElementById('btn-sfx');
+    if (sfxBtn) sfxBtn.addEventListener('click', function () {
+      if (UI.audio && UI.audio.toggleSfx) UI.audio.toggleSfx();
+    });
 
     document.addEventListener('keydown', function (e) {
       if (e.key === 'Escape') {

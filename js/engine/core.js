@@ -53,16 +53,22 @@
     RANDOM_EVENT_NIGHTLY_CHANCE: 0.04, // per template per night (~1-2/month)
     MAX_RANDOM_EVENTS: 2,
 
-    // As-is / refurb (§5.4)
-    ASIS_MIN: 2, ASIS_MAX: 5,
-    ASIS_CHURN: 0.25,            // nightly chance each listing churns
-    ASIS_ASK_MIN: 0.30, ASIS_ASK_MAX: 0.45,   // ask vs part value
+    // As-is / refurb (§5.4, retuned per §9.5/§9.6: slower market, pricier asks,
+    // smaller flip premium so flips land 1.2-1.8x the jobs $/hour, not 3x+)
+    ASIS_MAX: 4,                 // listing cap
+    ASIS_CHURN: 0.08,            // nightly chance each listing churns (~2wk shelf life)
+    ASIS_ARRIVAL_CHANCE: 0.33,   // <=1 new arrival/night (~1 per 3 nights) below cap
+    ASIS_START_MIN: 2, ASIS_START_MAX: 4,     // listings seeded at newGame
+    ASIS_ASK_MIN: 0.40, ASIS_ASK_MAX: 0.55,   // ask vs part value (§9.6)
     REFURB_SALE_RATIO: 0.85,     // of part value
     REFURB_COND_MIN: 0.9, REFURB_COND_MAX: 1.1,
-    REFURB_PREMIUM_HOURS: 4,     // working-machine premium = laborRate*this
+    REFURB_PREMIUM_HOURS: 3,     // working-machine premium = laborRate*this (§9.6)
     REFURB_SCRAP_RATIO: 0.25,    // abandon: 25% of parts value
     REFURB_HOURS_MIN: 2, REFURB_HOURS_MAX: 4,
     ASIS_MAX_AGE_YEARS: 12,      // how far back as-is machines reach
+    // §9.5 strip-for-parts
+    STRIP_HOURS: 1.5,
+    STRIP_SURVIVAL: 0.9, STRIP_SURVIVAL_ESD: 0.97,
 
     // Mishaps (§5.5)
     MISHAP_PART_DAMAGE: 0.03,    // per install; esd-setup effects.mishapMult applies
@@ -74,13 +80,32 @@
     INSURANCE_MONTHLY_LABOR_MULT: 2,  // monthly premium = laborRate * this
     STORAGE_FEE_LABOR_DIV: 10,        // feePerSlot = laborRate/10 per overage slot
 
-    // Job pay (§5.4). Multipliers tuned so a typical 2h 1983 repair lands ~$45-80
-    // and the month-1 target of §7 (roughly break-even) holds for a busy shop.
+    // Job pay (§5.4, retuned per §9.6: honest labor is the era-1 backbone —
+    // repairs also bill a bench fee; typical 1983 repair lands $60-110).
     TYPE_MULT: {
-      repair: 0.75, upgrade: 0.7, software: 0.7, cleaning: 0.62, peripheral: 0.7,
-      data_recovery: 1.45, enthusiast: 1.25, contract: 0.85, build: 0, refurb: 0,
+      repair: 1.05, upgrade: 0.85, software: 1.0, cleaning: 0.7, peripheral: 0.8,
+      data_recovery: 1.45, enthusiast: 1.25, contract: 0.9, build: 0, refurb: 0,
       callback: 0
     },
+    BENCH_FEE_LABOR_MULT: 0.5,   // §9.6: repairs add ~0.5x laborRate bench fee to payout
+    // §9.2 — which customer types can receive which job type. Key is "type",
+    // "type:subtype", or "build:<useCase>"; most specific key wins; absent = broad.
+    CUSTOMER_JOB_AFFINITY: {
+      'build:gaming': ['gamer', 'student', 'creator'],
+      'build:workstation': ['smallbiz', 'office', 'creator'],
+      'build:server': ['smallbiz', 'office'],
+      'enthusiast:overclock': ['gamer', 'student', 'creator'],
+      'enthusiast:aesthetic': ['gamer', 'student', 'creator'],
+      'contract': ['smallbiz', 'office'],
+      'peripheral': ['office', 'smallbiz', 'home']
+    },
+    // §9.2 — customer tastes ("Swears by Seagate drives")
+    TASTE_CHANCE: 0.35,          // fraction of eligible jobs that carry a taste
+    TASTE_BONUS_MIN: 10, TASTE_BONUS_MAX: 20,  // payout bonus % when matched
+    TASTE_SCORE_BONUS: 0.2,      // score bonus when matched (never a penalty)
+    // §9.4 — overtime
+    overtimeCap: 3,              // hoursLeft floor is -overtimeCap
+    OVERTIME_MORNING_MIN: 5,     // morning hours never drop below this
     // Relative frequency of repair fault sources; labor-only & cheap-part faults
     // dominate so the 1.25x parts markup doesn't print money in expensive-part eras.
     FAULT_CATEGORY_WEIGHTS: {
@@ -394,6 +419,57 @@
       overage: Math.max(0, used - slots),
       feePerSlot: Engine.round2(Engine.laborRate(year) / Engine.CONFIG.STORAGE_FEE_LABOR_DIV)
     };
+  };
+
+  // ------------------------------------------------------------------
+  // Overtime-aware hour spending (§9.4). Any hour-consuming action may push
+  // hoursLeft negative down to -overtimeCap; an action that would break the
+  // floor is refused. Returns {ok:true} or {ok:false, error}.
+  // ------------------------------------------------------------------
+  Engine.spendHours = function (state, cost) {
+    var cap = Engine.CONFIG.overtimeCap;
+    if (state.hoursLeft - cost < -cap - 1e-9) {
+      return { ok: false, error: 'Too exhausted — call it a day' };
+    }
+    state.hoursLeft = Engine.round2(state.hoursLeft - cost);
+    return { ok: true };
+  };
+  // Hours still spendable today including the overtime allowance.
+  Engine.hoursAvailable = function (state) {
+    return Math.max(0, Engine.round2(state.hoursLeft + Engine.CONFIG.overtimeCap));
+  };
+
+  // ------------------------------------------------------------------
+  // Human-readable platform-tag labels (§9.7 Wiki)
+  // ------------------------------------------------------------------
+  var TAG_LABELS = {
+    'SKT-SLOT1': 'Slot 1', 'SKT-SLOTA': 'Slot A', 'SKT-A': 'Socket A',
+    'SKT-7': 'Socket 7', 'SKT-5': 'Socket 5', 'SKT-370': 'Socket 370',
+    'SKT-478': 'Socket 478', 'SKT-775': 'LGA 775', 'SKT-1155': 'LGA 1155',
+    'SKT-1150': 'LGA 1150', 'SKT-1151': 'LGA 1151', 'SKT-1200': 'LGA 1200',
+    'SKT-1700': 'LGA 1700', 'SKT-2011': 'LGA 2011',
+    'SKT-AM2': 'Socket AM2', 'SKT-AM3': 'Socket AM3', 'SKT-AM4': 'Socket AM4',
+    'SKT-AM5': 'Socket AM5', 'SKT-FM2': 'Socket FM2', 'SKT-939': 'Socket 939',
+    'SKT-754': 'Socket 754', 'SKT-462': 'Socket A (462)',
+    'MEM-DIP': 'DIP memory chips', 'MEM-30SIMM': '30-pin SIMM',
+    'MEM-72SIMM': '72-pin SIMM', 'MEM-SDR': 'SDRAM', 'MEM-RDRAM': 'RDRAM',
+    'MEM-DDR': 'DDR', 'MEM-DDR2': 'DDR2', 'MEM-DDR3': 'DDR3',
+    'MEM-DDR4': 'DDR4', 'MEM-DDR5': 'DDR5',
+    'BUS-ISA8': '8-bit ISA', 'BUS-ISA16': '16-bit ISA', 'BUS-VLB': 'VESA Local Bus',
+    'BUS-PCI': 'PCI', 'BUS-AGP': 'AGP', 'BUS-PCIE': 'PCI Express',
+    'STOR-FDD': 'Floppy', 'STOR-MFM': 'MFM', 'STOR-IDE': 'IDE/PATA',
+    'STOR-SCSI': 'SCSI', 'STOR-SATA': 'SATA', 'STOR-NVME': 'NVMe',
+    'FF-XT': 'XT form factor', 'FF-AT': 'AT form factor', 'FF-ATX': 'ATX',
+    'FF-MATX': 'Micro-ATX', 'FF-ITX': 'Mini-ITX',
+    'ARCH-8BIT': '8-bit', 'ARCH-16': '16-bit x86', 'ARCH-386': '32-bit (386+)',
+    'ARCH-586': 'Pentium-class', 'ARCH-X64': '64-bit x86'
+  };
+  Engine.tagLabel = function (tag) {
+    if (TAG_LABELS[tag]) return TAG_LABELS[tag];
+    var m = /^([A-Z]+)-(.+)$/.exec(String(tag || ''));
+    if (!m) return String(tag || '');
+    if (m[1] === 'SKT') return 'Socket ' + m[2];
+    return m[2];
   };
 
   // Rating = mean of last 25 scores.

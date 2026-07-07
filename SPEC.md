@@ -778,3 +778,157 @@ import cards + Settings card (UI scale, music/SFX volumes) + debug sim button.
   v1 save fixture migrates through importSave.
 - E2E (overseer): wiki tab renders; strip button on refurb; overtime pips; zoom applies;
   no console errors.
+
+---
+
+# v0.3 Addendum (playtest round 2)
+
+Binding for the v0.3 workstreams; wins over §1-§9 on conflict. Save `version` → **3**
+with migration from v1/v2 (lazy-synthesis allowed: steps/machines may be generated on
+first access for migrated jobs; a migrated save must simply be fully playable).
+`Engine.VERSION = "0.3"`; System tab shows it.
+
+## 10.1 Step-based tasks (ALL job types) — DATA + ENGINE + UI
+
+Every job gets a **step checklist** replacing the opaque hours blob (education +
+transparency). Job gains:
+```js
+steps: [ { id, label: "Remove CPU cooler", hours: 0.25, done: false, progress: 0-1 } ],
+stepIndex: 0        // current step
+```
+`hoursRequired` = Σ step hours (standard speed). `workJob` consumes steps in order,
+carrying partial progress; the overall progress bar stays (UI keeps it at the top of
+the card, derived from hours done / required).
+
+**`DATA.TASK_STEPS`** (new, in `js/data/flavor.js` or its own section of eras.js —
+DATA agent's choice, exported as `DATA.TASK_STEPS`): array of templates:
+```js
+{ type: "repair", partCategory: "cpu",        // most-specific match wins; nulls = wildcard
+  subtype: null, minYear: null, maxYear: null,
+  steps: [
+    { label: "Open case & ground yourself",  hours: 0.25 },
+    { label: "Remove CPU cooler",            hours: 0.25, cond: "cooler", minYear: 1990 },
+    { label: "Swap processor",               hours: 0.5 },
+    { label: "Set clock/jumper settings",    hours: 0.25, maxYear: 1997 },
+    { label: "Reassemble & POST test",       hours: 0.5 },
+    { label: "Update BIOS & drivers",        hours: 0.5,  minYear: 1995 },
+  ] }
+```
+Step `cond` values the engine resolves: `"cooler"` (machine/build has cooling or year
+≥1995), `"crt-kit"` (safety discharge — only if player owns kit; without it the step
+runs anyway with the §5.5 injury risk). Engine filters steps by year/cond, then applies
+part-tier nudges (premium part +0.25h on its install step) and speed/equipment/staff
+multipliers. Coverage required: every (type × relevant partCategory/subtype) across all
+eras resolves to a template with ≥3 steps — era-flavored where history demands it (IRQ
+jumpers pre-1998, low-level MFM format pre-1992, driver updates post-1995, SSD cloning
+post-2010, benchmarking step on enthusiast/build jobs post-1997). Validator: template
+table resolves for every combination the engine can generate (export the combination
+list as a fixture: `DATA.TASK_STEP_KEYS` not needed — validator re-implements the
+matcher over known types/categories/subtypes × sample years 1984/1993/1999/2007/2015/2023,
+asserting ≥3 steps and 0.5-6.5h totals).
+
+## 10.2 Deterministic time & difficulty (ENGINE)
+
+Job time = step template sums; **no random hour rolls**. Small deterministic modifiers
+only (part tier, era condition). `difficulty` (1-5) is now DERIVED: base by type +
+part-category weight (mobo/cpu heavier), +1 if premium parts involved, +1 if legacy-era
+machine (>8y old parts), clamp 1-5. Callback risk matrix (replaces §5.5 speeds):
+- quick:      4%  + 3.5% × difficulty
+- standard:   2%  + 1.0% × difficulty
+- meticulous: 0.5% + 0.3% × difficulty
+× reliability factor (as before) × test-bench 0.6; ESD setup multiplies the
+difficulty *term* by 0.6 (quick work on easy jobs with good equipment ≈ safe). Clamp
+[0.5%, 40%]. Offer PAY rounds to whole dollars (no more $17.64 offers).
+
+## 10.3 Assign ≠ install (ENGINE + UI)
+
+`installPart` semantics split:
+- `Engine.assignPart(jobId, needIndex, partId)` — from inventory ("stock") or buys at
+  market ("ordered", cash out now, supply-run rule). Assignment reserves the part
+  (removed from sellable inventory); nothing is "installed" yet.
+- `Engine.unassignPart(jobId, needIndex, partId?)` — returns part to inventory (ordered
+  parts too — you own them), allowed until the step that installs it is completed.
+- The install happens when the corresponding step completes (engine blocks working an
+  install step whose need is unassigned: `{ok:false, error:"Assign a replacement part
+  first"}`). Keep `Engine.installPart` as a deprecated alias for assignPart (one release).
+- `getJobNeeds` options: `source` stays, UI labels become **"Assign from Stock"** /
+  **"Order & Assign"**; assigned entries show an **Unassign** button.
+- Build jobs: `commitBuild` = assignment (already effectively is); parts install across
+  the build steps.
+
+## 10.4 Customer machines & overspend (ENGINE + UI)
+
+- Repair, upgrade, and peripheral jobs now carry `machine` (customer's PC: era-plausible
+  part list generated like refurb machines; peripheral jobs carry the peripheral item
+  instead — see 10.5). `getMachineParts(jobId)` works for them.
+- **Diagnosis knowledge model (fixes v0.2 bug):** before diagnosis ALL component
+  statuses are `"unknown"` ("?"), including refurbs at purchase. After diagnosis: fault
+  part `"faulty"`, rest `"ok"`. (Jobs with no diagnosis needed — upgrades — show all ok.)
+- **Overspend:** on completion, for each replaced/installed part: if its price >
+  max(1.75 × original part's current value, original + laborRate) → score −0.5 and a
+  grumble in `result.notes` ("Did it really need a $900 card?"). WAIVED when the job has
+  a taste and the part matches it (fanboys), or job type is enthusiast. Customer still
+  pays the 1.25× markup. UI: options in the needs picker show the original part's value
+  ("replaces: Tandon TM-100 · ~$180") and a ⚠ chip on options that would trigger it.
+
+## 10.5 Fault-first generation (DATA + ENGINE) — fixes mismatched copy
+
+Generation order becomes: pick customer type → pick concrete SUBJECT — for repairs:
+fault (category + template) on the generated machine; for peripherals: the peripheral
+item `{name, kind}`, kind ∈ printer|crt|lcd|modem|input|scanner|other, then its fault —
+→ then derive title, chip label, and complaint blurb from THAT subject. Title, chip,
+and blurb must always agree.
+
+DATA restructure:
+- `DATA.FLAVOR.faults[cat][i]` gains `complaints: ["My machine crashes whenever…", …]`
+  (≥2 each, customer-voice, symptom-accurate, no part name spoilers — symptoms, not
+  diagnoses).
+- `DATA.FLAVOR.peripheralItems[i]` gains `kind` and `complaints: [≥2]` +
+  `faultDescs: [≥2]` (what's actually wrong, revealed on diagnosis).
+- Generic `jobBlurbs.peripheral`/`jobBlurbs.repair` remain as last-resort fallbacks only.
+- Engine: peripheral job `subtype` = item kind (crt only for kind "crt"); chip renders
+  the kind; pay/difficulty follow the item (a CRT rebuild > a mouse fix).
+
+## 10.6 Sunday (ENGINE)
+
+- No offers generated for Sunday (the closed-day overnight pass skips offer generation;
+  Monday morning arrives with ONE normal batch, not two).
+- Deadlines never land on Sunday: any computed `deadlineDay` falling on a Sunday shifts
+  to Monday. Prices/events still tick both nights. Morning summary keeps the rest note.
+
+## 10.7 Employees (ENGINE + UI + DATA flavor)
+
+- `DATA.STAFF_ROLES` (DATA, in eras.js): 
+  Technician (repair/upgrade/refurb/peripheral/cleaning), Software Specialist
+  (software/data_recovery), Builder (build/contract/enthusiast), Apprentice (all
+  types at half effect). Each: { id, name, desc, jobTypes, wageFactor (Apprentice
+  cheap), minYear? }.
+- State: `staff: [{id, name, role, skill (0.15-0.35), hiredDay, wageMonthly}]`,
+  `staffMarket: [candidates]` (2-4, refreshes weekly, skill & wage rolled from role +
+  year laborRate; wageMonthly ≈ laborRate × 110 × skill × wageFactor, year-rescaled on
+  the 1st).
+- Slots by shop tier: 0 / 1 / 3 / 6 (garage = solo, per playtest).
+- Effect: for an action on job type T, time multiplier = 1 / (1 + S) where S = Σ over
+  applicable staff (sorted by contribution desc) of skill × 0.75^(k-1); Apprentice
+  contributes skill×0.5 to everything. Applied inside the hour-spending path so ALL
+  workflows benefit; diagnosis counts as the job's type.
+- Wages charged with rent on the 1st (ledger `fixedCosts`), listed in morning summary.
+  Firing: `fireStaff(id)` with 2 weeks severance (wageMonthly/2), small rep ding.
+- API: `getStaffView()` → { staff:[…+ effectNote], candidates:[…], slots, slotsUsed,
+  totalMonthlyWages, nextRefreshDay }; `hireStaff(candidateId)`, `fireStaff(staffId)`.
+- UI: Shop tab gains a **Staff** section (roster w/ role chips + wages + fire w/
+  confirm; candidates w/ hire buttons; slots meter; "no staff in a garage" note at tier
+  0). Sim-test: bot hires a tech when cash>threshold in a 1996 run; asserts wages billed,
+  time multiplier < 1 applied, severance on fire.
+
+## 10.8 Testing additions (both suites + E2E)
+
+validate-data: TASK_STEPS coverage matrix (10.1), fault complaints ≥2 per fault,
+peripheralItems kind+complaints+faultDescs, STAFF_ROLES sanity.
+sim-test: steps drive completion (a job finishes exactly when its steps sum is worked);
+assign→unassign→reassign round-trip preserves inventory; overspend penalty fires &
+waives correctly; no offer generated on Sundays and no deadline on a Sunday across 60
+days; staff scenario (10.7); integer offer pay; v2 fixture migrates to v3 and plays.
+E2E (overseer): step checklist renders and advances; Assign from Stock / Order & Assign
+/ Unassign buttons; machine list all-"?" before diagnosis (the v0.2 bug); staff hire in
+a non-garage tier; Sunday skip note without double offers.

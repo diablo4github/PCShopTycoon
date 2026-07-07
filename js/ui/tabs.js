@@ -11,6 +11,10 @@
  * components / strip-for-parts (§9.5), Part Wiki + ⓘ popovers (§9.7),
  * zoom & volume settings (§9.8/§9.9) — all feature-detected so the UI
  * degrades gracefully while the engine lands.
+ * v0.3: step checklists (§10.1), Assign/Order & Assign/Unassign (§10.3),
+ * customer machines + overspend warnings (§10.4), peripheral kind chips
+ * (§10.5), Staff section (§10.7), Engine.VERSION in System — same
+ * feature-detection discipline.
  * ========================================================================== */
 (function () {
   'use strict';
@@ -42,11 +46,21 @@
   var SUBTYPE_LABELS = {
     virus: 'Virus Removal', os_install: 'OS Install', overclock: 'Overclock',
     aesthetic: 'Aesthetic Build', thermal_paste: 'Thermal Paste', contract_build: 'Build Contract',
-    contract_upgrade: 'Upgrade Contract', crt: 'CRT', printer: 'Printer'
+    contract_upgrade: 'Upgrade Contract', crt: 'CRT', printer: 'Printer',
+    lcd: 'LCD Monitor', modem: 'Modem', input: 'Input Device', scanner: 'Scanner'
   };
+  /** §10.5 — subtypes are open-ended (peripheral kinds); prettify unknowns. */
+  function prettySubtype(s) {
+    s = String(s).replace(/_/g, ' ');
+    if (s.length <= 3) return s.toUpperCase();
+    return s.charAt(0).toUpperCase() + s.slice(1);
+  }
   var SPEED_TIP = 'Work speed trade-off — Quick: fewer hours on the bench but a much higher ' +
     'warranty-callback risk and a rating penalty. Standard: baseline. Meticulous: more hours, ' +
     'far fewer callbacks and a rating bonus.';
+  var OVERSPEND_TIP = 'The customer will grumble — and dock the job score — if you fit a part ' +
+    'far pricier than what it replaces. Fans do not mind when it matches their taste, and ' +
+    'enthusiasts never complain.';
 
   var marketTimer = null;
   var refocusMarketSearch = false;
@@ -184,18 +198,29 @@
         }, { yesLabel: 'Strip for Parts', title: 'Strip for parts' });
         break;
       }
-      case 'install': {
+      case 'install': { /* §10.3: assign (installPart is the deprecated alias) */
         var needIdx = parseInt(el.getAttribute('data-need'), 10);
         var sel = document.getElementById('need-sel-' + jobId + '-' + needIdx);
         var pid = sel && sel.value;
         if (!pid) { UI.toast('Pick a part first', 'info'); break; }
-        var ir = UI.act(function () { return Engine.installPart(jobId, needIdx, pid); });
+        var useAssign = has('assignPart');
+        var ir = UI.act(function () {
+          return useAssign ? Engine.assignPart(jobId, needIdx, pid) : Engine.installPart(jobId, needIdx, pid);
+        });
         if (ir && ir.ok !== false) {
-          var msg2 = 'Part installed';
+          var msg2 = useAssign ? 'Part assigned — it installs when its step is worked' : 'Part installed';
           if (ir.cost) msg2 += ' — ' + fm(ir.cost);
-          if (ir.filledNow !== null && ir.filledNow !== undefined) msg2 += ' (' + ir.filledNow + ' filled this batch)';
+          if (ir.filledNow !== null && ir.filledNow !== undefined) msg2 += ' (' + ir.filledNow + ' this batch)';
           UI.toast(msg2, 'success');
         }
+        break;
+      }
+      case 'unassign': { /* §10.3 */
+        var unIdx = parseInt(el.getAttribute('data-need'), 10);
+        var unPid = el.getAttribute('data-part') || null;
+        UI.act(function () {
+          return unPid ? Engine.unassignPart(jobId, unIdx, unPid) : Engine.unassignPart(jobId, unIdx);
+        }, 'Part returned to inventory');
         break;
       }
       case 'sell-refurb': {
@@ -286,6 +311,21 @@
         UI.act(function () { return Engine.buyEquipment(eid); }, 'Equipment purchased');
         break;
       }
+      case 'hire': { /* §10.7 */
+        var cid = el.getAttribute('data-id');
+        UI.act(function () { return Engine.hireStaff(cid); }, 'Welcome aboard — they start right away');
+        break;
+      }
+      case 'fire': { /* §10.7 */
+        var sid = el.getAttribute('data-id');
+        var sname = el.getAttribute('data-name') || 'this employee';
+        UI.confirm(
+          'Fire ' + sname + '? Severance costs about half a month\'s wages, and word gets around town.',
+          function () { UI.act(function () { return Engine.fireStaff(sid); }, 'They cleared out their bench'); },
+          { yesLabel: 'Fire them', title: 'Fire employee' }
+        );
+        break;
+      }
 
       /* ---- System (save/load + settings) ---- */
       case 'export':
@@ -310,6 +350,10 @@
   function onPanelChange(e) {
     var t = e.target;
     if (!t || !t.closest) return;
+    /* §10.3/§10.4 — need pickers: keep the button label ("Assign from
+     * Stock" vs "Order & Assign") and the replaces/overspend meta line in
+     * sync with the highlighted option. */
+    if (t.id && t.id.indexOf('need-sel-') === 0) { updateNeedRowUI(t); return; }
     var el = t.closest('[data-action]');
     if (!el) return;
     var action = el.getAttribute('data-action');
@@ -369,6 +413,15 @@
     var r = UI.act(function () {
       return (hours === null || hours === undefined) ? Engine.workJob(jobId) : Engine.workJob(jobId, hours);
     });
+    /* §10.3 — engine blocks install steps whose need is unassigned; lead
+     * the player straight to the picker. */
+    if (r && r.ok === false && /assign/i.test(r.error || '')) {
+      var box = document.getElementById('needs-' + jobId);
+      if (box) {
+        box.classList.add('attention');
+        try { box.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch (esc1) { /* ignore */ }
+      }
+    }
     if (r && r.ok !== false) {
       if (r.completed) {
         var res = r.result || {};
@@ -404,7 +457,7 @@
 
   function typeChip(j) {
     var label = TYPE_LABELS[j.type] || j.type || '';
-    if (j.subtype && SUBTYPE_LABELS[j.subtype]) label = SUBTYPE_LABELS[j.subtype];
+    if (j.subtype) label = SUBTYPE_LABELS[j.subtype] || prettySubtype(j.subtype); // §10.5
     return '<span class="chip chip-type t-' + esc(j.type) + '">' + esc(label) + '</span>';
   }
 
@@ -536,6 +589,11 @@
     }
 
     panel.innerHTML = html;
+
+    /* §10.3/§10.4 — initialize picker button labels + meta lines to match
+     * each select's current option. */
+    var needSels = panel.querySelectorAll('select[id^="need-sel-"]');
+    for (var ns = 0; ns < needSels.length; ns++) updateNeedRowUI(needSels[ns]);
   }
 
   function jobCardHTML(j, st) {
@@ -588,6 +646,9 @@
         '<span class="num small">' + esc(j.unitsDone || 0) + ' / ' + esc(j.units) + ' machines</span></div>';
     }
 
+    /* §10.1 step checklist (absent on old saves until the engine migrates) */
+    if (j.steps && j.steps.length) h += stepsHTML(j);
+
     /* speed selector */
     if (!ready) {
       h += '<div class="meta-row"><label class="muted small" for="speed-' + j.id + '">Pace</label>' +
@@ -610,10 +671,13 @@
         '</div>';
     }
 
-    /* refurb machine info + component list (§9.5) */
-    if (isRefurb && j.machine) {
-      h += '<div class="refurb-box"><span class="muted small">Machine:</span> ' + esc(j.machine.name) +
-        ' <span class="muted small">(' + esc(j.machine.year) + ')</span>' +
+    /* machine info + component list (§9.5 refurbs; §10.4 customer machines
+     * on repair/upgrade/peripheral too — statuses engine-driven, "?" until
+     * diagnosis) */
+    if (j.machine) {
+      h += '<div class="refurb-box"><span class="muted small">' +
+        (isRefurb ? 'Machine:' : 'In for service:') + '</span> ' + esc(j.machine.name) +
+        (j.machine.year ? ' <span class="muted small">(' + esc(j.machine.year) + ')</span>' : '') +
         (j.machine.boughtFor !== null && j.machine.boughtFor !== undefined
           ? ' <span class="muted small">— bought for <span class="num">' + esc(fm(j.machine.boughtFor)) + '</span></span>' : '');
       if (has('getMachineParts')) {
@@ -681,44 +745,134 @@
     return '<option value="' + val + '"' + (j.speed === val ? ' selected' : '') + '>' + esc(label) + '</option>';
   }
 
+  /* §10.1 — step checklist: ✓ done, ▶ current (with partial %), ○ pending. */
+  function stepsHTML(j) {
+    var steps = j.steps;
+    var cur = (typeof j.stepIndex === 'number') ? j.stepIndex : -1;
+    if (cur < 0) {
+      for (var k = 0; k < steps.length; k++) { if (!steps[k].done) { cur = k; break; } }
+    }
+    var h = '<div class="steps">';
+    steps.forEach(function (s, i) {
+      var done = !!s.done;
+      var isCur = !done && i === cur;
+      var cls = done ? 'st-done' : (isCur ? 'st-cur' : 'st-pend');
+      var ico = done ? '✓' : (isCur ? '▶' : '○');
+      var pct = (isCur && s.progress) ? Math.round(Math.max(0, Math.min(1, s.progress)) * 100) : 0;
+      h += '<div class="step ' + cls + '">' +
+        '<span class="st-ico">' + ico + '</span>' +
+        '<span class="st-label">' + esc(s.label) + '</span>' +
+        (pct > 0 ? UI.barHTML(pct, 100) + '<span class="st-pct">' + pct + '%</span>' : '') +
+        (s.hours !== undefined && s.hours !== null ? '<span class="st-hours">' + esc(s.hours) + 'h</span>' : '') +
+        '</div>';
+    });
+    return h + '</div>';
+  }
+
+  /** Resolve a part id to a display name (best effort, engine-first). */
+  function partNameOf(partId) {
+    if (has('getPartInfo')) {
+      var r = tryCall(function () { return Engine.getPartInfo(partId); });
+      if (r && r.ok !== false && r.name) return r.name;
+    }
+    return partId;
+  }
+
+  /* §10.3/§10.4 — needs picker: assign/unassign, replaces + overspend meta. */
   function needsHTML(j) {
     var needs = tryCall(function () { return Engine.getJobNeeds(j.id); });
     if (!Array.isArray(needs) || !needs.length) return '';
-    var h = '<div class="needs"><div class="sub-title">Parts needed</div>';
+    var anyUnassigned = false;
+    needs.forEach(function (n) { if ((n.filled || 0) < (n.qty || 1)) anyUnassigned = true; });
+    var canUnassign = has('unassignPart');
+
+    var h = '<div class="needs' + (anyUnassigned ? ' attention' : '') + '" id="needs-' + j.id + '">' +
+      '<div class="sub-title">Parts needed' + (anyUnassigned ? ' — assign a part to continue' : '') + '</div>';
+
     needs.forEach(function (n) {
       var qty = n.qty || 1;
       var filledAll = (n.filled || 0) >= qty;
       h += '<div class="need-row' + (filledAll ? ' done' : '') + '">' +
         '<span class="need-label">' + esc(n.label || CAT_LABELS[n.category] || n.category) +
         (qty > 1 ? ' <span class="muted">(' + (n.filled || 0) + '/' + qty + ')</span>' : '') + '</span>';
-      if (filledAll) {
-        h += '<span class="ok-mark">✓ installed</span>';
-      } else if (!n.options || !n.options.length) {
-        h += '<span class="muted">No compatible part available right now — check back after prices refresh.</span>';
-      } else {
-        var selId = 'need-sel-' + j.id + '-' + n.index;
-        h += '<select class="sel" id="' + selId + '">';
-        n.options.forEach(function (o) {
-          var below = o.meets === false;                       // §9.3
-          var label = (o.tasteMatch ? '♥ ' : '') + o.name +    // §9.2
-            ' — ' + fm(o.price) +
-            (o.source === 'inventory' ? ' (in stock)' : ' (buy from market)') +
-            (below ? ' — below spec' : '');
-          h += '<option value="' + esc(o.partId) + '"' + (below ? ' disabled' : '') + '>' +
-            esc(label) + '</option>';
-        });
-        h += '</select>' +
-          (has('getPartInfo')
-            ? '<button type="button" class="info-btn" data-action="partinfo" data-from-select="' + selId + '" title="Part details">i</button>'
+
+      /* assigned entries (engine may expose n.assigned; fall back to the
+       * job's raw filledPartIds) */
+      var jn = (j.needs && j.needs[n.index]) || {};
+      var assigned = Array.isArray(n.assigned) ? n.assigned : (jn.filledPartIds || []);
+      assigned.forEach(function (ap) {
+        var apId = (ap && typeof ap === 'object') ? ap.partId : ap;
+        var apName = (ap && typeof ap === 'object' && ap.name) ? ap.name : partNameOf(apId);
+        h += '<span class="assigned-row"><span class="ok-mark">✓</span> ' + esc(apName) +
+          ' <span class="muted small">' + (canUnassign ? 'assigned — installs at its step' : 'installed') + '</span>' +
+          (canUnassign
+            ? ' <button type="button" class="btn btn-sm btn-ghost" data-action="unassign" data-job="' + j.id +
+              '" data-need="' + n.index + '" data-part="' + esc(apId) + '">Unassign</button>'
             : '') +
-          '<button type="button" class="btn btn-primary btn-sm" data-action="install" data-job="' + j.id + '" data-need="' + n.index + '">Install</button>';
-        if (hasTasteOption(n.options)) {
-          h += '<span class="taste-hit small" title="Matches the customer\'s taste for bonus pay">♥ = customer favorite</span>';
+          '</span>';
+      });
+
+      if (!filledAll) {
+        if (!n.options || !n.options.length) {
+          h += '<span class="muted">No compatible part available right now — check back after prices refresh.</span>';
+        } else {
+          var selId = 'need-sel-' + j.id + '-' + n.index;
+          h += '<select class="sel" id="' + selId + '">';
+          n.options.forEach(function (o) {
+            var below = o.meets === false;                       // §9.3
+            var label = (o.overspend ? '⚠ ' : '') +              // §10.4
+              (o.tasteMatch ? '♥ ' : '') + o.name +              // §9.2
+              ' — ' + fm(o.price) +
+              (o.source === 'inventory' ? ' (in stock)' : ' (order from market)') +
+              (below ? ' — below spec' : '');
+            var repTxt = (o.replaces && o.replaces.name)
+              ? o.replaces.name + ' · ~' + fm(o.replaces.value)
+              : (n.replaces && n.replaces.name ? n.replaces.name + ' · ~' + fm(n.replaces.value) : '');
+            h += '<option value="' + esc(o.partId) + '"' + (below ? ' disabled' : '') +
+              ' data-source="' + esc(o.source || 'market') + '"' +
+              ' data-overspend="' + (o.overspend ? 1 : 0) + '"' +
+              (repTxt ? ' data-replaces="' + esc(repTxt) + '"' : '') +
+              '>' + esc(label) + '</option>';
+          });
+          h += '</select>' +
+            (has('getPartInfo')
+              ? '<button type="button" class="info-btn" data-action="partinfo" data-from-select="' + selId + '" title="Part details">i</button>'
+              : '') +
+            '<button type="button" class="btn btn-primary btn-sm" id="need-btn-' + j.id + '-' + n.index +
+              '" data-action="install" data-job="' + j.id + '" data-need="' + n.index + '">Assign</button>';
+          if (hasTasteOption(n.options)) {
+            h += '<span class="taste-hit small" title="Matches the customer\'s taste for bonus pay">♥ = customer favorite</span>';
+          }
+          h += '<span class="need-meta" id="need-meta-' + j.id + '-' + n.index + '" hidden></span>';
         }
       }
       h += '</div>';
     });
     return h + '</div>';
+  }
+
+  /** Sync a need picker's button label + replaces/overspend meta line with
+   * its currently selected option (§10.3/§10.4). */
+  function updateNeedRowUI(sel) {
+    var m = /^need-sel-(\d+)-(\d+)$/.exec(sel.id || '');
+    if (!m) return;
+    var opt = sel.options[sel.selectedIndex];
+    var btn = document.getElementById('need-btn-' + m[1] + '-' + m[2]);
+    if (btn) {
+      var src = opt ? opt.getAttribute('data-source') : null;
+      btn.textContent = src === 'inventory' ? 'Assign from Stock' : 'Order & Assign';
+    }
+    var meta = document.getElementById('need-meta-' + m[1] + '-' + m[2]);
+    if (meta) {
+      var bits = [];
+      var rep = opt ? opt.getAttribute('data-replaces') : null;
+      if (rep) bits.push('replaces ' + esc(rep));
+      if (opt && opt.getAttribute('data-overspend') === '1') {
+        bits.push('<span class="chip-overspend" title="' + esc(OVERSPEND_TIP) + '">⚠ much pricier than the original</span>');
+      }
+      meta.innerHTML = bits.join(' &nbsp;·&nbsp; ');
+      meta.hidden = !bits.length;
+    }
   }
 
   function hasTasteOption(options) {
@@ -1180,6 +1334,12 @@
 
     html += '</div>'; /* /shop-grid */
 
+    /* §10.7 staff */
+    if (has('getStaffView')) {
+      var stv = tryCall(function () { return Engine.getStaffView(); });
+      if (stv && stv.ok !== false) html += staffSectionHTML(stv, st);
+    }
+
     /* equipment */
     html += '<h2 class="section-title">Equipment</h2><div class="shop-grid">';
     var equipment = arr(sv.equipment);
@@ -1209,6 +1369,89 @@
     });
     html += '</div>';
     panel.innerHTML = html;
+  }
+
+  /* ---- §10.7 staff section (Shop tab) ---- */
+
+  function staffRoleLabel(role) {
+    try {
+      var roles = window.DATA && DATA.STAFF_ROLES;
+      if (roles) {
+        for (var i = 0; i < roles.length; i++) {
+          if (roles[i].id === role) return roles[i].name;
+        }
+      }
+    } catch (e) { /* ignore */ }
+    return role ? prettySubtype(role) : '';
+  }
+
+  function staffSectionHTML(stv, st) {
+    var slots = Number(stv.slots) || 0;
+    var used = Number(stv.slotsUsed) || 0;
+    var h = '<h2 class="section-title">Staff</h2>';
+
+    if (slots <= 0) {
+      h += '<div class="note">A one-person garage — upgrade the shop to hire help.</div>';
+      return h;
+    }
+
+    /* slots meter + payroll line */
+    h += '<div class="staff-slots">' +
+      '<div class="flex-between"><span><b class="num">' + used + '</b> / ' + slots + ' staff slots</span>' +
+      (stv.totalMonthlyWages ? '<span class="muted small">Payroll: <b class="num">' + esc(fm(stv.totalMonthlyWages)) + '</b>/month (billed on the 1st)</span>' : '') +
+      '</div>' + UI.barHTML(used, slots, 'grow') + '</div>';
+
+    /* roster */
+    var staff = arr(stv.staff);
+    if (!staff.length) {
+      h += emptyBox('No employees yet — hire from the candidates below and watch jobs go faster.');
+    } else {
+      h += '<div class="shop-grid">';
+      staff.forEach(function (s) {
+        h += '<div class="card staff-card">' +
+          '<div class="card-title">' + esc(s.name) +
+            ' <span class="chip chip-role">' + esc(staffRoleLabel(s.role)) + '</span></div>' +
+          '<div class="meta-row">' +
+            (s.skill !== undefined && s.skill !== null ? '<span class="staff-skill muted small">Skill ' + Math.round(Number(s.skill) * 100) + '</span>' : '') +
+            '<span class="wage num">' + esc(fm(s.wageMonthly)) + '/mo</span>' +
+          '</div>' +
+          (s.effectNote ? '<div class="effect-note">' + esc(s.effectNote) + '</div>' : '') +
+          '<div class="job-actions">' +
+            '<button type="button" class="btn btn-sm btn-ghost" data-action="fire" data-id="' + esc(s.id) + '" data-name="' + esc(s.name) + '">Fire…</button>' +
+          '</div></div>';
+      });
+      h += '</div>';
+    }
+
+    /* candidates */
+    h += '<h3 class="sub-title">Candidates' +
+      (stv.nextRefreshDay !== undefined && stv.nextRefreshDay !== null && st
+        ? ' <span class="muted small">— fresh faces in ' + Math.max(0, stv.nextRefreshDay - st.day) + ' day' + (stv.nextRefreshDay - st.day === 1 ? '' : 's') + '</span>'
+        : '') + '</h3>';
+    var cands = arr(stv.candidates);
+    if (!cands.length) {
+      h += emptyBox('Nobody is answering the help-wanted ad this week — candidates refresh weekly.');
+    } else {
+      var full = used >= slots;
+      h += '<div class="shop-grid">';
+      cands.forEach(function (c) {
+        h += '<div class="card staff-card">' +
+          '<div class="card-title">' + esc(c.name) +
+            ' <span class="chip chip-role">' + esc(staffRoleLabel(c.role)) + '</span></div>' +
+          (c.desc ? '<p class="muted small">' + esc(c.desc) + '</p>' : '') +
+          '<div class="meta-row">' +
+            (c.skill !== undefined && c.skill !== null ? '<span class="staff-skill muted small">Skill ' + Math.round(Number(c.skill) * 100) + '</span>' : '') +
+            '<span class="wage num">' + esc(fm(c.wageMonthly)) + '/mo</span>' +
+          '</div>' +
+          (c.effectNote ? '<div class="effect-note">' + esc(c.effectNote) + '</div>' : '') +
+          '<div class="job-actions">' +
+            '<button type="button" class="btn btn-primary btn-sm" data-action="hire" data-id="' + esc(c.id) + '"' +
+            (full ? ' disabled title="All staff slots are full"' : '') + '>Hire</button>' +
+          '</div></div>';
+      });
+      h += '</div>';
+    }
+    return h;
   }
 
   /* ================================================================== *
@@ -1322,7 +1565,11 @@
     var hasAuto = false;
     try { hasAuto = !!(window.Engine && Engine.hasAutosave && Engine.hasAutosave()); } catch (e) { /* ignore */ }
 
-    var html = '<h2 class="section-title">System</h2><div class="save-grid">';
+    var ver = '';
+    try { if (window.Engine && Engine.VERSION) ver = String(Engine.VERSION); } catch (ev) { /* ignore */ }
+    var html = '<h2 class="section-title">System' +
+      (ver ? ' <span class="version-note">engine v' + esc(ver) + '</span>' : '') +
+      '</h2><div class="save-grid">';
 
     /* ---- Settings card (§9.8 volumes + §9.9 UI scale) ---- */
     html += '<div class="card"><h3>Settings</h3>';

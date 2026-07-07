@@ -195,6 +195,286 @@
     return parts.join(', ');
   }
 
+  // ------------------------------------------------------------------
+  // §10.6: deadlines never land on Sunday
+  // ------------------------------------------------------------------
+  function shiftOffSunday(state, day) {
+    return Engine.dateInfo(day, state).isSunday ? day + 1 : day;
+  }
+  Jobs.shiftOffSunday = shiftOffSunday;
+
+  // ------------------------------------------------------------------
+  // §10.1 Step-based tasks
+  // ------------------------------------------------------------------
+  function stepPartCategory(job) {
+    if (job.fault && job.fault.partCategory) return job.fault.partCategory;
+    if (job.type === 'upgrade' || job.type === 'contract')
+      return job.needs[0] ? job.needs[0].category : null;
+    if (job.type === 'enthusiast' && job.subtype === 'overclock') return 'cooling';
+    return null;
+  }
+  // Most-specific template wins: type exact, then subtype/partCategory
+  // exact-or-null, then year window (§10.1).
+  function matchStepTemplate(job, year) {
+    var templates = Engine.getData().TASK_STEPS || [];
+    var cat = stepPartCategory(job);
+    var best = null, bestScore = -1;
+    for (var i = 0; i < templates.length; i++) {
+      var t = templates[i];
+      if (!t || t.type !== job.type) continue;
+      if (t.subtype != null && t.subtype !== job.subtype) continue;
+      if (t.partCategory != null && t.partCategory !== cat) continue;
+      if (t.minYear != null && year < t.minYear) continue;
+      if (t.maxYear != null && year > t.maxYear) continue;
+      var score = (t.subtype != null ? 2 : 0) + (t.partCategory != null ? 2 : 0) +
+                  ((t.minYear != null || t.maxYear != null) ? 1 : 0);
+      if (score > bestScore) { bestScore = score; best = t; }
+    }
+    return best;
+  }
+  function stepCondOk(cond, state, job, year) {
+    if (!cond) return true;
+    if (cond === 'cooler') {   // machine/build has cooling, or modern era
+      var ids = (job.machine && job.machine.partIds) ||
+                (job.build && job.build.parts) || [];
+      for (var i = 0; i < ids.length; i++) {
+        var p = Engine.partById(ids[i]);
+        if (p && p.category === 'cooling') return true;
+      }
+      return year >= 1995;
+    }
+    if (cond === 'crt-kit') return Engine.equipmentOwned(state, 'crt-kit');
+    return true;   // unknown conditions are inclusive (defensive)
+  }
+  var INSTALL_LABEL_RE = /install|swap|replace|fit |seat|mount|clone/i;
+
+  /* Assemble the step checklist (§10.1). Falls back to a synthesized generic
+   * checklist when no template resolves (old data / migrated saves). */
+  function assembleSteps(state, job) {
+    var year = Engine.currentYear(state);
+    var tmpl = matchStepTemplate(job, year);
+    var steps = [];
+    if (tmpl && Array.isArray(tmpl.steps)) {
+      for (var i = 0; i < tmpl.steps.length; i++) {
+        var s = tmpl.steps[i];
+        if (!s) continue;
+        if (s.minYear != null && year < s.minYear) continue;
+        if (s.maxYear != null && year > s.maxYear) continue;
+        if (!stepCondOk(s.cond, state, job, year)) continue;
+        steps.push({ id: 's' + (steps.length + 1), label: String(s.label || 'Bench work'),
+                     hours: Math.max(0.25, Engine.round2(s.hours || 0.25)),
+                     done: false, progress: 0, needIndex: null,
+                     install: !!s.install });
+      }
+    }
+    if (steps.length < 2) steps = synthesizeSteps(job.hoursRequired || 2, job);
+    // Map each (eventual) need to the step that installs it. Repairs map before
+    // diagnosis reveals the need — the block simply holds until it exists.
+    var needCount = expectedNeedCount(job);
+    if (needCount > 0) {
+      var installIdxs = [], k;
+      for (k = 0; k < steps.length; k++) if (steps[k].install) installIdxs.push(k);
+      if (!installIdxs.length) {
+        for (k = 0; k < steps.length; k++)
+          if (INSTALL_LABEL_RE.test(steps[k].label)) installIdxs.push(k);
+      }
+      if (!installIdxs.length) installIdxs.push(Math.floor(steps.length / 2));
+      for (var n = 0; n < needCount; n++) {
+        var si = Math.min(installIdxs[Math.min(n, installIdxs.length - 1)], steps.length - 1);
+        while (si < steps.length - 1 && steps[si].needIndex != null) si++;
+        if (steps[si].needIndex == null) steps[si].needIndex = n;
+      }
+    }
+    for (var d = 0; d < steps.length; d++) delete steps[d].install;
+    job.steps = steps;
+    job.stepIndex = 0;
+    // Contracts: the checklist covers one unit; hours scale with the unit count.
+    if (job.units > 1) {
+      var perUnit = 0;
+      steps.forEach(function (s) { perUnit += s.hours; });
+      job.perUnitHours = Engine.round2(perUnit);
+      steps.forEach(function (s) {
+        s.hours = Engine.round2(s.hours * job.units);
+        s.label += ' (x' + job.units + ' units)';
+      });
+    }
+    recomputeHours(job);
+  }
+  Jobs.assembleSteps = assembleSteps;
+  function expectedNeedCount(job) {
+    if (job.needs && job.needs.length) return job.needs.length;
+    if (job.fault && job.fault.partCategory) return 1;  // appears at diagnosis
+    return 0;
+  }
+  function recomputeHours(job) {
+    var total = 0, done = 0;
+    for (var i = 0; i < job.steps.length; i++) {
+      total += job.steps[i].hours;
+      done += job.steps[i].hours * (job.steps[i].progress || 0);
+    }
+    job.hoursRequired = Engine.round2(total);
+    job.hoursDone = Engine.round2(done);
+  }
+  // Generic fallback checklist: prep 25% / main 50% / test 25%, quarter-rounded.
+  function synthesizeSteps(totalHours, job) {
+    var h = Math.max(0.75, totalHours || 2);
+    function q(x) { return Math.max(0.25, Math.round(x * 4) / 4); }
+    var a = q(h * 0.25), b = q(h * 0.5);
+    var c = Math.max(0.25, Engine.round2(h - a - b));
+    var installs = !!((job && job.needs && job.needs.length) ||
+                      (job && job.fault && job.fault.partCategory));
+    return [
+      { id: 's1', label: 'Open up, inspect & prep', hours: a,
+        done: false, progress: 0, needIndex: null },
+      { id: 's2', label: installs ? 'Swap in the replacement part' : 'Do the bench work',
+        hours: b, done: false, progress: 0, needIndex: null, install: true },
+      { id: 's3', label: 'Test & button up', hours: c,
+        done: false, progress: 0, needIndex: null }
+    ];
+  }
+  Jobs.synthesizeSteps = synthesizeSteps;
+  // Lazy synthesis for migrated saves (§10): steps appear on first touch.
+  function ensureSteps(state, job) {
+    if (job.steps && job.steps.length) return;
+    var priorDone = job.hoursDone || 0;
+    assembleSteps(state, job);
+    // Replay prior progress into the fresh checklist (no installs re-fired —
+    // v2 installs already happened at assign time).
+    var left = Math.min(job.hoursRequired, priorDone);
+    var idx = 0;
+    while (left > 0 && idx < job.steps.length) {
+      var st = job.steps[idx];
+      if (left >= st.hours - 1e-9) { st.progress = 1; st.done = true; left -= st.hours; idx++; }
+      else { st.progress = left / st.hours; left = 0; }
+    }
+    job.stepIndex = idx;
+    recomputeHours(job);
+  }
+  Jobs.ensureSteps = ensureSteps;
+  // Premium part adds +0.25h to its install step (§10.1)
+  function nudgeStep(job, needIndex, delta) {
+    if (!job.steps || !job.steps.length) return;
+    var st = null;
+    for (var i = 0; i < job.steps.length; i++)
+      if (job.steps[i].needIndex === needIndex) { st = job.steps[i]; break; }
+    if (!st) st = job.steps[job.steps.length - 1];
+    if (st.done) return;
+    st.hours = Math.max(0.25, Engine.round2(st.hours + delta));
+    recomputeHours(job);
+  }
+
+  // ------------------------------------------------------------------
+  // §10.4 Customer machines (repair/upgrade carry an era-plausible PC)
+  // ------------------------------------------------------------------
+  function assembleMachineParts(state) {
+    var C = CFG();
+    var year = Engine.currentYear(state);
+    var mobos = purchasableByCategory(state, 'motherboard').filter(function (m) {
+      return year - m.introYear <= C.ASIS_MAX_AGE_YEARS;
+    });
+    if (!mobos.length) mobos = purchasableByCategory(state, 'motherboard');
+    var mobo = Engine.pick(mobos);
+    if (!mobo) return null;
+    var partIds = [mobo.id];
+    var cats = ['cpu', 'ram', 'storage', 'psu', 'case'];
+    for (var c = 0; c < cats.length; c++) {
+      var options = purchasableByCategory(state, cats[c]).filter(function (p) {
+        return Engine.Compat.fits(p, mobo).fits;
+      });
+      var part = Engine.pick(options);
+      if (!part) return null;   // can't assemble an era machine
+      partIds.push(part.id);
+    }
+    if (!mobo.integratedVideo) {
+      var gpus = purchasableByCategory(state, 'gpu').filter(function (p) {
+        return Engine.Compat.fits(p, mobo).fits;
+      });
+      var gpu = Engine.pick(gpus);
+      if (gpu) partIds.push(gpu.id);
+    }
+    return { partIds: partIds, mobo: mobo };
+  }
+
+  /* Customer's PC for repair/upgrade jobs (§10.4). targetCategory (the fault
+   * or upgrade slot) is guaranteed present; faultPartIdx points at it. */
+  function customerMachineFor(state, targetCategory) {
+    var built = assembleMachineParts(state);
+    if (!built) return null;
+    var partIds = built.partIds, mobo = built.mobo;
+    var year = Engine.currentYear(state);
+    var idx = null;
+    if (targetCategory) {
+      for (var i = 0; i < partIds.length; i++) {
+        var p = Engine.partById(partIds[i]);
+        if (p && p.category === targetCategory) { idx = i; break; }
+      }
+      if (idx == null) {   // machine lacks the category (cooling/gpu) — add one
+        var extras = purchasableByCategory(state, targetCategory).filter(function (p) {
+          return Engine.Compat.fits(p, mobo).fits;
+        });
+        var extra = Engine.pick(extras);
+        if (extra) { partIds.push(extra.id); idx = partIds.length - 1; }
+      }
+    }
+    var cpuName = null;
+    for (var j = 0; j < partIds.length; j++) {
+      var pj = Engine.partById(partIds[j]);
+      if (pj && pj.category === 'cpu') { cpuName = pj.name; break; }
+    }
+    var machineYear = Engine.clamp(
+      Engine.randInt(mobo.introYear, Math.min(year, (mobo.eolYear || year) + 2)),
+      mobo.introYear, year);
+    return {
+      name: (cpuName || 'Aging') + ' system', year: machineYear,
+      partIds: partIds, askPrice: null, boughtFor: null,
+      faultPartIdx: idx, condition: null, faultRepaired: false,
+      specSummary: specSummaryFor(partIds)
+    };
+  }
+
+  // ------------------------------------------------------------------
+  // §10.2 Derived difficulty (no random rolls)
+  // ------------------------------------------------------------------
+  function deriveDifficulty(state, job) {
+    var C = CFG();
+    var d;
+    if (job.type === 'peripheral') {
+      d = C.PERIPHERAL_KIND_DIFF[job.subtype] != null ?
+          C.PERIPHERAL_KIND_DIFF[job.subtype] : 2;
+    } else {
+      d = C.DIFF_BASE[job.type] != null ? C.DIFF_BASE[job.type] : 2;
+    }
+    d += C.DIFF_CAT_BONUS[stepPartCategory(job)] || 0;
+    var year = Engine.currentYear(state);
+    var ids = (job.machine && job.machine.partIds) || [];
+    var hasPremium = false, ageSum = 0, n = 0;
+    for (var i = 0; i < ids.length; i++) {
+      var p = Engine.partById(ids[i]);
+      if (!p) continue;
+      if (p.tier === 'premium') hasPremium = true;
+      ageSum += year - p.introYear; n++;
+    }
+    if (isBuildJob(job) && job.build &&
+        job.build.budget > Engine.baselineFor(year).buildBudget * 1.15) hasPremium = true;
+    if (hasPremium) d += 1;
+    if (n > 0 && ageSum / n > C.LEGACY_MACHINE_YEARS) d += 1;
+    return Engine.clamp(Math.round(d), 1, 5);
+  }
+
+  // §10.5: peripheral item kind, defensively inferred for old-format data
+  function peripheralKindOf(item) {
+    if (item && item.kind) return item.kind;
+    if (item && item.crt) return 'crt';
+    var name = String((item && item.name) || '').toLowerCase();
+    if (name.indexOf('printer') !== -1) return 'printer';
+    if (name.indexOf('monitor') !== -1 || name.indexOf('crt') !== -1) return 'crt';
+    if (name.indexOf('lcd') !== -1) return 'lcd';
+    if (name.indexOf('modem') !== -1) return 'modem';
+    if (name.indexOf('scanner') !== -1) return 'scanner';
+    if (name.indexOf('mouse') !== -1 || name.indexOf('keyboard') !== -1) return 'input';
+    return 'other';
+  }
+
   function makeOffer(state) {
     var C = CFG();
     var year = Engine.currentYear(state);

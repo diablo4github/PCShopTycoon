@@ -396,6 +396,135 @@ needLen(FL.peripheralItems, 10, 'peripheralItems');
 });
 needLen(FL.shopNameSuggestions, 8, 'shopNameSuggestions');
 
+// ---------------------------------------------------------------- v0.3 (§10.5) fault complaints & peripheral kinds
+Object.keys(FL.faults || {}).forEach(function (k) {
+  (FL.faults[k] || []).forEach(function (f, i) {
+    if (!Array.isArray(f.complaints) || f.complaints.length < 2 || !f.complaints.every(isStr)) {
+      err('FLAVOR.faults.' + k + '[' + i + ']: needs complaints array with >= 2 strings (v0.3 §10.5)');
+    }
+  });
+});
+var PERIPH_KINDS = ['printer', 'crt', 'lcd', 'modem', 'input', 'scanner', 'other'];
+(FL.peripheralItems || []).forEach(function (it) {
+  var l = 'FLAVOR.peripheralItems.' + it.name;
+  if (PERIPH_KINDS.indexOf(it.kind) === -1) err(l + ': kind must be one of ' + PERIPH_KINDS.join('|') + ' (v0.3 §10.5)');
+  if (!Array.isArray(it.complaints) || it.complaints.length < 2 || !it.complaints.every(isStr)) err(l + ': needs >= 2 complaints');
+  if (!Array.isArray(it.faultDescs) || it.faultDescs.length < 2 || !it.faultDescs.every(isStr)) err(l + ': needs >= 2 faultDescs');
+});
+needLen(FL.staffNames, 25, 'staffNames');
+
+// ---------------------------------------------------------------- v0.3 (§10.7) staff roles
+var JOB_TYPES = ['repair', 'upgrade', 'build', 'refurb', 'data_recovery', 'software', 'cleaning', 'peripheral', 'contract', 'enthusiast', 'callback'];
+var ROLES = DATA.STAFF_ROLES || [];
+if (ROLES.length !== 4) err('STAFF_ROLES must have exactly 4 roles, has ' + ROLES.length);
+var roleNames = ROLES.map(function (r) { return r.name; });
+['Technician', 'Software Specialist', 'Builder', 'Apprentice'].forEach(function (n) {
+  if (roleNames.indexOf(n) === -1) err('STAFF_ROLES missing required role: ' + n);
+});
+var roleIds = {};
+ROLES.forEach(function (r) {
+  var l = 'STAFF_ROLES.' + r.id;
+  if (!isStr(r.id) || roleIds[r.id]) err(l + ': missing/duplicate id'); roleIds[r.id] = true;
+  if (!isStr(r.name) || !isStr(r.desc)) err(l + ': name/desc required');
+  if (!Array.isArray(r.jobTypes) || !r.jobTypes.length) err(l + ': jobTypes required');
+  else r.jobTypes.forEach(function (t) { if (JOB_TYPES.indexOf(t) === -1) err(l + ': unknown jobType ' + t); });
+  if (!isNum(r.wageFactor) || r.wageFactor <= 0) err(l + ': wageFactor invalid');
+  if (r.minYear !== undefined && !isInt(r.minYear)) err(l + ': minYear invalid');
+});
+var appr = ROLES.filter(function (r) { return r.name === 'Apprentice'; })[0];
+if (appr) ROLES.forEach(function (r) {
+  if (r !== appr && r.wageFactor <= appr.wageFactor) err('STAFF_ROLES: Apprentice must be the cheapest role');
+});
+
+// ---------------------------------------------------------------- v0.3 (§10.1) TASK_STEPS coverage matrix
+var TS = DATA.TASK_STEPS || [];
+if (!Array.isArray(TS) || !TS.length) err('DATA.TASK_STEPS missing/empty (v0.3 §10.1)');
+var CONDS = ['cooler', 'crt-kit'];
+TS.forEach(function (t, i) {
+  var l = 'TASK_STEPS[' + i + '] (' + t.type + '/' + (t.partCategory || '*') + '/' + (t.subtype || '*') + ')';
+  if (JOB_TYPES.indexOf(t.type) === -1) err(l + ': bad type');
+  if (t.partCategory !== null && CATEGORIES.indexOf(t.partCategory) === -1) err(l + ': bad partCategory');
+  if (t.subtype !== null && !isStr(t.subtype)) err(l + ': subtype must be null or string');
+  if (t.minYear !== null && !isInt(t.minYear)) err(l + ': minYear must be null or int');
+  if (t.maxYear !== null && !isInt(t.maxYear)) err(l + ': maxYear must be null or int');
+  if (!Array.isArray(t.steps) || t.steps.length < 3) err(l + ': needs >= 3 steps');
+  else t.steps.forEach(function (s, j) {
+    if (!isStr(s.label)) err(l + ' step[' + j + ']: label required');
+    if (!isNum(s.hours) || s.hours <= 0 || s.hours > 2) err(l + ' step[' + j + ']: hours must be in (0, 2]');
+    if (s.cond !== undefined && CONDS.indexOf(s.cond) === -1) err(l + ' step[' + j + ']: unknown cond ' + s.cond);
+    if (s.minYear !== undefined && !isInt(s.minYear)) err(l + ' step[' + j + ']: minYear invalid');
+    if (s.maxYear !== undefined && !isInt(s.maxYear)) err(l + ' step[' + j + ']: maxYear invalid');
+  });
+});
+
+// most-specific-match resolver (§10.1): type exact; partCategory/subtype exact-or-null; year window
+function resolveSteps(type, cat, sub, y) {
+  var best = null, bestScore = -1;
+  TS.forEach(function (t) {
+    if (t.type !== type) return;
+    if (t.partCategory !== null && t.partCategory !== cat) return;
+    if (t.subtype !== null && t.subtype !== sub) return;
+    if (t.minYear !== null && y < t.minYear) return;
+    if (t.maxYear !== null && y > t.maxYear) return;
+    var score = (t.partCategory !== null ? 2 : 0) + (t.subtype !== null ? 2 : 0) +
+                ((t.minYear !== null || t.maxYear !== null) ? 1 : 0);
+    if (score > bestScore) { bestScore = score; best = t; }
+  });
+  if (!best) return null;
+  var inYear = best.steps.filter(function (s) {
+    return (s.minYear === undefined || y >= s.minYear) && (s.maxYear === undefined || y <= s.maxYear);
+  });
+  var certain = inYear.filter(function (s) { return s.cond === undefined; });
+  function sum(a) { return a.reduce(function (t2, s) { return t2 + s.hours; }, 0); }
+  return { tpl: best, count: certain.length, sumMin: sum(certain), sumMax: sum(inYear) };
+}
+
+var SAMPLE_YEARS = [1984, 1993, 1999, 2007, 2015, 2023];
+function kindYears(kind) { // years where at least one peripheral item of the kind exists
+  return SAMPLE_YEARS.filter(function (y) {
+    return (FL.peripheralItems || []).some(function (it) {
+      return it.kind === kind && it.minYear <= y && (it.maxYear === undefined || y <= it.maxYear);
+    });
+  });
+}
+var COMBOS = [];
+['cpu', 'ram', 'storage', 'gpu', 'psu', 'motherboard', 'cooling', null].forEach(function (c) {
+  COMBOS.push({ type: 'repair', cat: c, sub: null, years: SAMPLE_YEARS });
+});
+['cpu', 'ram', 'storage', 'gpu', 'psu', 'cooling', 'motherboard', null].forEach(function (c) {
+  COMBOS.push({ type: 'upgrade', cat: c, sub: null, years: SAMPLE_YEARS });
+});
+COMBOS.push({ type: 'build', cat: null, sub: null, years: SAMPLE_YEARS });
+COMBOS.push({ type: 'refurb', cat: null, sub: null, years: SAMPLE_YEARS });
+COMBOS.push({ type: 'callback', cat: null, sub: null, years: SAMPLE_YEARS });
+COMBOS.push({ type: 'contract', cat: null, sub: 'contract_build', years: SAMPLE_YEARS });
+COMBOS.push({ type: 'contract', cat: null, sub: 'contract_upgrade', years: SAMPLE_YEARS });
+COMBOS.push({ type: 'software', cat: null, sub: 'os_install', years: SAMPLE_YEARS });
+COMBOS.push({ type: 'software', cat: null, sub: 'virus', years: SAMPLE_YEARS.filter(function (y) { return y >= 1988; }) });
+COMBOS.push({ type: 'cleaning', cat: null, sub: null, years: SAMPLE_YEARS });
+COMBOS.push({ type: 'cleaning', cat: null, sub: 'thermal_paste', years: SAMPLE_YEARS.filter(function (y) { return y >= 1997; }) });
+COMBOS.push({ type: 'data_recovery', cat: null, sub: null, years: SAMPLE_YEARS });
+COMBOS.push({ type: 'enthusiast', cat: null, sub: 'overclock', years: SAMPLE_YEARS.filter(function (y) { return y >= 1997; }) });
+COMBOS.push({ type: 'enthusiast', cat: null, sub: 'aesthetic', years: SAMPLE_YEARS.filter(function (y) { return y >= 2010; }) });
+PERIPH_KINDS.forEach(function (k) {
+  var ys = kindYears(k);
+  if (!ys.length) err('TASK_STEPS matrix: peripheral kind "' + k + '" has no item available in any sample year');
+  COMBOS.push({ type: 'peripheral', cat: null, sub: k, years: ys });
+});
+
+var matrixCells = 0, matrixFails = 0;
+COMBOS.forEach(function (c) {
+  c.years.forEach(function (y) {
+    matrixCells++;
+    var key = c.type + '/' + (c.cat || '*') + '/' + (c.sub || '*') + '@' + y;
+    var r = resolveSteps(c.type, c.cat, c.sub, y);
+    if (!r) { err('TASK_STEPS: no template resolves for ' + key); matrixFails++; return; }
+    if (r.count < 3) { err('TASK_STEPS: ' + key + ' resolves to only ' + r.count + ' unconditional steps (need >= 3)'); matrixFails++; }
+    if (r.sumMin < 0.5 || r.sumMin > 6.5) { err('TASK_STEPS: ' + key + ' base hours ' + r.sumMin + ' outside [0.5, 6.5]'); matrixFails++; }
+    if (r.sumMax > 6.5) { err('TASK_STEPS: ' + key + ' max hours (with cond steps) ' + r.sumMax + ' > 6.5'); matrixFails++; }
+  });
+});
+
 // ---------------------------------------------------------------- report
 function pad(s, n) { s = String(s); while (s.length < n) s = ' ' + s; return s; }
 console.log('=== Coverage table (parts by introYear bucket) ===');
@@ -420,9 +549,15 @@ if (yearFails === 0) {
   console.log('FAILED for ' + yearFails + ' year(s) — see errors.');
 }
 
+console.log('\n=== TASK_STEPS coverage matrix (v0.3 §10.1) ===');
+console.log('Templates: ' + TS.length + ' | Combos: ' + COMBOS.length + ' | Cells (combo x sample year): ' + matrixCells +
+  ' | Failing cells: ' + matrixFails);
+if (matrixFails === 0) console.log('OK: every generatable (type x category/subtype/kind) resolves at 1984/1993/1999/2007/2015/2023 with >= 3 steps and 0.5-6.5h.');
+
 console.log('\n=== Summary ===');
 console.log('Parts: ' + PARTS.length + ' | Eras: ' + (DATA.ERAS || []).length + ' | Tiers: ' + TIERS_ARR.length +
-  ' | Equipment: ' + EQ.length + ' | Historical events: ' + HIST.length + ' | Random templates: ' + TMPL.length);
+  ' | Equipment: ' + EQ.length + ' | Historical events: ' + HIST.length + ' | Random templates: ' + TMPL.length +
+  ' | Staff roles: ' + ROLES.length + ' | Staff names: ' + ((FL.staffNames || []).length));
 console.log('Baseline years: ' + ybYears.join(', '));
 
 if (warnings.length) {

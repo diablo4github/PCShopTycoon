@@ -16,13 +16,22 @@
     OFFER_EXPIRY_DAYS: 3,        // offers older than this silently expire
     GRACE_DAYS: 14,              // days to recover from negative cash
 
-    // Speed settings: hours multiplier, callback base chance, score delta (§5.5)
+    // Speed settings: hours multiplier & score delta. (v0.3: callback chance now
+    // comes from CALLBACK_MATRIX below; callbackBase kept for save-era tooling.)
     SPEED: {
       quick:      { hoursMult: 0.7, callbackBase: 0.12,  scoreDelta: -0.6 },
       standard:   { hoursMult: 1.0, callbackBase: 0.05,  scoreDelta: 0 },
       meticulous: { hoursMult: 1.5, callbackBase: 0.015, scoreDelta: 0.4 }
     },
-    CALLBACK_MIN: 0.005, CALLBACK_MAX: 0.35,       // clamp on callback chance
+    // §10.2 callback risk matrix: chance = base + perDiff x difficulty (x ESD 0.6
+    // on the difficulty term), then x reliability factor x test-bench mult.
+    CALLBACK_MATRIX: {
+      quick:      { base: 0.04,  perDiff: 0.035 },
+      standard:   { base: 0.02,  perDiff: 0.01 },
+      meticulous: { base: 0.005, perDiff: 0.003 }
+    },
+    ESD_DIFF_TERM_MULT: 0.6,
+    CALLBACK_MIN: 0.005, CALLBACK_MAX: 0.40,       // clamp on callback chance (§10.2)
     CALLBACK_DELAY_MIN: 3, CALLBACK_DELAY_MAX: 30, // days out when fired
     CALLBACK_HOURS_FRACTION: 0.5,                  // callback job hours vs original
     CALLBACK_ARRIVAL_SCORE: 0.5,   // low score pushed when a callback arrives (rep ding)
@@ -70,6 +79,31 @@
     // §9.5 strip-for-parts
     STRIP_HOURS: 1.5,
     STRIP_SURVIVAL: 0.9, STRIP_SURVIVAL_ESD: 0.97,
+
+    // §10.1 step-based tasks
+    PREMIUM_STEP_NUDGE: 0.25,    // premium part adds this to its install step
+    // §10.2 derived difficulty: base by type + category bonus + premium/legacy
+    DIFF_BASE: { repair: 2, upgrade: 1, software: 1, cleaning: 1, peripheral: 2,
+                 data_recovery: 3, build: 2, enthusiast: 3, contract: 3,
+                 refurb: 2, callback: 2 },
+    DIFF_CAT_BONUS: { motherboard: 1, cpu: 1 },
+    LEGACY_MACHINE_YEARS: 8,     // machine older than this => +1 difficulty
+    // §10.5 peripheral kinds set difficulty (CRT rebuild > mouse fix)
+    PERIPHERAL_KIND_DIFF: { crt: 3, printer: 2, lcd: 2, modem: 2, scanner: 2,
+                            input: 1, other: 2 },
+    // §10.4 overspend: installed price > max(mult x original, original+laborRate)
+    OVERSPEND_MULT: 1.75,
+    OVERSPEND_SCORE: 0.5,        // score penalty (waived for tastes/enthusiasts)
+    // §10.7 staff
+    STAFF_SLOTS: [0, 1, 3, 6],   // by shop tier (garage = solo)
+    STAFF_WAGE_BASE: 110,        // wageMonthly ~ laborRate x this x skill x wageFactor
+    STAFF_SKILL_MIN: 0.15, STAFF_SKILL_MAX: 0.35,
+    STAFF_DECAY: 0.75,           // k-th helper contributes skill x 0.75^(k-1)
+    APPRENTICE_EFFECT: 0.5,      // apprentices help every job type at half skill
+    STAFF_REFRESH_DAYS: 7,       // candidate market refresh cadence
+    STAFF_CANDIDATES_MIN: 2, STAFF_CANDIDATES_MAX: 4,
+    SEVERANCE_MONTHS: 0.5,       // firing costs wageMonthly x this
+    FIRE_REP_SCORE: 2.5,         // small rep ding when firing
 
     // Mishaps (§5.5)
     MISHAP_PART_DAMAGE: 0.03,    // per install; esd-setup effects.mishapMult applies
@@ -167,6 +201,7 @@
   // ------------------------------------------------------------------
   // Live state reference (set by api.js newGame/importSave)
   // ------------------------------------------------------------------
+  Engine.VERSION = '0.3';        // shown in the System tab (§10)
   Engine._state = null;
   Engine.getData = function () { return root.DATA || {}; };
 
@@ -471,6 +506,65 @@
     if (!m) return String(tag || '');
     if (m[1] === 'SKT') return 'Socket ' + m[2];
     return m[2];
+  };
+
+  // ------------------------------------------------------------------
+  // Staff (§10.7)
+  // ------------------------------------------------------------------
+  // Fallback roles so the engine works before/without DATA.STAFF_ROLES.
+  var FALLBACK_STAFF_ROLES = [
+    { id: 'technician', name: 'Technician',
+      desc: 'Bench work: repairs, upgrades, refurbs, peripherals, cleaning.',
+      jobTypes: ['repair', 'upgrade', 'refurb', 'peripheral', 'cleaning', 'callback'],
+      wageFactor: 1 },
+    { id: 'software', name: 'Software Specialist',
+      desc: 'OS installs, virus cleanup, data recovery.',
+      jobTypes: ['software', 'data_recovery'], wageFactor: 1 },
+    { id: 'builder', name: 'Builder',
+      desc: 'Custom builds, contracts, enthusiast work.',
+      jobTypes: ['build', 'contract', 'enthusiast'], wageFactor: 1.1 },
+    { id: 'apprentice', name: 'Apprentice',
+      desc: 'Helps with everything, at half effect. Cheap.',
+      jobTypes: [], wageFactor: 0.55 }
+  ];
+  Engine.staffRoles = function () {
+    var roles = Engine.getData().STAFF_ROLES;
+    return (Array.isArray(roles) && roles.length) ? roles : FALLBACK_STAFF_ROLES;
+  };
+  Engine.staffRoleById = function (id) {
+    var roles = Engine.staffRoles();
+    for (var i = 0; i < roles.length; i++) if (roles[i].id === id) return roles[i];
+    return null;
+  };
+  function isApprenticeRole(role) {
+    return role && (role.id === 'apprentice' || !(role.jobTypes || []).length);
+  }
+  Engine.isApprenticeRole = isApprenticeRole;
+
+  /* §10.7: time multiplier for an action on job type T = 1 / (1 + S),
+   * S = sum over applicable staff (by contribution desc) of skill x 0.75^(k-1);
+   * apprentices contribute skill x 0.5 to every type. */
+  Engine.staffTimeMult = function (state, jobType) {
+    var C = Engine.CONFIG;
+    if (!state.staff || !state.staff.length) return 1;
+    var contribs = [];
+    for (var i = 0; i < state.staff.length; i++) {
+      var st = state.staff[i];
+      var role = Engine.staffRoleById(st.role);
+      if (!role) continue;
+      if (isApprenticeRole(role)) contribs.push(st.skill * C.APPRENTICE_EFFECT);
+      else if ((role.jobTypes || []).indexOf(jobType) !== -1) contribs.push(st.skill);
+    }
+    if (!contribs.length) return 1;
+    contribs.sort(function (a, b) { return b - a; });
+    var S = 0;
+    for (var k = 0; k < contribs.length; k++)
+      S += contribs[k] * Math.pow(C.STAFF_DECAY, k);
+    return 1 / (1 + S);
+  };
+  Engine.staffWageFor = function (year, skill, wageFactor) {
+    return Engine.round2(Engine.laborRate(year) * Engine.CONFIG.STAFF_WAGE_BASE *
+                         skill * (wageFactor || 1));
   };
 
   // Rating = mean of last 25 scores.

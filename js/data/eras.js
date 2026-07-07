@@ -131,4 +131,33 @@
       effects: { softwareHoursMult: 0.9 } }
   ];
 
+  // §10.7 — employee roles. wageMonthly ≈ laborRate × 110 × skill × wageFactor (engine).
+  DATA.STAFF_ROLES = [
+    {
+      id: "tech", name: "Technician",
+      desc: "Bench all-rounder: teardowns, swaps, and tune-ups. Speeds up hands-on hardware work.",
+      jobTypes: ["repair", "upgrade", "refurb", "peripheral", "cleaning", "callback"],
+      wageFactor: 1.0
+    },
+    {
+      id: "software", name: "Software Specialist",
+      desc: "Lives in boot disks, registries, and recovery tools. Speeds up software and data-recovery work.",
+      jobTypes: ["software", "data_recovery"],
+      wageFactor: 1.05
+    },
+    {
+      id: "builder", name: "Builder",
+      desc: "Assembly-line hands and a tuner's patience. Speeds up builds, contracts, and enthusiast work.",
+      jobTypes: ["build", "contract", "enthusiast"],
+      wageFactor: 1.1
+    },
+    {
+      id: "apprentice", name: "Apprentice",
+      desc: "Eager, cheap, and everywhere at once. Helps a little with every kind of job.",
+      jobTypes: ["repair", "upgrade", "refurb", "peripheral", "cleaning", "callback",
+                 "software", "data_recovery", "build", "contract", "enthusiast"],
+      wageFactor: 0.5
+    }
+  ];
+
 })(typeof window !== 'undefined' ? window : globalThis);

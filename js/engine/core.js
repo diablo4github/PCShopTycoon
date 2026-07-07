@@ -382,6 +382,7 @@
     var year = Engine.currentYear(state);
     return {
       used: used,
+      capacity: slots,
       free: Math.max(0, slots - used),
       overage: Math.max(0, used - slots),
       feePerSlot: Engine.round2(Engine.laborRate(year) / Engine.CONFIG.STORAGE_FEE_LABOR_DIV)

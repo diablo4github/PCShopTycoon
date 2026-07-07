@@ -667,7 +667,7 @@
         break;
       }
       case 'build': {
-        var budget = Engine.round2(bl.buildBudget *
+        var budget = Math.round(bl.buildBudget *
           Engine.uniform(C.BUILD_BUDGET_SPREAD_MIN, C.BUILD_BUDGET_SPREAD_MAX));
         var cases = Object.keys(C.USECASE_TARGETS).filter(function (u) {
           return u !== 'gaming' || year >= 1993;
@@ -684,7 +684,6 @@
           minStyle: 0, parts: [], validated: false, committed: false
         };
         job.pay = budget;
-        job.difficulty = Engine.randInt(2, 4);
         job.hoursRequired = C.BUILD_HOURS +
           (budget > bl.buildBudget * 1.15 ? C.BUILD_HOURS_PREMIUM_EXTRA : 0);
         job.deadlineDay = state.day + Engine.randInt(4, C.DEADLINE_MAX);
@@ -692,14 +691,13 @@
         break;
       }
       case 'enthusiast': {
-        job.difficulty = Engine.randInt(3, 5);
         if (choice.subtype === 'overclock') {
-          job.hoursRequired = 2;
+          job.hoursRequired = 2;   // fallback-step sizing only
           job.needs = [{ category: 'cooling', anyOfTags: null, minPerf: null, qty: 1,
                          filledPartIds: [], label: 'Beefier cooling' }];
           job.title = 'Enthusiast: overclock & cooling job';
         } else { // aesthetic: a build with a style bar
-          var abudget = Engine.round2(bl.buildBudget * Engine.uniform(1.0, 1.5));
+          var abudget = Math.round(bl.buildBudget * Engine.uniform(1.0, 1.5));
           var at = C.USECASE_TARGETS.gaming;
           job.build = {
             budget: abudget, useCase: 'gaming',
@@ -720,10 +718,7 @@
       case 'contract': {
         state.lastContractDay = state.day;
         job.units = Engine.randInt(C.CONTRACT_UNITS_MIN, C.CONTRACT_UNITS_MAX);
-        job.difficulty = 3;
-        var perUnit = Engine.randInt(C.CONTRACT_UNIT_HOURS_MIN, C.CONTRACT_UNIT_HOURS_MAX);
-        job.perUnitHours = perUnit;
-        job.hoursRequired = perUnit * job.units;
+        job.hoursRequired = 1.5;   // per-unit fallback-step sizing; x units in assembly
         job.deadlineDay = state.day + Engine.randInt(C.CONTRACT_DEADLINE_MIN, C.CONTRACT_DEADLINE_MAX);
         var buildContract = state.customBuildsUnlocked && equip.enablesBuilds && Engine.chance(0.5);
         if (buildContract) {

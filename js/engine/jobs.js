@@ -495,8 +495,7 @@
     if (year >= 1988 && Engine.equipmentOwned(state, 'software-station'))
       add('software', 'virus', (year >= 1995 && year <= 2010) ? 6 : 2);
     add('cleaning', null, 2);
-    add('peripheral', 'printer', 1.5);
-    if (year <= 2005) add('peripheral', 'crt', 1.5);
+    add('peripheral', null, 3);   // §10.5: item picked first, subtype = its kind
     if (equip.drTier >= 1) add('data_recovery', null, 2);
     if (state.customBuildsUnlocked && equip.enablesBuilds) add('build', null, 3);
     if (year >= 1997 && rep.prestige >= 1 && purchasableByCategory(state, 'cooling').length)
@@ -522,16 +521,18 @@
       taste: null,
       pay: 0,
       offeredDay: state.day, deadlineDay: state.day + Engine.randInt(C.DEADLINE_MIN, C.DEADLINE_MAX),
-      difficulty: Engine.randInt(1, 3),
+      difficulty: 2,              // derived after assembly (§10.2)
       speed: 'standard',
       status: 'offer',
       hoursRequired: 1, hoursDone: 0,
+      steps: [], stepIndex: 0,    // §10.1
       diagnosed: true, needsDiagnosis: false,
       fault: null,
       needs: [],
       build: null,
       units: 1, unitsDone: 0,
       machine: null,
+      peripheral: null,           // §10.5 {name, kind}
       drTier: 0,
       crt: false,
       result: null
@@ -540,6 +541,7 @@
 
     switch (choice.type) {
       case 'repair': {
+        // §10.5 fault-first: fault template + machine first, copy derived from it
         var cat = pickFaultCategory(faultCats);
         var tmpl = Engine.pick((F.faults || {})[cat] || [{ desc: 'Mystery gremlins', laborHours: 2 }]);
         job.fault = {
@@ -547,22 +549,51 @@
           partCategory: cat === 'laborOnly' ? null : cat,
           laborHours: Engine.clamp(Math.round(tmpl.laborHours || 2), 1, 3)
         };
-        job.hoursRequired = job.fault.laborHours;
+        job.hoursRequired = job.fault.laborHours;   // fallback-step sizing only
         job.needsDiagnosis = true; job.diagnosed = false;
-        job.title = 'Repair: ' + machineFlavor(state, year) + ' ' +
-          Engine.pick(["won't boot", 'keeps crashing', 'is acting up',
-                       'is making noises', 'died overnight']);
+        job.machine = customerMachineFor(state, job.fault.partCategory);   // §10.4
+        var repairBox = (job.machine && job.machine.name) || machineFlavor(state, year);
+        job.title = 'Repair: ' + repairBox + ' — ' + tmpl.desc;
+        if (Array.isArray(tmpl.complaints) && tmpl.complaints.length)
+          job.blurbOverride = Engine.pick(tmpl.complaints);   // §10.5 complaint copy
         break;
       }
       case 'upgrade': {
         // §9.3: upgrades carry a minimum spec chosen vs the year baseline,
         // snapped to a real purchasable part so the job is always satisfiable.
+        // §10.4: the customer's machine rides along; replacements must fit it.
         var uc = Engine.pick(upgCats);
         var upgKey = { ram: 'ramMB', storage: 'storageGB', gpu: 'gpu' }[uc];
         var upgName = { ram: 'RAM upgrade', storage: 'Storage upgrade',
                         gpu: 'Graphics upgrade' }[uc];
+        job.machine = customerMachineFor(state, uc);
+        var fitTags = null;
+        if (job.machine) {
+          var umobo = null;
+          for (var um = 0; um < job.machine.partIds.length; um++) {
+            var ump = Engine.partById(job.machine.partIds[um]);
+            if (ump && ump.category === 'motherboard') umobo = ump;
+          }
+          var uprefix = Engine.Compat.namespaceForCategory(uc);
+          if (umobo && uprefix) {
+            var utags = Engine.Compat.tagsInNamespace(umobo, uprefix);
+            if (utags.length) fitTags = utags;
+          }
+        }
+        var upgFits = function (p) {
+          if (!fitTags) return true;
+          var tags = p.platformTags || [];
+          for (var t = 0; t < fitTags.length; t++)
+            if (tags.indexOf(fitTags[t]) !== -1) return true;
+          return false;
+        };
+        var upgCands = purchasableByCategory(state, uc).filter(upgFits);
+        if (!upgCands.length) {   // machine too exotic — drop the fit constraint
+          fitTags = null;
+          upgCands = purchasableByCategory(state, uc);
+        }
         var wanted = (bl[upgKey] || 0) * Engine.pick([0.5, 0.75, 1.0]);
-        var perfs = purchasableByCategory(state, uc).map(function (p) {
+        var perfs = upgCands.map(function (p) {
           return (p.perf || {})[upgKey] || 0;
         }).filter(function (v) { return v > 0; }).sort(function (a, b) { return a - b; });
         var minVal = null;
@@ -576,10 +607,13 @@
           minPerf[upgKey] = minVal;
           label = upgName + ' — at least ' + fmtPerfReq(upgKey, minVal);
         }
-        job.needs = [{ category: uc, anyOfTags: null, minPerf: minPerf, qty: 1,
-                       filledPartIds: [], label: label }];
-        job.hoursRequired = 1;
-        job.title = 'Upgrade: ' + upgName.toLowerCase() + ' for a ' + machineFlavor(state, year);
+        job.needs = [{ category: uc, anyOfTags: fitTags, minPerf: minPerf, qty: 1,
+                       filledPartIds: [], label: label,
+                       originalPartId: (job.machine && job.machine.faultPartIdx != null) ?
+                         job.machine.partIds[job.machine.faultPartIdx] : null }];
+        job.hoursRequired = 1;   // fallback-step sizing only
+        job.title = 'Upgrade: ' + upgName.toLowerCase() + ' for a ' +
+          ((job.machine && job.machine.name) || machineFlavor(state, year));
         break;
       }
       case 'software': {
@@ -606,21 +640,29 @@
         break;
       }
       case 'peripheral': {
+        // §10.5 fault-first: pick the concrete item, derive kind/fault/copy from it
         var items = (F.peripheralItems || []).filter(function (it) {
-          return year >= (it.minYear || 0) && year <= (it.maxYear || 9999) &&
-                 (choice.subtype === 'crt' ? it.crt : !it.crt);
+          if (year < (it.minYear || 0) || year > (it.maxYear || 9999)) return false;
+          return peripheralKindOf(it) !== 'crt' || year <= 2005;
         });
-        var item = Engine.pick(items);
-        var itemName = item ? item.name : (choice.subtype === 'crt' ? 'CRT monitor' : 'printer');
-        job.crt = choice.subtype === 'crt';
-        job.hoursRequired = Engine.randInt(1, 2);
-        job.title = 'Peripheral: ' + itemName + ' repair';
+        var item = Engine.pick(items) || { name: 'printer', kind: 'printer' };
+        var kind = peripheralKindOf(item);
+        job.subtype = kind;
+        job.crt = kind === 'crt';
+        job.peripheral = { name: item.name, kind: kind };
+        var faultDesc = (Array.isArray(item.faultDescs) && item.faultDescs.length) ?
+          Engine.pick(item.faultDescs) : 'Worn out and misbehaving inside';
+        job.fault = { desc: faultDesc, partCategory: null, laborHours: 2 };
+        job.needsDiagnosis = true; job.diagnosed = false;   // fault revealed on diagnosis
+        job.hoursRequired = 1.5;   // fallback-step sizing only
+        job.title = 'Peripheral: ' + item.name + ' repair';
+        if (Array.isArray(item.complaints) && item.complaints.length)
+          job.blurbOverride = Engine.pick(item.complaints);
         break;
       }
       case 'data_recovery': {
         job.drTier = requiredDrTier(year);
-        job.hoursRequired = Engine.randInt(2, 3);
-        job.difficulty = Engine.randInt(2, 4);
+        job.hoursRequired = 2.5;   // fallback-step sizing only
         job.title = 'Data recovery: dying drive (rig tier ' + job.drTier + ')';
         break;
       }

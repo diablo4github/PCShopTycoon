@@ -58,6 +58,16 @@
         'the first time, and almost nobody nearby knew how to fix one. That gap is your business.'
     },
     {
+      /* §14.6 — a real former repair student worried the game expected
+       * remembered hands-on expertise. This calm line up front says
+       * otherwise before anything else is taught. */
+      id: 'reassurance', tab: null, target: function () { return null; },
+      title: 'No repair experience required',
+      body: 'Everything here runs on menu decisions — you pick a part from a list and choose how many ' +
+        'hours to spend. The step checklist narrates the real-world procedure for flavor and history, but ' +
+        'you are never quizzed on it and never need hands-on repair knowledge to run a great shop.'
+    },
+    {
       id: 'header', tab: null, target: function () { return byId('app-header'); },
       title: 'Your daily dashboard',
       body: 'The header always shows the date, your cash on hand, and the hours left today. Nearly ' +
@@ -355,6 +365,11 @@
    * ------------------------------------------------------------------ */
   T.openHelp = function () {
     var html = '<div class="help-guide">' +
+      /* §14.6 — same reassurance as the tutorial's early step, for anyone
+       * who skipped the tour and jumps straight to Help. */
+      '<p class="help-reassure">New to computer repair? No problem — the shop runs on menu decisions: ' +
+      'you pick a part from a list and choose how many hours to spend. The step checklist narrates the ' +
+      'real-world procedure for flavor and history, but you never need hands-on repair knowledge to play well.</p>' +
       '<h3>The day loop</h3>' +
       '<p>Each day starts with hours to spend and ends when you click <b>End Day</b>. Diagnosing, working ' +
       'jobs, and your first parts purchase of the day (a "supply run") all cost hours. Overnight, prices ' +

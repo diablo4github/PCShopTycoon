@@ -669,7 +669,13 @@ body.debug [data-debug] { display: inline-block !important; }
   display: flex;
   align-items: flex-start;
   justify-content: center;
-  padding: 6vh 16px 16px;
+  /* §14.9 — vh is resolved against the TRUE (unzoomed) viewport, but the
+   * body-level --ui-zoom scaling (§9.9) then visually magnifies everything
+   * in this subtree by that factor — so a plain "6vh" would render at
+   * 6vh*zoom, pushing content past the real viewport at zoom > 100%.
+   * Pre-shrinking by /var(--ui-zoom) keeps the RENDERED size correct at
+   * every zoom level (a no-op at the default zoom of 1). */
+  padding: calc(6vh / var(--ui-zoom, 1)) 16px 16px;
   z-index: 200;
 }
 .modal {
@@ -677,8 +683,12 @@ body.debug [data-debug] { display: inline-block !important; }
   color: var(--ink);
   border: 1px solid var(--border-strong);
   border-radius: 10px;
-  width: min(660px, 94vw);
-  max-height: 86vh;
+  width: min(660px, calc(94vw / var(--ui-zoom, 1)));
+  /* §14.9 — see the --ui-zoom note above: without dividing by the zoom
+   * factor, this modal (and any tall content inside it, e.g. a long part
+   * picker) could render taller than the actual viewport at zoom > 100%,
+   * even though .modal-body itself scrolls correctly. */
+  max-height: calc(86vh / var(--ui-zoom, 1));
   display: flex;
   flex-direction: column;
   box-shadow: 0 12px 40px rgba(10, 8, 2, 0.35);
@@ -692,6 +702,7 @@ body.debug [data-debug] { display: inline-block !important; }
   border-bottom: 1px solid var(--border);
   background: var(--accent-soft);
   border-radius: 10px 10px 0 0;
+  flex: 0 0 auto;
 }
 .modal-head h2 { margin: 0; font-size: 16px; }
 .modal-x {
@@ -704,13 +715,20 @@ body.debug [data-debug] { display: inline-block !important; }
   padding: 2px 6px;
 }
 .modal-x:hover { color: var(--ink); }
-.modal-body { padding: 14px 16px; overflow-y: auto; }
+/* §14.9 — the header/footer stay put; the body is the scrollable middle.
+ * `min-height: 0` is required here: without it a flex child never shrinks
+ * below its content's natural height, so overflow-y:auto never actually
+ * engages and tall content (e.g. a long part-picker list) renders past the
+ * modal's max-height with NO scrollbar — options below the fold become
+ * unreachable without zooming the whole browser out. This was a real bug. */
+.modal-body { padding: 14px 16px; overflow-y: auto; flex: 1 1 auto; min-height: 0; }
 .modal-foot {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
   padding: 11px 16px;
   border-top: 1px solid var(--border);
+  flex: 0 0 auto;
 }
 
 /* morning summary */
@@ -1230,7 +1248,10 @@ body.era-00s { --pcb-bg: #1d3f66; --pcb-line: rgba(210, 230, 255, 0.16); --pcb-i
 body.era-modern { --pcb-bg: #23252b; --pcb-line: rgba(255, 255, 255, 0.12); --pcb-ink: #d8dae0; }
 
 /* ---------- §12.5 schematic layout ---------- */
-.mobo-wrap { margin: 8px 0; }
+/* §14.9 — a board's slot zones are bounded (see .zone-slots below) and the
+ * wrap itself scrolls horizontally as a last resort, so a wide/tall board
+ * layout is never wider/taller than what a normal viewport can reach. */
+.mobo-wrap { margin: 8px 0; max-width: 100%; overflow-x: auto; }
 .mobo-boardpick {
   display: flex;
   align-items: center;
@@ -1274,7 +1295,18 @@ body.era-modern { --pcb-bg: #23252b; --pcb-line: rgba(255, 255, 255, 0.12); --pc
 .zone-ram { grid-area: ram; }
 .zone-drives { grid-area: drives; }
 .zone-gpu { grid-area: gpu; }
-.zone-slots { display: flex; gap: 6px; flex-wrap: wrap; }
+/* §14.9 — a board with many slots (RAM DIMMs, drive bays, GPU risers) gets
+ * an internal scrollbar here rather than growing the schematic panel (or,
+ * worse, a popover of options) taller than the viewport can show. */
+.zone-slots {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  max-height: 260px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 2px;
+}
 
 /* the slots themselves — real buttons, keyboard reachable */
 .slot {
@@ -1460,7 +1492,9 @@ body.era-modern { --pcb-bg: #23252b; --pcb-line: rgba(255, 255, 255, 0.12); --pc
   position: absolute;
   pointer-events: auto;
   width: 320px;
-  max-width: calc(100vw - 24px);
+  /* §14.9 — same --ui-zoom correction as the modal (vw is resolved against
+   * the true unzoomed viewport, then this subtree is visually magnified). */
+  max-width: calc((100vw - 24px) / var(--ui-zoom, 1));
   background: var(--panel-bg);
   color: var(--ink);
   border: 1px solid var(--border-strong);
@@ -1481,7 +1515,15 @@ body.era-modern { --pcb-bg: #23252b; --pcb-line: rgba(255, 255, 255, 0.12); --pc
 .help-guide p, .help-guide ul { font-size: 13px; }
 .help-guide ul { padding-left: 1.3em; }
 .help-guide li { margin: 3px 0; }
+/* §14.6 — calm reassurance callout (same visual language as .note) */
+.help-reassure {
+  padding: 8px 12px;
+  background: var(--accent-soft);
+  border-left: 3px solid var(--accent);
+  border-radius: 4px;
+  margin: 0 0 12px;
+}
 
 @media (max-width: 480px) {
-  .tut-callout { width: calc(100vw - 24px); }
+  .tut-callout { width: calc((100vw - 24px) / var(--ui-zoom, 1)); }
 }

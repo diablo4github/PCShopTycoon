@@ -1374,3 +1374,39 @@ full build lifecycle + margin band + broken-build problem strings; all prior gua
 Overseer E2E: an upgrade offer shows a strictly-better requirement and blocks a worse part;
 vs-original cues render; a custom build can be completed through the schematic; Shop
 sections/unlock badges render; no console errors across a multi-era playthrough.
+
+## 14.8 Time granularity & workbench work controls (ENGINE + UI)
+Move all time accounting onto a **0.1-hour (6-minute) grid** and replace the two work
+buttons with four graduated controls.
+
+- **ENGINE — quantization:** every task/step time and every work increment is a multiple
+  of 0.1 h. Round each assembled step's hours to the nearest 0.1 at assembly time (so
+  DATA.TASK_STEPS need NOT change — the engine quantizes; a 0.25 h step becomes 0.3, a
+  0.5 stays 0.5, etc.); keep `hoursRequired = Σ (quantized step hours)`. `hoursLeft`,
+  overtime, wait-step starts, study, supply runs — all snap to the 0.1 grid (round
+  spent/remaining to 1 decimal; never produce 0.05-type residue or negative-zero).
+  Re-verify balance guards after quantization (totals shift slightly).
+- **ENGINE — work modes (rules live engine-side, UI computes none):** support four work
+  intents on `workJob`. Recommended: `Engine.workJob(jobId, amount)` where `amount` is a
+  number of hours (quantized) OR one of the string modes `"step"` (work until the current
+  step completes) / `"job"` (work to completion) / omitted = `"job"`. Back-compat: a bare
+  number still works; `workJob(jobId)` still means finish-job. Each returns the existing
+  `{ok, hoursSpent, completed, result?}`. "step" stops exactly at the current step
+  boundary (or when hours/overtime run out); wait-steps: "step" starts the timer and
+  returns (it runs in parallel as today). Expose the current step's remaining hours on the
+  job/steps view if useful, but the mode logic must be engine-side.
+- **UI — workbench controls:** replace "Work 1h" / "Work All" with FOUR buttons, all via
+  UI.act (hour delta floats, pips pulse, disabled at the overtime floor):
+  1. **Tinker (6 min)** → `workJob(id, 0.1)`
+  2. **Finish Step** → `workJob(id, "step")` (label/tooltip: "work until the current step
+     is done"; hidden or disabled when the job has no discrete current step, e.g. a job
+     already effectively complete)
+  3. **Work 1 Hour** → `workJob(id, 1)`
+  4. **Finish Job** → `workJob(id, "job")`
+  Names are provisional — keep them short, clear, and readable in all skins; show the
+  6-minute value on the small one. The overall progress bar and step checklist stay.
+- Display: hours shown to 1 decimal (e.g. "0.3 h") or as minutes where it reads better;
+  the header pip bar already represents the 8-hour budget — keep it, it now maps to the
+  0.1 grid cleanly. Sim: assert every step's quantized hours and `hoursRequired` are exact
+  0.1 multiples, that a "step" call stops at the step boundary, and that a "job" call
+  completes; balance guards stay green.

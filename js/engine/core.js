@@ -818,8 +818,11 @@
       var pick = cands.length ? Engine.pick(cands) : null;
       return pick ? pick.name : '';
     });
-    // Clean up: collapse stray whitespace/space-before-punctuation left by a
-    // dropped token so no double spaces or orphaned braces survive.
+    // Hardening (§13.6): a player must NEVER see a literal brace token — strip
+    // any residual {WORD} (e.g. an unknown/typo'd token in data) cleanly too.
+    if (out.indexOf('{') !== -1) out = out.replace(/\{[A-Za-z0-9_]*\}/g, '');
+    // Collapse stray whitespace / space-before-punctuation left by a dropped
+    // token so no double spaces or orphaned punctuation survive.
     out = out.replace(/[ \t]{2,}/g, ' ');
     out = out.replace(/[ \t]+([.,!?;:])/g, '$1');
     return out.trim();

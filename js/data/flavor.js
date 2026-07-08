@@ -36,7 +36,7 @@
     // v0.3 (§10.5): every fault carries customer-voice complaints (symptoms only, no part-name spoilers).
     faults: {
       ram: [
-        { desc: "Random crashes and parity errors under load", laborHours: 1, complaints: ["It crashes at random and flashes some 'parity error' message at me.", "It just dies in the middle of things — no pattern I can find."] },
+        { desc: "Random crashes and parity errors under load", laborHours: 1, complaints: ["It crashes at random and flashes some 'parity error' message at me.", "It just dies in the middle of things — no pattern I can find.", "It falls over every time I try to run {SW}, though other things seem fine."] },
         { desc: "Memory count comes up short at boot", laborHours: 1, complaints: ["The number it counts up at startup looks smaller than it used to.", "Programs refuse to open, saying there isn't enough room to run."] },
         { desc: "Constant blue screens from a bad memory module", laborHours: 1.5, complaints: ["Blue screens. Constantly. A different message every time.", "Every hour or so the whole screen goes blue and it restarts itself."] },
         { desc: "Machine beeps endlessly and refuses to POST", laborHours: 1, complaints: ["It just beeps over and over and never starts up.", "Turn it on and it screams beeps at me. Nothing ever shows on screen."] },
@@ -54,7 +54,7 @@
         { desc: "Garbage and artifacts all over the display", laborHours: 1.5, complaints: ["The screen fills with weird characters and colored confetti.", "Random blocks and squiggles all over everything I open."] },
         { desc: "Display cuts out when the machine warms up", laborHours: 2, complaints: ["The picture's fine for ten minutes, then it blinks out.", "The longer it runs, the worse the picture gets, until it just quits."] },
         { desc: "Vertical stripes from failing video hardware", laborHours: 1, complaints: ["There are colored stripes down the whole screen.", "Vertical lines everywhere — like looking through a picket fence."] },
-        { desc: "3D crashes from failing video memory", laborHours: 1.5, complaints: ["Games quit to the desktop after a few minutes.", "Anything with graphics crashes; plain typing seems fine."] }
+        { desc: "3D crashes from failing video memory", laborHours: 1.5, complaints: ["Games quit to the desktop after a few minutes.", "Anything with graphics crashes; plain typing seems fine.", "{GAME} dumps me to the desktop after a few minutes, every time."] }
       ],
       psu: [
         { desc: "Dead power supply — no signs of life", laborHours: 1, complaints: ["Nothing happens. No light, no fan, nothing at all.", "It's completely dead — like it's not even plugged in. It is. I checked."] },
@@ -72,7 +72,7 @@
       ],
       cpu: [
         { desc: "Processor dead — powers on but never runs", laborHours: 1.5, complaints: ["It powers up but never actually starts doing anything.", "Lights and fans, but the screen never wakes up."] },
-        { desc: "Overheating processor throttling the machine", laborHours: 1, complaints: ["It gets slower and slower the longer it runs.", "After an hour it's crawling, and the case is hot to the touch."] },
+        { desc: "Overheating processor throttling the machine", laborHours: 1, complaints: ["It gets slower and slower the longer it runs.", "After an hour it's crawling, and the case is hot to the touch.", "Open {SW} and within minutes it slows to a crawl and the case bakes."] },
         { desc: "Bent pins after a botched home upgrade", laborHours: 2, complaints: ["I tried an upgrade myself. It has not gone well.", "After my little DIY project it won't start at all. Please don't judge."] },
         { desc: "Processor failing under load — math errors", laborHours: 1.5, complaints: ["Big spreadsheets come out with wrong numbers, then it locks up.", "Heavy work makes it freeze or spit out errors."] }
       ],
@@ -110,7 +110,9 @@
         { text: "My kid says it's 'toast.' I need a second opinion from a professional.", customers: ["home", "senior"] },
         { text: "It died mid-render and the client call is Thursday. Save me.", customers: ["creator"] },
         { text: "One of my rigs dropped offline overnight. Every hour down is money burned.", customers: ["miner"] },
-        { text: "I've soldered a few things in my day, but this one has me beat.", customers: ["hobbyist", "senior"] }
+        { text: "I've soldered a few things in my day, but this one has me beat.", customers: ["hobbyist", "senior"] },
+        { text: "The screen went black in the middle of {GAME} and never came back on.", customers: ["gamer", "student"] },
+        { text: "It froze hard while I had {OFFICE} open and now it won't even start.", customers: ["smallbiz", "office"] }
       ],
       upgrade: [
         { text: "It takes five minutes to open anything. Make it faster, whatever it takes.", customers: null },
@@ -121,7 +123,10 @@
         { text: "Payroll software update says we're 'below spec' now. It runs the whole office, so fix it fast.", customers: ["smallbiz", "office"] },
         { text: "The new game launches Friday and my frame rate is a war crime. Upgrade me.", customers: ["gamer", "student"] },
         { text: "My exports take all night. More cores, more memory, whatever eats the render queue.", customers: ["creator"] },
-        { text: "I want to try the new algorithm but my cards need a better platform under them.", customers: ["miner", "hobbyist"] }
+        { text: "I want to try the new algorithm but my cards need a better platform under them.", customers: ["miner", "hobbyist"] },
+        { text: "{GAME} runs like a slideshow on this thing. Fix that, please.", customers: ["gamer", "student"] },
+        { text: "The new {OFFICE} update says we're below the minimum spec now. The whole office runs on it.", customers: ["office", "smallbiz"] },
+        { text: "{CREATIVE} chokes the moment I load a big project. I need more machine under it.", customers: ["creator"] }
       ],
       build: [
         { text: "Build it like you'd build your own. That's the whole spec.", customers: null },
@@ -133,7 +138,9 @@
         { text: "Family machine for homework and taxes. If it survives the kids, it's a win.", customers: ["home"] },
         { text: "I need it to edit video without sounding like a leaf blower. Storage. Lots of storage.", customers: ["creator"] },
         { text: "A tinker box — something I can open up and fiddle with on weekends without crying.", customers: ["hobbyist"] },
-        { text: "Max cards, minimum everything else. It lives in the garage; looks don't matter.", customers: ["miner"] }
+        { text: "Max cards, minimum everything else. It lives in the garage; looks don't matter.", customers: ["miner"] },
+        { text: "It has to run {GAME} maxed out without breaking a sweat. That's the brief.", customers: ["gamer", "student"] },
+        { text: "Something that flies through {CREATIVE} exports. Speed first, everything else second.", customers: ["creator"] }
       ],
       data_recovery: [
         { text: "I deleted the wrong folder and then, in a panic, I made it worse.", customers: null },
@@ -144,7 +151,8 @@
         { text: "Our accounts are on there and tax season starts Monday.", customers: ["smallbiz", "office"] },
         { text: "The customer database died with the drive. We're back to paper and panic.", customers: ["smallbiz", "office"] },
         { text: "Three years of raw footage on one drive. Yes, I know. I KNOW. Please help.", customers: ["creator"] },
-        { text: "My wallet keys are on that disk. I will pay you a percentage. A generous one.", customers: ["miner", "hobbyist"] }
+        { text: "My wallet keys are on that disk. I will pay you a percentage. A generous one.", customers: ["miner", "hobbyist"] },
+        { text: "Every {CREATIVE} project I've ever made was on that drive. It just clicks now.", customers: ["creator"] }
       ],
       software: [
         { text: "There are seventeen toolbars in my browser and I installed exactly none of them.", customers: null },
@@ -155,7 +163,8 @@
         { text: "Something's mining on my machine and it isn't me. Get it out.", customers: ["gamer", "miner", "student"] },
         { text: "My plugins fight each other and the whole suite crashes on export. Untangle it.", customers: ["creator", "hobbyist"] },
         { text: "Every machine in the office got the same weird email. One of us clicked it. Guess whose computer I'm carrying.", customers: ["office", "smallbiz"] },
-        { text: "I tried installing a second operating system and now there's only a blinking cursor.", customers: ["hobbyist", "student"] }
+        { text: "I tried installing a second operating system and now there's only a blinking cursor.", customers: ["hobbyist", "student"] },
+        { text: "Something broke and now {SW} crashes the second I open it. Everything else is fine.", customers: null }
       ],
       cleaning: [
         { text: "I opened the case to look inside and closed it immediately. You need to see this.", customers: null },
@@ -166,7 +175,8 @@
         { text: "My rig's temps creep up every match. I need airflow, not excuses.", customers: ["gamer", "student"] },
         { text: "The render box breathes dust like a dragon. Make it quiet before the voiceover session.", customers: ["creator"] },
         { text: "Shop floor dust got into everything. The quote machine wheezes louder than the compressor.", customers: ["smallbiz", "office"] },
-        { text: "These cards have been running hot for two years straight. Deep-clean the lot.", customers: ["miner"] }
+        { text: "These cards have been running hot for two years straight. Deep-clean the lot.", customers: ["miner"] },
+        { text: "My temps spike the second {GAME} loads in. It didn't used to do that.", customers: ["gamer", "student"] }
       ],
       peripheral: [
         { text: "The printer eats every third page and I've started taking it personally.", customers: null },
@@ -186,7 +196,8 @@
         { text: "I saw a build online with lights everywhere. I want that, but tasteful. But lights everywhere.", customers: ["gamer", "student", "creator"] },
         { text: "The stream needs a glow-up. Make the case the star of the background shot.", customers: ["creator"] },
         { text: "Undervolt them all. Every watt saved is pure margin.", customers: ["miner"] },
-        { text: "I read a forum thread about delidding. I'm not brave enough, but you might be.", customers: ["hobbyist"] }
+        { text: "I read a forum thread about delidding. I'm not brave enough, but you might be.", customers: ["hobbyist"] },
+        { text: "I want a rock-solid framerate in {GAME} no matter how long I've been playing. Tune it.", customers: ["gamer", "student"] }
       ],
       contract: [
         { text: "We're outfitting the whole office. Identical machines, on time, no drama.", customers: ["office", "smallbiz"] },
@@ -792,6 +803,66 @@
       summary: "A power supply wastes some of the electricity it converts as heat — and for most of the PC's history, nobody outside an engineering lab tracked how much.",
       body: "Every power supply converts wall AC into the various DC voltages a PC's components need, and that conversion is never perfectly efficient — some energy is always lost as heat. For most of the PC's early history this waste simply wasn't measured or marketed at all; consumers picked a PSU by wattage rating and price, with efficiency an invisible afterthought even to reasonably informed buyers.\n\nThe **80 PLUS** certification program, introduced in 2004, changed that by independently testing power supplies and certifying units that hit at least 80% efficiency across a range of typical loads — meaning no more than 20% of the power drawn from the wall was wasted as heat rather than delivered to components. It gave buyers, and reviewers, a simple, comparable benchmark where none had existed before.\n\nThe program expanded into a tiered system — Bronze, Silver, Gold, Platinum, and eventually Titanium — each requiring higher efficiency at multiple load levels, letting a shopper compare PSUs the same way they might compare a refrigerator's energy rating. Higher-efficiency units commanded a real price premium, but paid it back over time through lower electricity bills and, just as importantly to a repair shop, ran measurably cooler, which meant less thermal stress on components and a longer working life before failure.\n\nBy the late 2000s and into the 2010s, 80 PLUS certification had gone from a niche differentiator to a standard line item on nearly every serious power supply's box, and PSU-related failures (bad capacitors, overloaded rails) became somewhat rarer on well-rated units as a direct result of the tighter engineering the certification demanded.\n\n- pre-2004: PSU efficiency almost entirely unmeasured and unmarketed\n- 2004: 80 PLUS establishes the first widely recognized efficiency baseline\n- Bronze/Silver/Gold/Platinum/Titanium tiers give shoppers a clear ladder\n- efficiency becomes a standard selling point, not just a spec-sheet curiosity\n\nIt's a quiet kind of progress compared to a new GPU architecture or CPU generation, but a Gold or Platinum PSU running cooler and wasting less power is exactly the kind of unglamorous reliability upgrade a good shop should always be recommending."
     }
+  ];
+
+
+  // §13.3 — DATA.PERIOD_SOFTWARE: real era software titles used to fill copy tokens
+  // ({SW}/{GAME}/{OFFICE}/{CREATIVE}) in faults[].complaints and jobBlurbs (engine's
+  // fillCopyTokens picks an era- and customer-appropriate title; untokened variants
+  // are kept everywhere too so nothing breaks if a token can't resolve).
+  DATA.PERIOD_SOFTWARE = [
+    { name: "VisiCalc", minYear: 1979, maxYear: 1985, kind: "office", customers: null },
+    { name: "WordStar", minYear: 1983, maxYear: 1992, kind: "office", customers: null },
+    { name: "Lotus 1-2-3", minYear: 1983, maxYear: 1996, kind: "office", customers: ["smallbiz", "office"] },
+    { name: "dBASE", minYear: 1983, maxYear: 1995, kind: "office", customers: ["smallbiz", "office"] },
+    { name: "WordPerfect", minYear: 1983, maxYear: 2000, kind: "office", customers: ["smallbiz", "office", "student"] },
+    { name: "MS-DOS", minYear: 1983, maxYear: 1995, kind: "os", customers: null },
+    { name: "AutoCAD", minYear: 1983, maxYear: 2025, kind: "creative", customers: ["smallbiz", "office"] },
+    { name: "Zork", minYear: 1983, maxYear: 1990, kind: "game", customers: ["home", "student", "hobbyist"] },
+    { name: "Microsoft Flight Simulator", minYear: 1983, maxYear: 1998, kind: "game", customers: ["home", "hobbyist"] },
+    { name: "TurboTax", minYear: 1984, maxYear: 2025, kind: "utility", customers: ["home", "smallbiz"] },
+    { name: "King's Quest", minYear: 1984, maxYear: 1994, kind: "game", customers: ["home", "student"] },
+    { name: "Adobe Illustrator", minYear: 1987, maxYear: 2025, kind: "creative", customers: ["creator"] },
+    { name: "SimCity", minYear: 1989, maxYear: 1999, kind: "game", customers: ["home", "student"] },
+    { name: "Photoshop", minYear: 1990, maxYear: 2025, kind: "creative", customers: ["creator", "hobbyist"] },
+    { name: "Norton AntiVirus", minYear: 1991, maxYear: 2015, kind: "utility", customers: null },
+    { name: "WinZip", minYear: 1991, maxYear: 2010, kind: "utility", customers: null },
+    { name: "Premiere", minYear: 1991, maxYear: 2025, kind: "creative", customers: ["creator"] },
+    { name: "QuickBooks", minYear: 1992, maxYear: 2025, kind: "office", customers: ["smallbiz"] },
+    { name: "Windows 3.1", minYear: 1992, maxYear: 1998, kind: "os", customers: null },
+    { name: "Wolfenstein 3D", minYear: 1992, maxYear: 1998, kind: "game", customers: ["gamer", "student"] },
+    { name: "Myst", minYear: 1993, maxYear: 1999, kind: "game", customers: ["home", "student", "gamer"] },
+    { name: "Doom", minYear: 1993, maxYear: 2000, kind: "game", customers: ["gamer", "student", "hobbyist"] },
+    { name: "Encarta", minYear: 1993, maxYear: 2009, kind: "office", customers: ["student", "home"] },
+    { name: "America Online (AOL)", minYear: 1993, maxYear: 2006, kind: "web", customers: ["home", "senior"] },
+    { name: "Netscape Navigator", minYear: 1994, maxYear: 2003, kind: "web", customers: null },
+    { name: "Windows 95", minYear: 1995, maxYear: 2001, kind: "os", customers: null },
+    { name: "Internet Explorer", minYear: 1995, maxYear: 2010, kind: "web", customers: null },
+    { name: "ICQ", minYear: 1996, maxYear: 2004, kind: "web", customers: ["student", "home"] },
+    { name: "Quake", minYear: 1996, maxYear: 2002, kind: "game", customers: ["gamer", "student"] },
+    { name: "Winamp", minYear: 1997, maxYear: 2010, kind: "utility", customers: ["student", "gamer", "home"] },
+    { name: "Office 97", minYear: 1997, maxYear: 2003, kind: "office", customers: ["smallbiz", "office"] },
+    { name: "AOL Instant Messenger", minYear: 1997, maxYear: 2012, kind: "web", customers: ["student", "home"] },
+    { name: "Napster", minYear: 1999, maxYear: 2001, kind: "web", customers: ["student", "gamer", "home"] },
+    { name: "Office XP", minYear: 2001, maxYear: 2006, kind: "office", customers: ["smallbiz", "office"] },
+    { name: "Blender", minYear: 2002, maxYear: 2025, kind: "creative", customers: ["creator", "hobbyist"] },
+    { name: "Skype", minYear: 2003, maxYear: 2020, kind: "utility", customers: null },
+    { name: "Steam", minYear: 2003, maxYear: 2025, kind: "utility", customers: ["gamer", "student", "hobbyist"] },
+    { name: "Firefox", minYear: 2004, maxYear: 2025, kind: "web", customers: null },
+    { name: "World of Warcraft", minYear: 2004, maxYear: 2020, kind: "game", customers: ["gamer", "student"] },
+    { name: "Half-Life 2", minYear: 2004, maxYear: 2012, kind: "game", customers: ["gamer", "student"] },
+    { name: "CCleaner", minYear: 2004, maxYear: 2020, kind: "utility", customers: null },
+    { name: "Crysis", minYear: 2007, maxYear: 2013, kind: "game", customers: ["gamer"] },
+    { name: "Chrome", minYear: 2008, maxYear: 2025, kind: "web", customers: null },
+    { name: "Spotify", minYear: 2008, maxYear: 2025, kind: "web", customers: null },
+    { name: "League of Legends", minYear: 2009, maxYear: 2025, kind: "game", customers: ["gamer", "student"] },
+    { name: "Microsoft Office 365", minYear: 2011, maxYear: 2025, kind: "office", customers: ["smallbiz", "office", "student"] },
+    { name: "Minecraft", minYear: 2011, maxYear: 2025, kind: "game", customers: ["gamer", "student", "home"] },
+    { name: "OBS Studio", minYear: 2012, maxYear: 2025, kind: "creative", customers: ["creator", "gamer"] },
+    { name: "Discord", minYear: 2015, maxYear: 2025, kind: "web", customers: ["gamer", "student"] },
+    { name: "Fortnite", minYear: 2017, maxYear: 2025, kind: "game", customers: ["gamer", "student"] },
+    { name: "Zoom", minYear: 2019, maxYear: 2025, kind: "utility", customers: ["office", "smallbiz", "student", "home"] },
+    { name: "Stable Diffusion", minYear: 2022, maxYear: 2025, kind: "creative", customers: ["creator", "hobbyist"] }
   ];
 
 })(typeof window !== 'undefined' ? window : globalThis);

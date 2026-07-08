@@ -618,6 +618,187 @@ COMBOS.forEach(function (c) {
   });
 });
 
+// ---------------------------------------------------------------- v0.5 §13.1 CHRONICLE
+var CHRON_TAGS = ['hardware', 'software', 'gaming', 'internet', 'business', 'culture'];
+var CHRON = DATA.CHRONICLE || [];
+var chronYearCounts = {};
+if (!Array.isArray(CHRON) || CHRON.length < 70 || CHRON.length > 110) {
+  err('CHRONICLE: need 70-110 entries (§13.1), have ' + (Array.isArray(CHRON) ? CHRON.length : 'none'));
+}
+var chronIds = {};
+var prevChronDate = '';
+CHRON.forEach(function (e, i) {
+  var l = 'CHRONICLE[' + i + '] (' + (e && e.id ? e.id : '?') + ')';
+  if (!isStr(e.id)) err(l + ': missing id');
+  else { if (chronIds[e.id]) err(l + ': duplicate id ' + e.id); chronIds[e.id] = true; }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(e.date || '') || isNaN(Date.parse(e.date))) err(l + ': bad date (need real ISO YYYY-MM-DD)');
+  else {
+    if (e.date < prevChronDate) err(l + ': out of chronological order (' + prevChronDate + ' then ' + e.date + ')');
+    prevChronDate = e.date;
+    var yr = Number(e.date.slice(0, 4));
+    if (yr < 1983 || yr > 2025) err(l + ': date year ' + yr + ' outside 1983-2025');
+    chronYearCounts[yr] = (chronYearCounts[yr] || 0) + 1;
+  }
+  if (!isStr(e.headline)) err(l + ': headline required');
+  if (!isStr(e.body) || e.body.length < 40) err(l + ': body required (>= 40 chars, factual "why it mattered")');
+  if (CHRON_TAGS.indexOf(e.tag) === -1) err(l + ': tag "' + e.tag + '" not in ' + CHRON_TAGS.join('|'));
+});
+// >= 2/year AVERAGE across 1983-2025 (43 years)
+if (CHRON.length / 43 < 2) err('CHRONICLE: only ' + (CHRON.length / 43).toFixed(2) + ' entries/year avg 1983-2025 (need >= 2)');
+// span sanity: must reach both ends of the range
+var chronYearsSeen = Object.keys(chronYearCounts).map(Number).sort(function (a, b) { return a - b; });
+if (!chronYearsSeen.length || chronYearsSeen[0] > 1985) err('CHRONICLE: must include entries from the early 1980s (first year ' + (chronYearsSeen[0] || 'none') + ')');
+if (!chronYearsSeen.length || chronYearsSeen[chronYearsSeen.length - 1] < 2023) err('CHRONICLE: must reach the mid-2020s (last year ' + (chronYearsSeen[chronYearsSeen.length - 1] || 'none') + ')');
+// Chronicle must NOT carry any market/price fields (it is non-economic per §13.1)
+CHRON.forEach(function (e) {
+  if (e.effects !== undefined || e.priceMult !== undefined || e.jobVolumeMult !== undefined) {
+    err('CHRONICLE ' + e.id + ': must not carry market/price fields (effects/priceMult/jobVolumeMult) — it is non-economic news');
+  }
+});
+
+// ---------------------------------------------------------------- v0.5 §13.2 ARTICLES
+var ART_CATS = ['buses', 'storage', 'cpu', 'gpu', 'memory', 'os', 'form-factor', 'culture', 'business'];
+var ARTS = DATA.ARTICLES || [];
+if (!Array.isArray(ARTS) || ARTS.length < 16 || ARTS.length > 24) {
+  err('ARTICLES: need 16-24 articles (§13.2), have ' + (Array.isArray(ARTS) ? ARTS.length : 'none'));
+}
+var artIds = {};
+ARTS.forEach(function (a, i) {
+  var l = 'ARTICLES[' + i + '] (' + (a && a.id ? a.id : '?') + ')';
+  if (!isStr(a.id)) err(l + ': missing id');
+  else { if (artIds[a.id]) err(l + ': duplicate id ' + a.id); artIds[a.id] = true; }
+  if (!isStr(a.title)) err(l + ': title required');
+  if (ART_CATS.indexOf(a.category) === -1) err(l + ': category "' + a.category + '" not in ' + ART_CATS.join('|'));
+  var uy = a.unlockYear;
+  if (a.unlockDate !== undefined) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(a.unlockDate) || isNaN(Date.parse(a.unlockDate))) err(l + ': unlockDate not ISO');
+    else uy = Number(a.unlockDate.slice(0, 4));
+  }
+  if (!isInt(uy) || uy < 1983 || uy > 2025) err(l + ': unlockYear must be an int in 1983-2025');
+  if (!isStr(a.summary)) err(l + ': summary (1-sentence) required');
+  if (!isStr(a.body) || a.body.length < 400) err(l + ': body required and must be >= 400 chars (§13.2)');
+  else {
+    // safe Markdown-lite: balanced ** bold, bullets are exactly "- " lines, no other markup chars
+    if (((a.body.match(/\*\*/g) || []).length) % 2 !== 0) err(l + ': unbalanced ** bold markers');
+    a.body.split('\n').forEach(function (line) {
+      if (line.charAt(0) === '-' && line.slice(0, 2) !== '- ') err(l + ': bullet lines must start with "- " exactly');
+    });
+    if (/[#`_]|<[a-z]/i.test(a.body)) err(l + ': body contains disallowed markup (only \\n\\n, **bold**, "- " bullets allowed)');
+  }
+  if (a.related !== undefined && !Array.isArray(a.related)) err(l + ': related must be an array when present');
+});
+
+// ---------------------------------------------------------------- v0.5 §13.3 PERIOD_SOFTWARE
+var SW_KINDS = ['game', 'office', 'creative', 'web', 'os', 'utility'];
+var PS = DATA.PERIOD_SOFTWARE || [];
+if (!Array.isArray(PS) || PS.length < 40) err('PERIOD_SOFTWARE: need >= 40 titles (§13.3), have ' + (Array.isArray(PS) ? PS.length : 'none'));
+var psNames = {};
+PS.forEach(function (s, i) {
+  var l = 'PERIOD_SOFTWARE[' + i + '] (' + (s && s.name ? s.name : '?') + ')';
+  if (!isStr(s.name)) err(l + ': name required');
+  else { if (psNames[s.name]) err(l + ': duplicate name ' + s.name); psNames[s.name] = true; }
+  if (SW_KINDS.indexOf(s.kind) === -1) err(l + ': kind "' + s.kind + '" not in ' + SW_KINDS.join('|'));
+  if (!isInt(s.minYear) || !isInt(s.maxYear) || s.minYear > s.maxYear) err(l + ': minYear/maxYear invalid');
+  else if (s.minYear < 1979 || s.maxYear > 2025) err(l + ': years outside 1979-2025');
+  if (s.customers !== null) {
+    if (!Array.isArray(s.customers) || !s.customers.length) err(l + ': customers must be null or a non-empty array');
+    else s.customers.forEach(function (cid) { if (ALL_CUST.indexOf(cid) === -1) err(l + ': unknown customer type "' + cid + '"'); });
+  }
+});
+// token vocabulary must actually resolve: at least one title per token-kind exists in each era sample year
+var TOKEN_KIND = { GAME: 'game', OFFICE: 'office', CREATIVE: 'creative' };
+[1990, 1996, 2004, 2013, 2021, 2025].forEach(function (y) {
+  Object.keys(TOKEN_KIND).forEach(function (tok) {
+    var n = PS.filter(function (s) { return s.kind === TOKEN_KIND[tok] && s.minYear <= y && s.maxYear >= y; }).length;
+    if (n === 0) warn('PERIOD_SOFTWARE: no {' + tok + '} (' + TOKEN_KIND[tok] + ') title available in ' + y + ' — token would drop');
+  });
+  if (!PS.some(function (s) { return s.minYear <= y && s.maxYear >= y; })) err('PERIOD_SOFTWARE: no {SW} title available at all in ' + y);
+});
+// tokened copy must exist somewhere (complaints or blurbs) and untokened variants must remain
+var TOKEN_RE = /\{(SW|GAME|OFFICE|CREATIVE)\}/;
+var tokenedComplaints = 0, tokenedBlurbs = 0;
+Object.keys(FL.faults || {}).forEach(function (k) {
+  (FL.faults[k] || []).forEach(function (f) {
+    (f.complaints || []).forEach(function (c) { if (TOKEN_RE.test(c)) tokenedComplaints++; });
+    // every fault must keep at least one UNtokened complaint so nothing breaks if a token can't resolve
+    if ((f.complaints || []).length && !(f.complaints || []).some(function (c) { return !TOKEN_RE.test(c); })) {
+      err('FLAVOR.faults.' + k + ': a fault has only tokened complaints — keep an untokened variant (§13.3)');
+    }
+  });
+});
+Object.keys(FL.jobBlurbs || {}).forEach(function (k) {
+  (FL.jobBlurbs[k] || []).forEach(function (b) { if (b && TOKEN_RE.test(b.text)) tokenedBlurbs++; });
+  // every blurb list must keep at least one UNtokened blurb
+  var arr = FL.jobBlurbs[k] || [];
+  if (arr.length && !arr.some(function (b) { return b && !TOKEN_RE.test(b.text); })) {
+    err('FLAVOR.jobBlurbs.' + k + ': list has only tokened blurbs — keep untokened variants (§13.3)');
+  }
+});
+if (tokenedComplaints + tokenedBlurbs < 4) err('PERIOD_SOFTWARE: expected tokened {SW}/{GAME}/{OFFICE}/{CREATIVE} copy in faults/blurbs (§13.3), found ' + (tokenedComplaints + tokenedBlurbs));
+// only the four known tokens may appear (guard against stray placeholders)
+function scanTokens(str, where) {
+  (str.match(/\{[^}]*\}/g) || []).forEach(function (t) {
+    if (['{SW}', '{GAME}', '{OFFICE}', '{CREATIVE}'].indexOf(t) === -1) err(where + ': unknown copy token ' + t);
+  });
+}
+Object.keys(FL.faults || {}).forEach(function (k) { (FL.faults[k] || []).forEach(function (f) { (f.complaints || []).forEach(function (c) { scanTokens(c, 'FLAVOR.faults.' + k); }); }); });
+Object.keys(FL.jobBlurbs || {}).forEach(function (k) { (FL.jobBlurbs[k] || []).forEach(function (b) { if (b) scanTokens(b.text, 'FLAVOR.jobBlurbs.' + k); }); });
+
+// ---------------------------------------------------------------- v0.5 §13.4 CERTIFICATIONS
+var CERT_FX = ['jobTimeMult', 'payMult', 'callbackMult', 'prestigeBonus', 'reliabilityBonus', 'unlocks'];
+var CERTS = DATA.CERTIFICATIONS || [];
+if (!Array.isArray(CERTS) || CERTS.length < 8) err('CERTIFICATIONS: need >= 8 certs (§13.4), have ' + (Array.isArray(CERTS) ? CERTS.length : 'none'));
+var certById = {};
+CERTS.forEach(function (c) { if (c && c.id) certById[c.id] = c; });
+CERTS.forEach(function (c, i) {
+  var l = 'CERTIFICATIONS[' + i + '] (' + (c && c.id ? c.id : '?') + ')';
+  if (!isStr(c.id)) err(l + ': missing id');
+  if (!isStr(c.name) || !isStr(c.abbr)) err(l + ': name/abbr required');
+  if (!isInt(c.minYear) || c.minYear < 1983 || c.minYear > 2025) err(l + ': minYear must be int in 1983-2025');
+  if (!isNum(c.costBase) || c.costBase <= 0) err(l + ': costBase (1983-scale) must be > 0');
+  if (!isNum(c.studyHours) || c.studyHours <= 0) err(l + ': studyHours must be > 0');
+  if (!isStr(c.desc) || c.desc.length < 40) err(l + ': desc required (>= 40 chars — what it taught & why it mattered)');
+  if (c.prereq !== undefined) {
+    if (!certById[c.prereq]) err(l + ': prereq "' + c.prereq + '" is not a known cert id');
+    else if (certById[c.prereq].minYear > c.minYear) err(l + ': prereq ' + c.prereq + ' is newer than this cert (era sanity)');
+  }
+  if (typeof c.effects !== 'object' || c.effects === null) { err(l + ': effects object required'); return; }
+  Object.keys(c.effects).forEach(function (k) { if (CERT_FX.indexOf(k) === -1) err(l + ': unknown effect key "' + k + '" (§13.4 vocabulary only)'); });
+  var fx = c.effects;
+  if (fx.jobTimeMult !== undefined) {
+    if (typeof fx.jobTimeMult !== 'object' || fx.jobTimeMult === null) err(l + ': jobTimeMult must be an object');
+    else Object.keys(fx.jobTimeMult).forEach(function (k) {
+      if (k !== 'all' && JOB_TYPES.indexOf(k) === -1) err(l + ': jobTimeMult key "' + k + '" not a jobType or "all"');
+      var v = fx.jobTimeMult[k];
+      if (!isNum(v) || v <= 0 || v > 1) err(l + ': jobTimeMult.' + k + ' must be in (0, 1] (a speed-up)');
+    });
+  }
+  if (fx.payMult !== undefined) {
+    if (typeof fx.payMult !== 'object' || fx.payMult === null) err(l + ': payMult must be an object');
+    else Object.keys(fx.payMult).forEach(function (k) {
+      if (JOB_TYPES.indexOf(k) === -1 && CATEGORIES.indexOf(k) === -1) err(l + ': payMult key "' + k + '" not a jobType or category');
+      var v = fx.payMult[k];
+      if (!isNum(v) || v < 1) err(l + ': payMult.' + k + ' must be >= 1 (a pay boost)');
+    });
+  }
+  if (fx.callbackMult !== undefined && (!isNum(fx.callbackMult) || fx.callbackMult <= 0 || fx.callbackMult > 1)) err(l + ': callbackMult must be in (0, 1]');
+  if (fx.prestigeBonus !== undefined && (!isInt(fx.prestigeBonus) || fx.prestigeBonus <= 0)) err(l + ': prestigeBonus must be a positive int');
+  if (fx.reliabilityBonus !== undefined && (!isInt(fx.reliabilityBonus) || fx.reliabilityBonus <= 0)) err(l + ': reliabilityBonus must be a positive int');
+  if (fx.unlocks !== undefined) {
+    if (!Array.isArray(fx.unlocks)) err(l + ': unlocks must be an array');
+    else fx.unlocks.forEach(function (u) { if (JOB_TYPES.indexOf(u) === -1) err(l + ': unlocks entry "' + u + '" is not a jobType'); });
+  }
+  if (Object.keys(fx).length === 0) err(l + ': cert has no effects');
+});
+// canon: the spec-named era-gated certs should be present (A+, Network+, CNE, MCSE, CCNA, Apple, Security+, a data-recovery cert)
+['A+', 'Network+', 'CNE', 'MCSE', 'CCNA', 'Security+'].forEach(function (abbr) {
+  if (!CERTS.some(function (c) { return c.abbr === abbr; })) warn('CERTIFICATIONS: expected a cert with abbr "' + abbr + '" (§13.4 canon)');
+});
+if (!CERTS.some(function (c) { return /apple/i.test(c.name); })) warn('CERTIFICATIONS: expected an Apple technician cert (§13.4 canon)');
+if (!CERTS.some(function (c) { return c.effects && (c.effects.jobTimeMult && c.effects.jobTimeMult.data_recovery || c.effects.payMult && c.effects.payMult.data_recovery); })) {
+  warn('CERTIFICATIONS: expected a data-recovery-focused cert (§13.4 canon)');
+}
+
 // ---------------------------------------------------------------- report
 function pad(s, n) { s = String(s); while (s.length < n) s = ' ' + s; return s; }
 console.log('=== Coverage table (parts by introYear bucket) ===');
@@ -660,6 +841,10 @@ console.log('Devices: Apple ' + AM.length + ' | Mobile ' + MD.length + ' (' +
   ' | sliTag GPUs: ' + PARTS.filter(function (p) { return p.sliTag; }).length +
   ' (Voodoo2: ' + v2Cards.length + ')');
 console.log('Baseline years: ' + ybYears.join(', '));
+console.log('v0.5 Education: Chronicle ' + CHRON.length + ' entries (' + (CHRON.length / 43).toFixed(2) + '/yr avg, ' +
+  chronYearsSeen.length + ' distinct years) | Articles ' + ARTS.length + ' | Period software ' + PS.length +
+  ' | Certifications ' + CERTS.length + ' | tokened copy ' + (tokenedComplaints + tokenedBlurbs) +
+  ' (' + tokenedComplaints + ' complaints, ' + tokenedBlurbs + ' blurbs)');
 
 if (warnings.length) {
   console.log('\nWARNINGS (' + warnings.length + '):');

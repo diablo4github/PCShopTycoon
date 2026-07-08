@@ -541,6 +541,7 @@
       gpu: [
         { desc: 'Garbage characters all over the screen', laborHours: 1,
           complaints: ['"The screen fills with confetti nonsense."',
+                       '"{GAME} looks scrambled the moment it loads."',
                        '"Everything on screen looks scrambled."'] },
         { desc: 'No video signal at power-on', laborHours: 2,
           complaints: ['"The screen stays black but the fans run."',
@@ -606,7 +607,7 @@
         { text: '"It makes a horrible noise and dies."', customers: null }
       ],
       upgrade: ['"It is just so slow lately."', '"I need more room for my files."',
-                '"Can you make this thing faster?"', '"The new software will not run."'],
+                '"Can you make this thing faster?"', '"{SW} needs more than this box has."'],
       build: [
         { text: '"Build me something decent, within budget."', customers: null },
         { text: '"It has to run the new 3D games, properly."', customers: ['gamer', 'student'] },
@@ -659,4 +660,111 @@
     ],
     shopNameSuggestions: ['Circuit & Solder', 'Byte Works']
   };
+
+  // §13.3 Period software — feeds fillCopyTokens ({SW}/{GAME}/{OFFICE}/{CREATIVE}).
+  DATA.PERIOD_SOFTWARE = [
+    { name: 'Lotus 1-2-3', minYear: 1983, maxYear: 1997, kind: 'office',
+      customers: ['smallbiz', 'office'] },
+    { name: 'WordPerfect', minYear: 1983, maxYear: 2000, kind: 'office', customers: null },
+    { name: 'dBASE III', minYear: 1984, maxYear: 1994, kind: 'office',
+      customers: ['smallbiz', 'office'] },
+    { name: 'Flight Simulator', minYear: 1983, maxYear: 1998, kind: 'game', customers: null },
+    { name: 'Doom', minYear: 1993, maxYear: 2000, kind: 'game',
+      customers: ['gamer', 'student'] },
+    { name: 'Myst', minYear: 1993, maxYear: 2001, kind: 'game', customers: null },
+    { name: 'Quake', minYear: 1996, maxYear: 2002, kind: 'game',
+      customers: ['gamer', 'student'] },
+    { name: 'Microsoft Office 97', minYear: 1997, maxYear: 2006, kind: 'office',
+      customers: ['smallbiz', 'office', 'home'] },
+    { name: 'Photoshop', minYear: 1990, kind: 'creative', customers: ['creator', 'student'] },
+    { name: 'Premiere', minYear: 1991, kind: 'creative', customers: ['creator'] },
+    { name: 'Netscape Navigator', minYear: 1994, maxYear: 2004, kind: 'web', customers: null },
+    { name: 'World of Warcraft', minYear: 2004, kind: 'game', customers: ['gamer', 'student'] },
+    { name: 'Blender', minYear: 2002, kind: 'creative', customers: ['creator', 'student'] }
+  ];
+
+  // §13.1 Tech Chronicle — dated almanac (real dates), surfaced as non-market news.
+  DATA.CHRONICLE = [
+    { id: 'mac-1984', date: '1984-01-24', tag: 'hardware',
+      headline: 'Apple launches the Macintosh',
+      body: 'The first mass-market computer with a graphical interface and mouse. It reframed what a personal computer could be.' },
+    { id: 'win-3-1990', date: '1990-05-22', tag: 'software',
+      headline: 'Microsoft ships Windows 3.0',
+      body: 'The release that made Windows a commercial success and pushed the GUI into the mainstream office.' },
+    { id: 'linux-1991', date: '1991-09-17', tag: 'software',
+      headline: 'Linus Torvalds releases Linux 0.01',
+      body: 'A hobby kernel posted to a Usenet group grows into the backbone of servers and the internet.' },
+    { id: 'doom-1993', date: '1993-12-10', tag: 'gaming',
+      headline: 'id Software releases Doom',
+      body: 'Shareware distribution and fast 3D action made Doom a cultural phenomenon and defined the FPS genre.' },
+    { id: 'win95-1995', date: '1995-08-24', tag: 'software',
+      headline: 'Windows 95 launches',
+      body: 'The Start menu, taskbar and Plug and Play arrive amid a midnight-launch marketing blitz.' },
+    { id: 'google-1998', date: '1998-09-04', tag: 'internet',
+      headline: 'Google is founded',
+      body: 'A Stanford research project on link analysis becomes the search engine that organizes the web.' },
+    { id: 'iphone-2007', date: '2007-06-29', tag: 'hardware',
+      headline: 'The iPhone goes on sale',
+      body: 'A capacitive touchscreen phone with a real browser kicks off the smartphone era and the post-PC squeeze.' },
+    { id: 'bitcoin-2009', date: '2009-01-03', tag: 'business',
+      headline: 'The Bitcoin genesis block is mined',
+      body: 'A pseudonymous whitepaper becomes a running network, seeding a decade of crypto booms and GPU shortages.' },
+    { id: 'chatgpt-2022', date: '2022-11-30', tag: 'culture',
+      headline: 'ChatGPT is released',
+      body: 'A conversational AI reaches a hundred million users in weeks, reshaping expectations of software overnight.' }
+  ];
+
+  // §13.2 Milestone Wiki articles — unlock as the calendar crosses each transition.
+  DATA.ARTICLES = [
+    { id: 'bus-wars', title: 'The Expansion-Bus Wars', category: 'buses', unlockYear: 2006,
+      summary: 'How PCs got faster slots, one standard at a time.',
+      related: ['BUS-ISA16', 'BUS-PCI', 'BUS-AGP', 'BUS-PCIE'],
+      body: 'For two decades the story of the PC was partly a story of its slots.\n\n' +
+        'The original IBM PC used the **8-bit ISA** bus, later widened to 16 bits. It was ' +
+        'simple and universal, but slow — and as graphics grew hungrier, it became a ' +
+        'bottleneck.\n\n' +
+        'A series of contenders followed:\n' +
+        '- **VESA Local Bus** bolted a fast slot onto the 486 memory bus\n' +
+        '- **PCI** brought a clean, chipset-agnostic 32-bit bus that lasted years\n' +
+        '- **AGP** gave the graphics card a dedicated port\n' +
+        '- **PCI Express** replaced the shared bus with point-to-point serial lanes\n\n' +
+        'Each transition rewarded shops that understood which card fit which board — a skill ' +
+        'the compatibility checker in this game rewards too.' },
+    { id: 'ssd-revolution', title: 'The SSD Revolution', category: 'storage', unlockYear: 2013,
+      summary: 'Why the single best upgrade became a flash drive.',
+      related: ['STOR-SATA', 'STOR-NVME'],
+      body: 'For most of computing history, storage meant a spinning platter.\n\n' +
+        'Hard drives got bigger every year, but their **seek times** barely improved — the ' +
+        'head still had to physically move. Solid-state drives changed that. With no moving ' +
+        'parts, an SSD served data in microseconds instead of milliseconds.\n\n' +
+        'The impact on the repair bench was immediate:\n' +
+        '- Cloning an old drive to an SSD was the single most dramatic upgrade a shop could sell\n' +
+        '- Boot times collapsed from minutes to seconds\n' +
+        '- **NVMe** later dropped the SATA bottleneck entirely, running flash straight over PCIe\n\n' +
+        'By the mid-2010s, recommending a mechanical drive as a boot disk had become a mistake.' }
+  ];
+
+  // §13.4 Certifications — era-gated owner progression (mirrors the engine fallback).
+  DATA.CERTIFICATIONS = [
+    { id: 'comptia-aplus', name: 'CompTIA A+', abbr: 'A+', minYear: 1993,
+      costBase: 220, studyHours: 20,
+      desc: 'The entry-level bench cert — broad hardware/software troubleshooting.',
+      effects: { jobTimeMult: { repair: 0.92, upgrade: 0.92 }, reliabilityBonus: 3 } },
+    { id: 'microsoft-mcse', name: 'Microsoft MCSE', abbr: 'MCSE', minYear: 1994,
+      costBase: 340, studyHours: 36,
+      desc: 'Systems Engineer track — Windows NT domains, deep OS expertise.',
+      effects: { jobTimeMult: { software: 0.85 }, payMult: { software: 1.05 } } },
+    { id: 'data-recovery-cert', name: 'Certified Data Recovery Professional',
+      abbr: 'CDRP', minYear: 1996, costBase: 300, studyHours: 26,
+      desc: 'Platter-level recovery technique for failing and dead drives.',
+      effects: { jobTimeMult: { data_recovery: 0.85 }, payMult: { data_recovery: 1.12 } } },
+    { id: 'cisco-ccna', name: 'Cisco CCNA', abbr: 'CCNA', minYear: 1998,
+      costBase: 300, studyHours: 30,
+      desc: 'Networking fundamentals — routers, switches, and small-office LANs.',
+      effects: { unlocks: ['contract'], payMult: { contract: 1.1 } } },
+    { id: 'apple-acmt', name: 'Apple Certified Mac Technician', abbr: 'ACMT',
+      minYear: 2005, costBase: 280, studyHours: 22,
+      desc: 'Factory-authorized Apple service procedures and diagnostics.',
+      effects: { jobTimeMult: { device_repair: 0.88 }, reliabilityBonus: 3 } }
+  ];
 })(typeof window !== 'undefined' ? window : globalThis);

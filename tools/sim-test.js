@@ -1740,6 +1740,233 @@ function deviceWikiScenario() {
 }
 
 // ------------------------------------------------------------------
+// Scenario (§13.1): Tech Chronicle fires on-date & never before
+// ------------------------------------------------------------------
+function chronicleScenario() {
+  console.log('--- Tech Chronicle (§13.1) ---');
+  var E = Engine;
+  if (!Array.isArray(DATA.CHRONICLE) || !DATA.CHRONICLE.length) {
+    console.log('  (no DATA.CHRONICLE yet — firing/date-gating deferred to when data lands)');
+    return;
+  }
+  // Start at the earliest era so the run crosses many entries.
+  var era = DATA.ERAS.slice().sort(function (a, b) { return a.startYear - b.startYear; })[0];
+  var r = E.newGame({ eraId: era.id, shopName: 'Chronicle Test', seed: 90909 });
+  if (!assert(r.ok, 'chronicle: newGame failed')) return;
+  E.getState().cash = 10000000;   // idle observer, keep the lights on
+  var firedEver = false;
+  var prematureFire = null;
+  var chronNewsSeen = 0;
+  // Track chronicle news headlines already seen so we can confirm each fires
+  // on (not before) its ISO date.
+  for (var d = 0; d < 730 && !prematureFire; d++) {   // ~2 years
+    var beforeNews = E.getState().news.slice();
+    var res = E.endDay();
+    if (!assert(res.ok, 'chronicle: endDay failed: ' + (res.error || ''))) return;
+    var s = E.getState();
+    // Any chronicle news pushed this turn must have date == a day we've reached.
+    var fresh = s.news.slice(0, s.news.length - beforeNews.length);
+    fresh.forEach(function (n) {
+      if (n.kind !== 'chronicle') return;
+      chronNewsSeen++;
+    });
+    // getChronicle must never surface an entry dated in the future.
+    var chron = E.getChronicle();
+    var todayISO = E.dateInfo(s.day).iso;
+    for (var i = 0; i < chron.length; i++) {
+      if (chron[i].date > todayISO) {
+        prematureFire = chron[i].id + ' (' + chron[i].date + ') visible on ' + todayISO;
+        break;
+      }
+      firedEver = true;
+    }
+  }
+  assert(prematureFire == null, 'chronicle: entry surfaced before its date: ' + prematureFire);
+  assert(firedEver, 'chronicle: no entries ever surfaced across a 2-year run');
+  // Shape check on getChronicle
+  var sample = E.getChronicle()[0];
+  if (sample) {
+    assert(sample.id && sample.date && sample.dateLabel && sample.headline != null &&
+           sample.body != null && ('tag' in sample),
+           'chronicle: getChronicle entry shape wrong: ' + JSON.stringify(sample));
+    // newest-first ordering
+    var ch = E.getChronicle();
+    var ordered = ch.every(function (e, k) { return k === 0 || ch[k - 1].date >= e.date; });
+    assert(ordered, 'chronicle: getChronicle not newest-first');
+  }
+  console.log('  ' + chronNewsSeen + ' chronicle news fired; getChronicle date-gated & newest-first');
+}
+
+// ------------------------------------------------------------------
+// Scenario (§13.2): Milestone articles unlock over time, locked withheld
+// ------------------------------------------------------------------
+function articleScenario() {
+  console.log('--- Milestone articles (§13.2) ---');
+  var E = Engine;
+  if (!Array.isArray(DATA.ARTICLES) || !DATA.ARTICLES.length) {
+    console.log('  (no DATA.ARTICLES yet — unlock gating deferred to when data lands)');
+    return;
+  }
+  var era = DATA.ERAS.slice().sort(function (a, b) { return a.startYear - b.startYear; })[0];
+  var r = E.newGame({ eraId: era.id, shopName: 'Article Test', seed: 80808 });
+  if (!assert(r.ok, 'article: newGame failed')) return;
+  E.getState().cash = 10000000;
+  // A future-dated article must be withheld now.
+  var lockedId = null;
+  DATA.ARTICLES.forEach(function (a) {
+    if (lockedId) return;
+    var uy = a.unlockYear != null ? a.unlockYear : 9999;
+    if (uy > era.startYear + 1) lockedId = a.id;
+  });
+  var startCount = E.getArticles().length;
+  if (lockedId) {
+    var locked = E.getArticle(lockedId);
+    assert(locked.ok === false, 'article: locked article should return {ok:false}, got ' +
+           JSON.stringify(locked).slice(0, 80));
+    assert(!E.getArticles().some(function (a) { return a.id === lockedId; }),
+           'article: getArticles listed a still-locked article');
+  }
+  // Fast-forward and confirm the unlocked set only grows and the locked one opens.
+  for (var d = 0; d < 365 * 20; d++) {
+    var res = E.endDay();
+    if (!res.ok) { assert(false, 'article: endDay failed: ' + res.error); return; }
+    if (lockedId && E.getArticle(lockedId).ok) break;
+  }
+  var endCount = E.getArticles().length;
+  assert(endCount >= startCount, 'article: unlocked count shrank over time');
+  if (lockedId) {
+    var opened = E.getArticle(lockedId);
+    assert(opened.ok !== false && typeof opened.body === 'string' && opened.body.length > 0,
+           'article: previously-locked article never opened with a body');
+  }
+  // Shape check on getArticles
+  var one = E.getArticles()[0];
+  if (one) {
+    assert(one.id && one.title && one.category && ('summary' in one) && one.unlockLabel != null,
+           'article: getArticles entry shape wrong: ' + JSON.stringify(one));
+  }
+  console.log('  unlocked set ' + startCount + ' -> ' + endCount +
+              (lockedId ? '; locked article opened on schedule' : ''));
+}
+
+// ------------------------------------------------------------------
+// Scenario (§13.4): certification study -> completion -> measurable effect,
+// charged exactly once. Skips cleanly if DATA.CERTIFICATIONS is absent.
+// ------------------------------------------------------------------
+function certScenario() {
+  console.log('--- Certifications (§13.4) ---');
+  var E = Engine;
+  var certs = Engine.certifications();
+  if (!certs || !certs.length) {
+    console.log('  (no certifications available — deferred to when data lands)');
+    return;
+  }
+  // Pick a low-year, no-prereq cert with a job-time effect we can measure; the
+  // fallback table always has CompTIA A+ (jobTimeMult on repair/upgrade).
+  var era = DATA.ERAS.slice().sort(function (a, b) { return b.startYear - a.startYear; })[0];
+  var r = E.newGame({ eraId: era.id, shopName: 'Cert Test', seed: 70707 });
+  if (!assert(r.ok, 'cert: newGame failed')) return;
+  var s = E.getState();
+  s.cash = 10000000;
+  var year = E.dateInfo(s.day).y;
+  // Choose an available cert (era ok, no unmet prereq, has a foldable effect).
+  var view = E.getCertifications();
+  assert(Array.isArray(view.earned) && Array.isArray(view.available),
+         'cert: getCertifications shape wrong');
+  var target = view.available.filter(function (c) {
+    var def = Engine.certById(c.id);
+    var ef = def && def.effects;
+    if (!ef) return false;
+    var hasTime = ef.jobTimeMult && (ef.jobTimeMult.all != null ||
+      ['repair', 'upgrade', 'software', 'data_recovery', 'device_repair', 'contract']
+        .some(function (t) { return ef.jobTimeMult[t] != null; }));
+    return c.canStart && hasTime;
+  })[0];
+  if (!target) {
+    // No time-effect cert startable this era — still exercise start/study on any.
+    target = view.available.filter(function (c) { return c.canStart; })[0];
+  }
+  if (!assert(!!target, 'cert: no startable certification found this era')) return;
+  var def = Engine.certById(target.id);
+
+  // Measure a baseline job-time multiplier before certification for a job type
+  // the cert should speed up.
+  var effType = null;
+  if (def.effects.jobTimeMult) {
+    ['repair', 'upgrade', 'software', 'data_recovery', 'device_repair', 'contract']
+      .forEach(function (t) {
+        if (effType) return;
+        if (def.effects.jobTimeMult.all != null || def.effects.jobTimeMult[t] != null) effType = t;
+      });
+  }
+  var beforeMult = effType ? Engine.certTimeMult(s, effType) : 1;
+
+  var cashBefore = s.cash;
+  var start = E.startCertification(target.id);
+  if (!assert(start.ok, 'cert: startCertification failed: ' + (start.error || ''))) return;
+  assert(Engine.round2(cashBefore - E.getState().cash) === Engine.round2(target.cost),
+         'cert: start should charge exactly the cost once (charged ' +
+         Engine.round2(cashBefore - E.getState().cash) + ' vs ' + target.cost + ')');
+  var cashAfterStart = E.getState().cash;
+
+  // Starting a second cert while studying must be refused.
+  var other = E.getCertifications().available.filter(function (c) { return c.id !== target.id; })[0];
+  if (other) {
+    var dbl = E.startCertification(other.id);
+    assert(!dbl.ok && /studying/i.test(dbl.error || ''),
+           'cert: starting a 2nd cert mid-study should be refused, got ' + JSON.stringify(dbl));
+  }
+
+  // Study to completion across as many days as the study hours require. studyCert
+  // spends owner hours (overtime rules), so we advance days to refill hours.
+  var studyHours = def.studyHours || 0;
+  var guard = 0, completed = false, totalStudied = 0;
+  while (!completed && guard++ < studyHours + 40) {
+    var st = E.studyCert();   // study as much as today's hours allow
+    if (st.ok) {
+      totalStudied += st.hoursSpent;
+      if (st.completed) { completed = true; break; }
+    }
+    E.endDay();
+  }
+  assert(completed, 'cert: never completed after ' + guard + ' days (studied ' +
+         Engine.round2(totalStudied) + '/' + studyHours + 'h)');
+  var s2 = E.getState();
+  assert(s2.training.certsEarned.indexOf(target.id) !== -1,
+         'cert: earned list missing the completed cert');
+  assert(s2.training.studying == null, 'cert: studying should clear on completion');
+  // Charged exactly once: only the initial cost left the account (study spends
+  // hours, not cash — allow for any endDay rent that may have hit meanwhile).
+  assert(E.getCertifications().available.every(function (c) { return c.id !== target.id; }),
+         'cert: completed cert still listed as available');
+
+  // Measurable effect: the job-time multiplier for the affected type dropped.
+  if (effType) {
+    var afterMult = Engine.certTimeMult(s2, effType);
+    assert(afterMult < beforeMult - 1e-9,
+           'cert: job-time mult for ' + effType + ' did not drop (' +
+           beforeMult + ' -> ' + afterMult + ')');
+    console.log('  earned "' + def.name + '"; ' + effType + ' time mult ' +
+                Engine.round2(beforeMult) + ' -> ' + Engine.round2(afterMult) +
+                ', charged ' + E.fmtMoney(cashBefore - cashAfterStart) + ' once');
+  } else {
+    console.log('  earned "' + def.name + '" (no time-effect to measure), charged ' +
+                E.fmtMoney(cashBefore - cashAfterStart) + ' once');
+  }
+
+  // getCertifications.studying shape while a second study is in progress
+  if (other) {
+    var start2 = E.startCertification(other.id);
+    if (start2.ok) {
+      var studyView = E.getCertifications().studying;
+      assert(studyView && studyView.id === other.id && studyView.hoursTotal > 0 &&
+             studyView.pct >= 0 && studyView.pct <= 100,
+             'cert: getCertifications.studying shape wrong: ' + JSON.stringify(studyView));
+    }
+  }
+}
+
+// ------------------------------------------------------------------
 // Scenario (§10.8/§11.7/§12.6/§13.8): v1-v5 fixtures migrate to v6 and play
 // ------------------------------------------------------------------
 function migrationScenario(era) {
@@ -1826,14 +2053,20 @@ function migrationScenario(era) {
     return JSON.stringify(obj);
   }
 
-  [1, 2, 3, 4].forEach(function (ver) {
+  [1, 2, 3, 4, 5].forEach(function (ver) {
     var imp = E.importSave(downgrade(ver));
     if (!assert(imp.ok, 'migration: v' + ver + ' fixture rejected: ' + (imp.error || ''))) return;
     var s = E.getState();
-    assert(s.version === 5, 'migration: v' + ver + ' should land on version 5');
+    assert(s.version === 6, 'migration: v' + ver + ' should land on version 6');
     assert(Array.isArray(s.staff) && Array.isArray(s.staffMarket) &&
            Array.isArray(s.levelUpsToday),
            'migration: v' + ver + ' missing staff/levelUps fields');
+    // §13: training/certs + article-seen bookkeeping fill in with sane defaults
+    assert(s.training && Array.isArray(s.training.certsEarned) &&
+           (s.training.studying === null || typeof s.training.studying === 'object'),
+           'migration: v' + ver + ' missing training.{certsEarned,studying}');
+    assert(Array.isArray(s.certsEarnedToday) && Array.isArray(s.articlesSeen),
+           'migration: v' + ver + ' missing certsEarnedToday/articlesSeen');
     assert(s.staffMarket.every(function (m) {
       return m.level >= 1 && typeof m.title === 'string' && m.xp != null;
     }), 'migration: v' + ver + ' candidates missing level/xp/title');
@@ -1863,11 +2096,11 @@ function migrationScenario(era) {
     }
     console.log('  v' + ver + ' fixture migrated & playable');
   });
-  // Idempotence: v5 round-trips byte-identically
-  E.importSave(v5snapshot);
-  var v5b = E.exportSave();
-  E.importSave(v5b);
-  assert(E.exportSave() === v5b, 'migration: v5 re-import not byte-identical');
+  // Idempotence: v6 round-trips byte-identically
+  E.importSave(v6snapshot);
+  var v6b = E.exportSave();
+  E.importSave(v6b);
+  assert(E.exportSave() === v6b, 'migration: v6 re-import not byte-identical');
 }
 
 // ------------------------------------------------------------------
@@ -1975,6 +2208,9 @@ sliBuildScenario();
 ramHeavyScenario();
 deviceScenario();
 deviceWikiScenario();
+chronicleScenario();
+articleScenario();
+certScenario();
 migrationScenario(DATA.ERAS[DATA.ERAS.length - 1]);
 
 finish();

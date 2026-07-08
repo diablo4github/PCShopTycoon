@@ -257,4 +257,77 @@
     ]
   };
 
+
+  // §13.4 — DATA.CERTIFICATIONS: era-gated owner-progression track. Engine year-scales
+  // costBase (1983-scale) and folds effects into its multiplier paths alongside
+  // equipment & staff. effects use ONLY this vocabulary (engine consumes these keys):
+  //   jobTimeMult: { <jobType>|"all": <0-1 mult> }   // < 1 speeds work
+  //   payMult:     { <jobType>|<category>: <mult> }    // > 1 raises pay
+  //   callbackMult: <0-1 mult>                         // < 1 fewer callbacks
+  //   prestigeBonus: <int>                             // reputation nudge
+  //   reliabilityBonus: <int>                          // steadier workmanship
+  //   unlocks: [ <jobType> ... ]                       // grants a job type
+  DATA.CERTIFICATIONS = [
+    {
+      id: "novell-cne", name: "Novell Certified NetWare Engineer", abbr: "CNE",
+      minYear: 1990, costBase: 600, studyHours: 40,
+      desc: "Novell's NetWare ran the file and print servers of nearly every LAN-equipped office in the early 1990s. The CNE credential certified you could install, tune, and rescue those servers — the ticket to lucrative business contract work.",
+      effects: { payMult: { contract: 1.12 }, prestigeBonus: 1 }
+    },
+    {
+      id: "comptia-aplus", name: "CompTIA A+", abbr: "A+",
+      minYear: 1993, costBase: 250, studyHours: 24,
+      desc: "The industry's foundational hardware and repair certification, launched by CompTIA in 1993. It proved a technician knew PCs inside out — the baseline credential most shops and employers came to expect, and the natural first rung on the ladder.",
+      effects: { jobTimeMult: { repair: 0.9, upgrade: 0.9 }, reliabilityBonus: 2 }
+    },
+    {
+      id: "microsoft-mcse", name: "Microsoft Certified Systems Engineer", abbr: "MCSE",
+      minYear: 1994, costBase: 900, studyHours: 48,
+      desc: "As Windows NT pushed into server rooms, the MCSE became the marquee Microsoft credential for designing and running Windows-based networks. It was demanding, expensive, and highly sought after through the dot-com years.",
+      effects: { jobTimeMult: { software: 0.88 }, payMult: { contract: 1.1 }, prestigeBonus: 1 }
+    },
+    {
+      id: "cisco-ccna", name: "Cisco Certified Network Associate", abbr: "CCNA",
+      minYear: 1998, costBase: 750, studyHours: 44,
+      desc: "Cisco's routers and switches were the plumbing of the exploding internet, and the CCNA certified you could configure and troubleshoot them. It opened the door to networking contracts far beyond a typical repair bench's reach.",
+      effects: { payMult: { contract: 1.15 }, prestigeBonus: 1 }
+    },
+    {
+      id: "comptia-networkplus", name: "CompTIA Network+", abbr: "Network+",
+      minYear: 1999, costBase: 350, studyHours: 30, prereq: "comptia-aplus",
+      desc: "Introduced in 1999 as the vendor-neutral companion to A+, Network+ covered cabling, protocols, and troubleshooting the small networks every office and home was suddenly building. The recommended next step after A+.",
+      effects: { payMult: { contract: 1.1 }, callbackMult: 0.95 }
+    },
+    {
+      id: "microsoft-mcsa", name: "Microsoft Certified Systems Administrator", abbr: "MCSA",
+      minYear: 2001, costBase: 700, studyHours: 40,
+      desc: "Launched alongside Windows 2000/XP-era server products, the MCSA certified day-to-day administration of Windows systems — a more attainable, hands-on credential than the full engineer track for shops doing steady software and setup work.",
+      effects: { jobTimeMult: { software: 0.9 }, payMult: { software: 1.1 } }
+    },
+    {
+      id: "comptia-securityplus", name: "CompTIA Security+", abbr: "Security+",
+      minYear: 2002, costBase: 450, studyHours: 32, prereq: "comptia-networkplus",
+      desc: "As always-on broadband turned every PC into a target, Security+ (2002) certified the fundamentals of malware removal, hardening, and safe configuration. Exactly the knowledge the spyware and ransomware epidemics made a shop's bread and butter.",
+      effects: { jobTimeMult: { software: 0.85 }, prestigeBonus: 1 }
+    },
+    {
+      id: "apple-acmt", name: "Apple Certified Macintosh Technician", abbr: "ACMT",
+      minYear: 2005, costBase: 550, studyHours: 32,
+      desc: "Apple's own technician credential certified you to service Macs and, later, its mobile devices to Apple's exacting standards. As the Mac and iPhone user base swelled, ACMT turned Apple repair from a gamble into a specialty.",
+      effects: { jobTimeMult: { device_repair: 0.85 }, payMult: { device_repair: 1.12 }, reliabilityBonus: 2 }
+    },
+    {
+      id: "iacrb-cdrp", name: "Certified Data Recovery Professional", abbr: "CDRP",
+      minYear: 2008, costBase: 1200, studyHours: 40,
+      desc: "A specialist credential in the delicate art of pulling data off failed drives — head swaps, platter transfers, firmware repair, and flash reconstruction. Rare, respected, and the key to charging real money for the jobs nobody else will touch.",
+      effects: { jobTimeMult: { data_recovery: 0.85 }, payMult: { data_recovery: 1.2 }, unlocks: ["data_recovery"] }
+    },
+    {
+      id: "aws-saa", name: "AWS Certified Solutions Architect", abbr: "AWS SAA",
+      minYear: 2013, costBase: 900, studyHours: 36,
+      desc: "As computing moved to the cloud, AWS certifications became the modern equivalent of the old server credentials, proving you could architect and migrate workloads onto Amazon's infrastructure. A forward-looking cert for a shop chasing bigger business contracts.",
+      effects: { payMult: { contract: 1.18 }, prestigeBonus: 1 }
+    }
+  ];
+
 })(typeof window !== 'undefined' ? window : globalThis);

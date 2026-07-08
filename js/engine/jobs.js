@@ -557,7 +557,12 @@
   // before it is ever offered. Greedy cheapest parts meeting compat + minPerf
   // + minStyle + the PSU rule. Returns { cost, partIds } or null.
   // ------------------------------------------------------------------
+  /* §11.1/§12.2 witness: greedy cheapest full build meeting the request.
+   * Multi-part aware — stacks identical RAM sticks/drives against slot counts
+   * and reaches for a same-sliTag GPU pair (plus a 2D companion for Voodoo2
+   * add-ons) when no single card meets minPerf.gpu. */
   function witnessBuild(state, build) {
+    var C = CFG();
     var mp = build.minPerf || {};
     var minStyle = build.minStyle || 0;
     var year = Engine.currentYear(state);
@@ -566,7 +571,82 @@
     function byStyleThenPrice(a, b) {
       return ((b.style || 0) - (a.style || 0)) || (price(a) - price(b));
     }
-    var mobos = purchasableByCategory(state, 'motherboard').sort(byPrice).slice(0, 12);
+    function slotCap(mobo, cat) {
+      var slots = mobo.slots || C.SLOT_DEFAULTS;
+      var n = slots[cat];
+      return (typeof n === 'number' && isFinite(n) && n >= 1) ?
+        Math.floor(n) : C.SLOT_DEFAULTS[cat];
+    }
+    // Cheapest stack of one part type summing perfKey >= target within cap.
+    // Returns an array of parts (repeats allowed) or null.
+    function pickStack(mobo, cat, perfKey, target, cap) {
+      var cands = purchasableByCategory(state, cat).filter(function (p) {
+        return Engine.Compat.fits(p, mobo).fits && ((p.perf || {})[perfKey] || 0) > 0;
+      });
+      if (!cands.length) return null;
+      var best = null, bestCost = Infinity;
+      for (var i = 0; i < cands.length; i++) {
+        var per = (cands[i].perf || {})[perfKey] || 0;
+        var k = Math.max(1, Math.ceil((target || 0) / per - 1e-9));
+        if (k > Math.min(cap, 16)) continue;
+        var cost = price(cands[i]) * k;
+        if (cost < bestCost) {
+          bestCost = cost;
+          best = [];
+          for (var n = 0; n < k; n++) best.push(cands[i]);
+        }
+      }
+      return best;
+    }
+    // Cheapest gpu selection meeting `target`: single card, or a matched pair
+    // (same sliTag; identical pair for addon cards + a 2D companion).
+    function pickGpus(mobo, target) {
+      var cap = slotCap(mobo, 'gpu');
+      var cands = purchasableByCategory(state, 'gpu').filter(function (p) {
+        return Engine.Compat.fits(p, mobo).fits;
+      });
+      var best = null, bestCost = Infinity;
+      function consider(list) {
+        var perf = Engine.Compat.gpuEffective(list);
+        if (perf < (target || 0)) return;
+        if (list.length > cap) return;
+        var addons = list.filter(function (p) { return p.addonOnly; });
+        var standards = list.filter(function (p) { return !p.addonOnly; });
+        if (addons.length && !standards.length && !mobo.integratedVideo) return;
+        var cost = 0;
+        list.forEach(function (p) { cost += price(p); });
+        if (cost < bestCost) { bestCost = cost; best = list.slice(); }
+      }
+      var i, j;
+      for (i = 0; i < cands.length; i++) {
+        if (cands[i].addonOnly) {
+          // single 3D add-on rides with the cheapest 2D card (or integrated)
+          if (mobo.integratedVideo) consider([cands[i]]);
+          var twoD = cands.filter(function (p) { return !p.addonOnly; }).sort(byPrice)[0];
+          if (twoD) consider([twoD, cands[i]]);
+        } else {
+          consider([cands[i]]);
+        }
+      }
+      // matched pairs (two copies of one card always pair with themselves)
+      for (i = 0; i < cands.length; i++) {
+        if (!cands[i].sliTag) continue;
+        for (j = i; j < cands.length; j++) {
+          if (cands[j].sliTag !== cands[i].sliTag) continue;
+          if (cands[i].addonOnly !== cands[j].addonOnly) continue;
+          var pair = [cands[i], cands[j]];
+          if (cands[i].addonOnly) {
+            if (mobo.integratedVideo) consider(pair);
+            var lead = cands.filter(function (p) { return !p.addonOnly; }).sort(byPrice)[0];
+            if (lead) consider([lead].concat(pair));
+          } else {
+            consider(pair);
+          }
+        }
+      }
+      return best;
+    }
+    var mobos = purchasableByCategory(state, 'motherboard').sort(byPrice).slice(0, 20);
     for (var mi = 0; mi < mobos.length; mi++) {
       var mobo = mobos[mi];
       var pick = function (cat, pred, sorter) {
@@ -577,27 +657,29 @@
         return cands[0] || null;
       };
       var cpu = pick('cpu', function (p) { return (p.perf || {}).cpu >= (mp.cpu || 0); });
-      var ram = pick('ram', function (p) { return (p.perf || {}).ramMB >= (mp.ramMB || 0); });
-      var sto = pick('storage', function (p) { return (p.perf || {}).storageGB >= (mp.storageGB || 0); });
-      var gpu = null;
-      if (!mobo.integratedVideo || (mp.gpu || 0) > CFG().INTEGRATED_GPU_PERF) {
-        gpu = pick('gpu', function (p) { return (p.perf || {}).gpu >= (mp.gpu || 0); });
-        if (!gpu && !mobo.integratedVideo) continue;
+      var rams = pickStack(mobo, 'ram', 'ramMB', mp.ramMB || 0, slotCap(mobo, 'ram'));
+      var stos = pickStack(mobo, 'storage', 'storageGB', mp.storageGB || 0,
+                           slotCap(mobo, 'storage'));
+      var gpus = [];
+      if (!mobo.integratedVideo || (mp.gpu || 0) > C.INTEGRATED_GPU_PERF) {
+        gpus = pickGpus(mobo, mp.gpu || 0);
+        if (!gpus && !mobo.integratedVideo) continue;
+        if (!gpus) gpus = [];
       }
       var kase = pick('case', null, minStyle > 0 ? byStyleThenPrice : byPrice);
       var os = pick('os');
       var cool = minStyle > 0 ? pick('cooling', null, byStyleThenPrice) : null;
-      if (!cpu || !ram || !sto || !kase || !os) continue;
+      if (!cpu || !rams || !stos || !kase || !os) continue;
       var draw = 0;
-      [mobo, cpu, ram, sto, gpu, kase, cool].forEach(function (p) {
+      [mobo, cpu, kase, cool].concat(rams, stos, gpus).forEach(function (p) {
         if (p) draw += p.powerDraw || 0;
       });
       var psu = pick('psu', function (p) {
-        return (p.watts || 0) >= Math.ceil(draw * CFG().PSU_HEADROOM);
+        return (p.watts || 0) >= Math.ceil(draw * C.PSU_HEADROOM);
       });
       if (!psu) continue;
-      var ids = [mobo, cpu, ram, sto, gpu, psu, kase, cool, os]
-        .filter(Boolean).map(function (p) { return p.id; });
+      var ids = [mobo, cpu].concat(rams, stos, gpus, [psu, kase], cool ? [cool] : [], [os])
+        .map(function (p) { return p.id; });
       var v = Engine.Compat.validatePartList(ids, {
         requireFull: true, minPerfGpu: mp.gpu, year: year });
       if (!v.valid) continue;

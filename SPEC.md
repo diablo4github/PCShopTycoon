@@ -1004,3 +1004,117 @@ satisfiability + readable rejection; staff XP thresholds/fixed wages/candidate l
 cap; wait-step parallelism + overnight completion + waitHour; v3 fixture → v4
 migration. E2E (overseer): no Diagnose button + diagnose steps in checklist; ⏲ wait
 UI; staff level pips; OS-request label on a software job.
+
+---
+
+# v0.4b Addendum (playtest round 3, part B — research-driven hardware depth)
+
+Binding; wins on conflict. Implements docs/PARTS-RESEARCH-v04.md (the "research doc")
+— transcribe its tables faithfully; where this addendum and the research doc disagree,
+this addendum wins. Save `version` → **5** (migrate v1-v4: wrap single build parts
+into slot arrays; new fields default). `Engine.VERSION = "0.4b"` (keep it
+parseFloat-compatible with the UI's ≥0.4 gate).
+
+## 12.1 Motherboard slots (DATA + ENGINE)
+
+- Every motherboard gains `slots: { ram, gpu, storage }` per research §1.2 (all 64
+  boards — transcribe the table) and §7.1 conventions (gpu = ISA/VLB/PCI count
+  pre-AGP, 1 on AGP boards, physical x16 count on PCIe; storage = ports, IDE
+  channel = 2 devices). Add the ~15 new boards of research §1.3 (SLI/CrossFire,
+  HEDT, server) with their suggested tags/prices.
+- Engine: missing `slots` defaults to `{ram:99, gpu:99, storage:99}` (old saves never
+  regress). `compat.validatePartList` enforces capacity: count of ram/gpu/storage
+  parts ≤ slots.* with readable problems ("Board has 2 DIMM slots — build uses 4").
+
+## 12.2 Multi-part builds & multi-GPU (ENGINE + DATA + UI)
+
+- Build selections become **slot-indexed**: `build.parts` = `{ cpu: [id], ram:
+  [id,id,null,null], gpu: [id], storage: [id,null], psu:[id], case:[id], cooling:[id],
+  os:[id] }`. API: `setBuildPart(jobId, category, partId|null, slotIndex=0)`;
+  `getBuildCatalog` adds per-category `slotCount` (1 for cpu/psu/case/cooling/os;
+  from the selected motherboard's `slots` otherwise; 0 slots rendered until a board
+  is chosen) and `selected: [partId|null × slotCount]`. Old callers (slotIndex
+  omitted) keep working.
+- Perf aggregation: ramMB sums across sticks; storage sums capacity / takes max
+  speed; **multi-GPU**: 2+ gpus sharing a `sliTag` = first card + 65% of the second
+  (Voodoo2 pairs: +90%); mismatched second gpu contributes nothing and yields a
+  validation problem. PSU check already sums draw.
+- `sliTag` on eligible GPUs (DATA, research §2/§7.2 — Voodoo2, SLI-era GeForces,
+  CrossFire-era Radeons; symmetric-CrossFire simplification, documented).
+  **Voodoo2 rule**: Voodoo2 cards get `addonOnly: true` — a build containing one
+  also needs a 2D-capable gpu or integrated video ("A Voodoo2 is a 3D add-on — it
+  needs a 2D card beside it").
+- Job generation: gamer **SLI/CrossFire build requests** (Voodoo2 window 1998-2000,
+  SLI/CF 2005-2016): require 2 matched GPUs (minPerf implies the pair); office/server
+  **RAM-heavy contract builds** (2003+): require total ramMB achievable only with
+  3+ sticks on a ≥4-slot board. `witnessBuild` must satisfy both (multi-part aware)
+  — feasibility guarantee §11.1 still holds.
+
+## 12.3 Catalog depth (DATA)
+
+New category **`expansion`** (sound cards, NICs, internal modems, SCSI/RAID/USB/
+FireWire cards — research §5.1): platformTags = BUS-* (compat = bus tag overlap, no
+slot-count cap; document). Wiki/market/inventory treat it like any category; builds
+may optionally include expansion parts (no requirement; small style/perf niceties may
+be ignored this round). Transcribe research §5.2 iconic gaps (Voodoo2 ×2 brands!,
+Zip/Jaz/LS-120, CD/DVD/Blu-ray as storage with STOR tags), §5.3 2016-25 fills, and
+§6's OS gap fills (early Linux, OS/2 Warp 4; Mac OS versions only as APPLE device
+flavor, not OS parts). Update coverage minimums: expansion ≥2 per bucket 1985+.
+
+## 12.4 Apple & mobile devices (DATA + ENGINE + UI)
+
+- DATA per research §7.3: `DATA.APPLE_MACHINES` (22 machines, §3.2 table: family
+  APPLE-68K/PPC/INTEL/SILICON, intro/eol, ramUpgradable/hddUpgradable flags,
+  basePriceRange = repair-pay range, faultCategories) and `DATA.MOBILE_DEVICES`
+  (smartphones 2007+, tablets 2010+, tiered) + `DATA.MOBILE_FAULTS` (screen, battery,
+  charge-port, water-damage, camera, speaker-mic, button — each with desc, complaints
+  ≥2, faultDescs, laborHours, partsCostFactor).
+- ENGINE: new job type **`device_repair`** — jobs pick a device from these tables
+  (Apple era-gated 1985+; mobile 2009+ ramping through the 2010s to become a major
+  late-game volume source; Apple post-2012 machines get +1 difficulty and higher
+  parts cost per research §3.1). The branch **skips compat entirely**: no catalog
+  parts consumed; parts expense is charged at completion as a cost line
+  (partsCostFactor × device-tier value), pay from basePriceRange/fault labor ×
+  laborRate scaling. Faults/complaints/titles follow the §10.5 subject-first rule.
+  Steps come from new TASK_STEPS templates (DATA): type `device_repair`, subtype
+  `apple`|`smartphone`|`tablet`, era-flavored (SIMM upgrades on a Mac Plus; pentalobe
+  screws, heat-gun adhesive, battery calibration, water-damage ultrasonic bath).
+  Upgrades limited by the device's flags (no CPU upgrades ever; RAM/HDD only where
+  flagged — pre-2012 mostly yes, after mostly no).
+- Technician staff role covers device_repair; software specialist covers none of it
+  (data recovery on phones already exists separately).
+- Wiki: `getWiki` gains a `devices` section (or `Engine.getDeviceWiki()`) — read-only
+  render of Apple machines + mobile devices with era availability and the research
+  doc's repairability story as desc text (DATA writes descs). UI renders it as a
+  "Devices" group in the Wiki tab.
+
+## 12.5 Graphical build UI (UI)
+
+Replace the per-category select list for build/contract_build/aesthetic jobs with a
+**motherboard schematic**: choose the board first (dropdown as today), then render a
+stylized board (pure CSS/inline-SVG, era-tinted): CPU socket, `slots.ram` DIMM slots,
+`slots.gpu` expansion slots, `slots.storage` drive-bay strip, plus surrounding bays
+for PSU/case/cooling/OS. Each slot is a button: click → filtered part-picker popover
+(reuse getBuildCatalog options for that category; show price/perf/taste ♥/ⓘ). Filled
+slots show a compact part chip. States: **red** outline + tooltip = incompatible
+(from validateBuild problems mapped to the slot), **yellow** = compatible but below
+the job's minPerf contribution (options[].meets analog), green/neutral = fine. The
+live problems panel, perf-vs-target, and budget bar stay. Keyboard accessible
+(buttons, not hover-only). Old select-list remains the fallback when `slotCount`
+data is absent (feature-detect).
+
+## 12.6 Tests
+
+validate-data: slots present on ALL motherboards with sane ranges (ram 1-16, gpu 1-4,
+storage 1-12); sliTag GPUs exist in the correct year windows incl. ≥2 same-tag
+Voodoo2s; expansion parts have BUS-* tags; APPLE_MACHINES/MOBILE_DEVICES/
+MOBILE_FAULTS schema + complaints; device_repair TASK_STEPS coverage (subtypes ×
+sample years 1986/1996/2010/2015/2023 where era-valid); per-year buildability still
+green WITH capacity constraints.
+sim-test: SLI build generated & completed in a 2005-08 window (witness multi-GPU);
+RAM-heavy contract completed with 3+ sticks; capacity/sliTag/Voodoo2 problem strings
+assert; device_repair jobs complete for apple (1990s) and smartphone (2013+ era run);
+v4 fixture → v5 migration (single-part builds wrapped, playable).
+E2E (overseer): schematic renders slot counts from the chosen board; a red state
+appears for a wrong-socket CPU; SLI pair selectable on a dual-x16 board; device
+repair card renders; Wiki shows a Devices group.

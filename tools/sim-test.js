@@ -493,12 +493,17 @@ function runEra(era, idx, metricRun) {
   var offersGenerated = 0;   // §11.2: overnight batches only, for the mean check
   var threw = null;
   var otCap = E.getConfig().overtimeCap;
+  // v0.4b regression guard: the as-is market must stay stocked in every era
+  var asisNonEmptyDays = 0, asisDaysRun = 0, asisIdAtDay5 = null;
 
   for (var day = 0; day < 40; day++) {
     try {
       mem.day = day;
       botDay(E, mem);
       var res = E.endDay();
+      asisDaysRun++;
+      if (E.getAsIsMarket().length > 0) asisNonEmptyDays++;
+      if (day === 5) asisIdAtDay5 = E.getState().asIsNextId;
       if (!assert(res.ok, era.id + ': endDay failed on day ' + day + ': ' + (res.error || ''))) break;
       var sum = res.summary;
       assert(typeof sum.dateStr === 'string' && sum.dateStr.length > 5,
@@ -525,6 +530,14 @@ function runEra(era, idx, metricRun) {
   assert(!threw, era.id + ': exception thrown: ' + (threw && threw.stack));
 
   var s = E.getState();
+  // v0.4b regression guard (§9.5/§12.3): as-is market alive all era long —
+  // non-empty on >=50% of days, with at least one fresh arrival after day 5.
+  assert(asisNonEmptyDays >= Math.ceil(asisDaysRun * 0.5),
+         era.id + ': as-is market empty too often (' + asisNonEmptyDays + '/' +
+         asisDaysRun + ' days stocked)');
+  assert(asisIdAtDay5 != null && s.asIsNextId > asisIdAtDay5,
+         era.id + ': no as-is arrival after day 5 (ids ' + asisIdAtDay5 +
+         ' -> ' + s.asIsNextId + ')');
   assert(offerCount > 0, era.id + ': no offers generated');
   assert(s.reputation.jobsCompleted >= 1, era.id + ': no job completed in 40 days');
   assert(sawRentCharge || s.ledger.months.length >= 2,

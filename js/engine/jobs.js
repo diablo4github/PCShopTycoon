@@ -438,12 +438,46 @@
     }
     if (!mobo.integratedVideo) {
       var gpus = purchasableByCategory(state, 'gpu').filter(function (p) {
-        return Engine.Compat.fits(p, mobo).fits;
+        // §12.2: a 3D add-on (Voodoo2) is never a machine's only video card
+        return !p.addonOnly && Engine.Compat.fits(p, mobo).fits;
       });
       var gpu = Engine.pick(gpus);
       if (gpu) partIds.push(gpu.id);
     }
     return { partIds: partIds, mobo: mobo };
+  }
+
+  /* §9.6/§12.3 fix: swap the priciest parts for the cheapest fitting
+   * alternatives until the box fits under the as-is value cap. The v0.4b
+   * catalog's premium modern parts pushed most random assemblies over the
+   * cap; discarding them starved the market — downgrading instead keeps
+   * dealers stocked with plausible budget surplus. Deterministic (no RNG),
+   * so the shared RNG stream and job-machine assembly stay untouched. */
+  function downvalueMachine(state, partIds, mobo, cap) {
+    var frozen = {};
+    var guard = 0;
+    while (machinePartsValue(state, { partIds: partIds }) > cap && guard++ < 24) {
+      var worstIdx = -1, worstPrice = 0;
+      for (var i = 0; i < partIds.length; i++) {
+        if (frozen[i]) continue;
+        var p = Engine.partById(partIds[i]);
+        if (!p || p.category === 'motherboard') continue;
+        var price = P().priceOf(p, state) || 0;
+        if (price > worstPrice) { worstPrice = price; worstIdx = i; }
+      }
+      if (worstIdx < 0) break;   // nothing left to downgrade
+      var part = Engine.partById(partIds[worstIdx]);
+      var cheaper = purchasableByCategory(state, part.category).filter(function (q) {
+        if (q.id === part.id || q.addonOnly) return false;
+        if (!Engine.Compat.fits(q, mobo).fits) return false;
+        return (P().priceOf(q, state) || 0) < worstPrice;
+      }).sort(function (a, b) {
+        return (P().priceOf(a, state) || 0) - (P().priceOf(b, state) || 0);
+      })[0];
+      if (!cheaper) { frozen[worstIdx] = true; continue; }
+      partIds[worstIdx] = cheaper.id;
+    }
+    return machinePartsValue(state, { partIds: partIds }) <= cap;
   }
 
   /* Customer's PC for repair/upgrade jobs (§10.4). targetCategory (the fault
@@ -2507,6 +2541,13 @@
     var built = assembleMachineParts(state);
     if (!built) return null;
     var partIds = built.partIds, mobo = built.mobo;
+    // §9.6: dealers keep machines above the era's build-budget class for
+    // themselves — downgrade the box under the cap instead of discarding it
+    // (the v0.4b catalog made over-cap assemblies the MAJORITY in modern
+    // eras, which starved the as-is market to empty).
+    var blNow = Engine.baselineFor(year);
+    var cap = blNow.buildBudget * C.ASIS_MAX_VALUE_BB_MULT;
+    if (!downvalueMachine(state, partIds, mobo, cap)) return null; // true big iron
     // Fault: usually one dead part (never the board — replacements must fit it)
     var faultIdx = null;
     if (Engine.chance(0.75)) {
@@ -2528,10 +2569,6 @@
       Engine.randInt(mobo.introYear, Math.min(year, (mobo.eolYear || year) + 2)),
       mobo.introYear, year);
     var value = machinePartsValue(state, { partIds: partIds });
-    var blNow = Engine.baselineFor(year);
-    // §9.6: dealers keep machines above the era's build-budget class for
-    // themselves — bounds flip margins so labor stays the backbone.
-    if (value > blNow.buildBudget * C.ASIS_MAX_VALUE_BB_MULT) return null;
     // Dealers price big iron closer to its real worth, and machines that
     // "just need some love" cost extra — flattens flip margins (§9.6).
     var span = C.ASIS_ASK_MAX - C.ASIS_ASK_MIN;

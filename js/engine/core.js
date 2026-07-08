@@ -71,8 +71,8 @@
     ASIS_ASK_MIN: 0.45, ASIS_ASK_MAX: 0.55,   // ask vs part value (§9.6: 40-55%)
     REFURB_SALE_RATIO: 0.66,     // of part value (§9.6 override of §5.4's 0.85:
                                  //   keeps flips at 1.2-1.8x the jobs $/hour)
-    REFURB_COND_MIN: 0.90, REFURB_COND_MAX: 1.00,  // buyers price in "refurb" —
-                                 //   mean 0.95 keeps flips inside 1.2-1.8x jobs
+    REFURB_COND_MIN: 0.88, REFURB_COND_MAX: 0.98,  // buyers price in "refurb" —
+                                 //   mean 0.93 keeps flips inside 1.2-1.8x jobs
     REFURB_PREMIUM_HOURS: 3,     // working-machine premium = laborRate*this (§9.6)
     REFURB_SCRAP_RATIO: 0.25,    // abandon: 25% of parts value
     REFURB_HOURS_MIN: 3, REFURB_HOURS_MAX: 5,  // §9.6: flips are slower work now

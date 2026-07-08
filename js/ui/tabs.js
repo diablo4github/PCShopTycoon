@@ -72,6 +72,12 @@
     return !!(window.Engine && typeof Engine[fnName] === 'function');
   }
 
+  /** Numeric Engine.VERSION (0 when absent) — gates flows that need engine
+   * behavior changes, e.g. §11.3 diagnosis-in-checklist. */
+  function engineV() {
+    try { return parseFloat(window.Engine && Engine.VERSION) || 0; } catch (e) { return 0; }
+  }
+
   /* ------------------------------------------------------------------ *
    * Render dispatch
    * ------------------------------------------------------------------ */
@@ -316,11 +322,15 @@
         UI.act(function () { return Engine.hireStaff(cid); }, 'Welcome aboard — they start right away');
         break;
       }
-      case 'fire': { /* §10.7 */
+      case 'fire': { /* §10.7 + §11.5 (veterans hurt twice as much) */
         var sid = el.getAttribute('data-id');
         var sname = el.getAttribute('data-name') || 'this employee';
+        var slvl = parseInt(el.getAttribute('data-level'), 10) || 0;
         UI.confirm(
-          'Fire ' + sname + '? Severance costs about half a month\'s wages, and word gets around town.',
+          'Fire ' + sname + '? Severance costs about half a month\'s wages' +
+          (slvl >= 4
+            ? ' — and letting a veteran this senior go hurts your reputation twice as much.'
+            : ', and word gets around town.'),
           function () { UI.act(function () { return Engine.fireStaff(sid); }, 'They cleared out their bench'); },
           { yesLabel: 'Fire them', title: 'Fire employee' }
         );
@@ -518,7 +528,7 @@
       html += '<div class="card job-card">' +
         '<div class="card-title">' + esc(j.title) +
           (j.rush ? ' <span class="badge b-rush">RUSH</span>' : '') + '</div>' +
-        '<div class="meta-row">' + typeChip(j) + UI.wrenches(j.difficulty) + tasteChip(j) + '</div>' +
+        '<div class="meta-row">' + typeChip(j) + UI.wrenches(j.difficulty) + tasteChip(j) + osChip(j) + '</div>' +
         (j.blurb ? '<div class="blurb">&ldquo;' + esc(j.blurb) + '&rdquo;</div>' : '') +
         '<div class="meta-row">' + customerLine(j) + '</div>' +
         '<div class="meta-row flex-between">' +
@@ -612,6 +622,12 @@
     var hoursNow = Number(st.hoursLeft) || 0;
     var noHours = hoursNow <= -otCap;
     var otWarn = hoursNow <= 0 && !noHours;
+    /* §11.3 — diagnosis lives in the step checklist now (engine ≥0.4:
+     * working the checklist performs the diagnosis). The separate Diagnose
+     * button survives as a fallback for jobs without steps AND for pre-0.4
+     * engines whose workJob still demands the old diagnoseJob call. */
+    var hasSteps = !!(j.steps && j.steps.length);
+    var diagFallback = undiagnosed && (!hasSteps || engineV() < 0.4);
 
     var h = '<div class="card job-card-full">';
 
@@ -630,6 +646,7 @@
         : 'Market-priced at sale') + '</span>' +
       '<span class="' + (due.urgent ? 'due-soon' : 'muted') + '">' + esc(due.txt) + '</span>' +
       (j.drTier ? '<span class="chip" title="Data-recovery rig tier required">Needs DR rig tier ' + esc(j.drTier) + '</span>' : '') +
+      osChip(j) +
       '</div>';
 
     if (j.blurb) h += '<div class="blurb">&ldquo;' + esc(j.blurb) + '&rdquo;</div>';
@@ -638,6 +655,16 @@
     h += '<div class="bar-row"><span class="muted small">Progress</span>' +
       animatedBar('job-' + j.id, j.hoursDone, j.hoursRequired, 'wide') +
       '<span class="num small">' + esc(j.hoursDone) + ' / ' + esc(j.hoursRequired) + 'h <span class="muted">(at standard pace)</span></span></div>';
+
+    /* §11.6 — running wait-step status line */
+    var runWait = findRunningWaitStep(j);
+    if (runWait) {
+      var remH = waitRemainingHours(runWait);
+      h += '<div><span class="wait-status" title="Timed steps advance alongside any other work (or Wait 1h) and finish free overnight.">⏲ waiting on ' +
+        esc(String(runWait.label || 'timed step').toLowerCase()) +
+        (remH !== null ? ' (' + remH + 'h left)' : '') +
+        ' — runs while you work on other jobs</span></div>';
+    }
 
     /* contract units */
     if (j.units && j.units > 1) {
@@ -661,7 +688,7 @@
     }
 
     /* diagnosis */
-    if (undiagnosed) {
+    if (diagFallback) {
       h += '<div class="note">Fault not identified yet — diagnose before ordering parts.</div>';
     } else if (j.diagnosed && j.fault) {
       h += '<div class="meta-row"><span class="muted small">Fault:</span> ' + esc(j.fault.desc || '') +
@@ -700,7 +727,7 @@
     }
 
     /* needs part-picker */
-    if (!undiagnosed && !buildPending && j.needs && j.needs.length) {
+    if (!diagFallback && !buildPending && j.needs && j.needs.length) {
       h += needsHTML(j);
     }
 
@@ -715,13 +742,14 @@
     var hourAttr = noHours
       ? ' disabled title="Too exhausted — call it a day"'
       : (otWarn ? ' title="You are into overtime — tomorrow starts short"' : '');
-    if (undiagnosed) {
+    if (diagFallback) {
+      /* §11.3 fallback only — with steps, diagnosing IS working the checklist */
       h += '<button type="button" class="btn btn-primary btn-sm" data-action="diagnose" data-job="' + j.id + '"' +
         hourAttr + '>Diagnose</button>';
     }
     if (ready && isRefurb) {
       h += '<button type="button" class="btn btn-primary btn-sm" data-action="sell-refurb" data-job="' + j.id + '">Sell machine</button>';
-    } else if (!undiagnosed && !buildPending) {
+    } else if (!diagFallback && !buildPending) {
       h += '<button type="button" class="btn btn-sm" data-action="work1" data-job="' + j.id + '"' +
         hourAttr + '>Work 1h</button>' +
         '<button type="button" class="btn btn-primary btn-sm" data-action="workall" data-job="' + j.id + '"' +
@@ -745,7 +773,10 @@
     return '<option value="' + val + '"' + (j.speed === val ? ' selected' : '') + '>' + esc(label) + '</option>';
   }
 
-  /* §10.1 — step checklist: ✓ done, ▶ current (with partial %), ○ pending. */
+  /* §10.1/§11.3/§11.6 — step checklist: ✓ done, ▶ current (partial %),
+   * ○ pending, ⏲ wait steps, plus the post-diagnosis placeholder row. */
+  var WAIT_TIP = 'Timed step: 0.1h to set it running, then it advances alongside any other ' +
+    'work (or Wait 1h) and finishes free overnight. Blocks only this job.';
   function stepsHTML(j) {
     var steps = j.steps;
     var cur = (typeof j.stepIndex === 'number') ? j.stepIndex : -1;
@@ -756,17 +787,56 @@
     steps.forEach(function (s, i) {
       var done = !!s.done;
       var isCur = !done && i === cur;
-      var cls = done ? 'st-done' : (isCur ? 'st-cur' : 'st-pend');
-      var ico = done ? '✓' : (isCur ? '▶' : '○');
-      var pct = (isCur && s.progress) ? Math.round(Math.max(0, Math.min(1, s.progress)) * 100) : 0;
+      var isWait = s.kind === 'wait';
+      var running = UI.isWaitStepRunning(s);
+      var cls = (done ? 'st-done' : (isCur ? 'st-cur' : 'st-pend')) +
+        (isWait ? ' st-wait' : '') + (running ? ' st-running' : '');
+      var ico = done ? '✓' : (running ? '⏲' : (isCur ? '▶' : '○'));
+      var pct = ((isCur || running) && s.progress) ? Math.round(Math.max(0, Math.min(1, s.progress)) * 100) : 0;
       h += '<div class="step ' + cls + '">' +
         '<span class="st-ico">' + ico + '</span>' +
         '<span class="st-label">' + esc(s.label) + '</span>' +
+        (isWait && !done
+          ? ' <span class="wait-badge" title="' + esc(WAIT_TIP) + '">⏲ ' + (running ? 'running' : 'wait') + '</span>' +
+            (running ? '<span class="muted small"> runs while you work on other jobs</span>' : '')
+          : '') +
         (pct > 0 ? UI.barHTML(pct, 100) + '<span class="st-pct">' + pct + '%</span>' : '') +
         (s.hours !== undefined && s.hours !== null ? '<span class="st-hours">' + esc(s.hours) + 'h</span>' : '') +
         '</div>';
     });
+    /* §11.3 — pre-diagnosis (new flow only): the checklist knows just the
+     * diagnose phase so far. Pre-0.4 engines list every step up front. */
+    if (j.needsDiagnosis && !j.diagnosed && engineV() >= 0.4) {
+      h += '<div class="step st-placeholder"><span class="st-ico">○</span>' +
+        '<span class="st-label">…further steps revealed after diagnosis</span></div>';
+    }
     return h + '</div>';
+  }
+
+  /* §11.6 helpers */
+  function findRunningWaitStep(j) {
+    var steps = j && j.steps;
+    if (!steps) return null;
+    for (var i = 0; i < steps.length; i++) {
+      if (UI.isWaitStepRunning(steps[i])) return steps[i];
+    }
+    return null;
+  }
+  function waitRemainingHours(s) {
+    var hrs = Number(s.hours);
+    if (!isFinite(hrs) || hrs <= 0) return null;
+    var p = Math.max(0, Math.min(1, Number(s.progress) || 0));
+    return Math.round(hrs * (1 - p) * 10) / 10;
+  }
+
+  /* §11.4 — requested OS chip on software jobs (field name pending engine;
+   * accepts a string or {label|name}). */
+  function osChip(j) {
+    var req = j.osRequest || j.osRequirement || null;
+    if (!req) return '';
+    var label = typeof req === 'string' ? req : (req.label || req.name || '');
+    if (!label) return '';
+    return '<span class="chip chip-os" title="Requested operating system">' + esc(label) + '</span>';
   }
 
   /** Resolve a part id to a display name (best effort, engine-first). */
@@ -1385,6 +1455,15 @@
     return role ? prettySubtype(role) : '';
   }
 
+  /** §11.5 — level pips, 1-5. */
+  function lvlPips(level) {
+    var l = Math.max(0, Math.min(5, Math.round(Number(level) || 0)));
+    if (!l) return '';
+    var h = '<span class="lvl-pips" title="Level ' + l + ' of 5">';
+    for (var i = 1; i <= 5; i++) h += '<span class="lvl-pip' + (i <= l ? ' on' : '') + '"></span>';
+    return h + '</span>';
+  }
+
   function staffSectionHTML(stv, st) {
     var slots = Number(stv.slots) || 0;
     var used = Number(stv.slotsUsed) || 0;
@@ -1408,16 +1487,29 @@
     } else {
       h += '<div class="shop-grid">';
       staff.forEach(function (s) {
+        /* §11.5 — title, level pips 1-5, XP progress toward next level */
+        var roleTxt = s.title || s.roleName || staffRoleLabel(s.role);
+        var xpRow = '';
+        if (s.level !== undefined && s.level !== null && s.xp !== undefined && s.xp !== null) {
+          if (s.nextLevelAt) {
+            xpRow = '<div class="xp-row">' + UI.barHTML(s.xp, s.nextLevelAt) +
+              '<span class="xp-txt">' + Math.round(Number(s.xp) || 0) + ' / ' + esc(s.nextLevelAt) + 'h XP</span></div>';
+          } else {
+            xpRow = '<div class="xp-row"><span class="xp-txt">Top of their craft — max level</span></div>';
+          }
+        }
         h += '<div class="card staff-card">' +
           '<div class="card-title">' + esc(s.name) +
-            ' <span class="chip chip-role">' + esc(staffRoleLabel(s.role)) + '</span></div>' +
+            ' <span class="chip chip-role">' + esc(roleTxt) + '</span> ' + lvlPips(s.level) + '</div>' +
           '<div class="meta-row">' +
             (s.skill !== undefined && s.skill !== null ? '<span class="staff-skill muted small">Skill ' + Math.round(Number(s.skill) * 100) + '</span>' : '') +
             '<span class="wage num">' + esc(fm(s.wageMonthly)) + '/mo</span>' +
           '</div>' +
+          xpRow +
           (s.effectNote ? '<div class="effect-note">' + esc(s.effectNote) + '</div>' : '') +
           '<div class="job-actions">' +
-            '<button type="button" class="btn btn-sm btn-ghost" data-action="fire" data-id="' + esc(s.id) + '" data-name="' + esc(s.name) + '">Fire…</button>' +
+            '<button type="button" class="btn btn-sm btn-ghost" data-action="fire" data-id="' + esc(s.id) +
+              '" data-name="' + esc(s.name) + '" data-level="' + (Number(s.level) || 0) + '">Fire…</button>' +
           '</div></div>';
       });
       h += '</div>';
@@ -1437,7 +1529,10 @@
       cands.forEach(function (c) {
         h += '<div class="card staff-card">' +
           '<div class="card-title">' + esc(c.name) +
-            ' <span class="chip chip-role">' + esc(staffRoleLabel(c.role)) + '</span></div>' +
+            ' <span class="chip chip-role">' + esc(c.title || c.roleName || staffRoleLabel(c.role)) + '</span>' +
+            (c.level !== undefined && c.level !== null
+              ? ' <span class="chip" title="Candidates start green — talent is grown in-house">L' + esc(c.level) + '</span>'
+              : '') + '</div>' +
           (c.desc ? '<p class="muted small">' + esc(c.desc) + '</p>' : '') +
           '<div class="meta-row">' +
             (c.skill !== undefined && c.skill !== null ? '<span class="staff-skill muted small">Skill ' + Math.round(Number(c.skill) * 100) + '</span>' : '') +

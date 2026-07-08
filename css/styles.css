@@ -1098,3 +1098,72 @@ body.debug [data-debug] { display: inline-block !important; }
 
 /* ---------- §10 misc ---------- */
 .version-note { color: var(--muted); font-size: 12px; margin: 6px 2px; }
+
+/* ==========================================================================
+   v0.4a additions (SPEC §11)
+   ========================================================================== */
+
+/* ---------- §11.3 diagnose-in-checklist placeholder ---------- */
+.step.st-placeholder {
+  color: var(--muted);
+  font-style: italic;
+  opacity: 0.8;
+}
+.step.st-placeholder .st-ico { color: var(--border-strong); }
+
+/* ---------- §11.6 wait steps ---------- */
+.wait-badge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  border-radius: 4px;
+  padding: 0 6px;
+  background: rgba(47, 109, 184, 0.13);
+  color: #1d4f8c;
+  border: 1px solid rgba(47, 109, 184, 0.4);
+  cursor: help;
+  white-space: nowrap;
+}
+.step.st-running .st-ico { animation: wait-spin-blink 1.2s ease-in-out infinite; }
+.step.st-running .st-label { color: #1d4f8c; }
+@keyframes wait-spin-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+.wait-status {
+  display: inline-block;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #1d4f8c;
+  background: rgba(47, 109, 184, 0.1);
+  border-left: 3px solid #2f6db8;
+  border-radius: 4px;
+  padding: 3px 9px;
+  margin: 4px 0;
+}
+.hdr-wait-btn {
+  background: transparent;
+  color: var(--hdr-ink);
+  border: 1px solid var(--hdr-ink-dim);
+}
+.hdr-wait-btn:hover:not(:disabled) { border-color: var(--hdr-ink); }
+
+/* ---------- §11.5 staff levels ---------- */
+.lvl-pips { display: inline-flex; gap: 2.5px; align-items: center; vertical-align: middle; }
+.lvl-pip {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  border: 1px solid var(--border-strong);
+  background: transparent;
+  display: inline-block;
+}
+.lvl-pip.on { background: var(--accent); border-color: var(--accent); }
+.xp-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.xp-row .bar { width: 130px; height: 7px; }
+.xp-row .xp-txt { font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.staff-title { font-weight: 600; color: var(--ink); }
+
+/* ---------- §11.4 OS request ---------- */
+.chip-os {
+  background: rgba(93, 63, 168, 0.11);
+  border: 1px solid rgba(93, 63, 168, 0.4);
+  color: #5d3fa8;
+}

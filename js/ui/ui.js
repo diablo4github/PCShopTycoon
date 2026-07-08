@@ -506,6 +506,39 @@
 
     var endBtn = byId('btn-endday');
     if (endBtn) endBtn.disabled = !!(st.flags && st.flags.gameOver);
+
+    /* §11.6 — "Wait 1h ⏲" appears only when Engine.waitHour exists AND a
+     * wait step is currently running somewhere on the bench. */
+    var waitBtn = byId('btn-wait');
+    if (waitBtn) {
+      var showWait = false;
+      if (window.Engine && typeof Engine.waitHour === 'function') {
+        showWait = UI.anyWaitStepRunning();
+      }
+      waitBtn.hidden = !showWait;
+      waitBtn.disabled = !!(st.flags && st.flags.gameOver);
+    }
+  };
+
+  /** §11.6 — is a wait-kind step running on any active job? A wait step
+   * counts as running once started (progress > 0, or an explicit flag). */
+  UI.isWaitStepRunning = function (s) {
+    if (!s || s.done || s.kind !== 'wait') return false;
+    if (s.running === true || s.started === true) return true;
+    return (Number(s.progress) || 0) > 0;
+  };
+  UI.anyWaitStepRunning = function () {
+    try {
+      var jobs = Engine.getActiveJobs() || [];
+      for (var i = 0; i < jobs.length; i++) {
+        var steps = jobs[i].steps;
+        if (!steps) continue;
+        for (var k = 0; k < steps.length; k++) {
+          if (UI.isWaitStepRunning(steps[k])) return true;
+        }
+      }
+    } catch (e) { /* engine not ready */ }
+    return false;
   };
 
   /** Tab badges: new offers today, and active jobs due today. */
@@ -628,6 +661,13 @@
     var sfxBtn = document.getElementById('btn-sfx');
     if (sfxBtn) sfxBtn.addEventListener('click', function () {
       if (UI.audio && UI.audio.toggleSfx) UI.audio.toggleSfx();
+    });
+
+    // §11.6 — Wait 1h: burn an hour purely to advance running wait steps.
+    var waitBtn = document.getElementById('btn-wait');
+    if (waitBtn) waitBtn.addEventListener('click', function () {
+      if (!window.Engine || typeof Engine.waitHour !== 'function') return;
+      UI.act(function () { return Engine.waitHour(); }); // hour delta floats via UI.act
     });
 
     document.addEventListener('keydown', function (e) {

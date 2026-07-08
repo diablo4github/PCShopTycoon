@@ -932,3 +932,75 @@ days; staff scenario (10.7); integer offer pay; v2 fixture migrates to v3 and pl
 E2E (overseer): step checklist renders and advances; Assign from Stock / Order & Assign
 / Unassign buttons; machine list all-"?" before diagnosis (the v0.2 bug); staff hire in
 a non-garage tier; Sunday skip note without double offers.
+
+---
+
+# v0.4a Addendum (playtest round 3, part A — research-independent items)
+
+Binding; wins on conflict. Save `version` → **4** (migrate v1-v3; staff gain level/xp,
+steps gain kind). `Engine.VERSION = "0.4"`. (Part B — motherboard slot counts,
+multi-GPU/multi-RAM builds, Apple/mobile devices, graphical build UI — follows after
+the parts-research doc lands; do NOT start schema changes for it yet.)
+
+## 11.1 Build-offer feasibility (ENGINE) — every build request must be buildable
+At generation, assemble a hidden witness build (greedy: cheapest purchasable-today
+parts satisfying compat + minPerf + minStyle + PSU rule). If witness cost >
+budget×0.92, raise budget to witness×1.25 (rounded to $10) — or if no witness exists
+at all, skip the offer. Same guarantee for enthusiast-aesthetic and contract_build.
+Sim: assert ≥60 generated builds across eras are all witness-satisfiable within budget.
+
+## 11.2 Offer ramp-down (ENGINE)
+Slower scaling: offers/night = clamp(2 + tierBonus + floor(prestige/2) +
+clamp(round((rating−3)/1.5), −1, 1) + eventAdj, 1, cap) with cap by tier = 4/6/8/11.
+Additionally, if pending offers ≥ 10, halve new arrivals (walk-ins see a busy shop).
+Sim: 1983 40-day run mean ≤ 3.6 offers/day; a 4.8★ prestige-2 garage still ≤ 4.
+
+## 11.3 Diagnosis merged into the step checklist (ENGINE + UI) — no separate list
+Jobs with `needsDiagnosis` start their checklist with a diagnose phase: "Intake &
+symptom interview" (0.25h) + "Bench diagnosis" (the current diagnosis cost incl.
+diag-station). Completing the bench-diagnosis step performs the old diagnoseJob
+effects (fault reveal, needs added) and APPENDS the repair steps — dropping the
+appended template's leading open/ground/intake step if the label matches
+/open|ground|intake/i (no duplicate case-opening). `Engine.diagnoseJob` becomes an
+alias for "work the diagnose step(s)". UI: remove the separate Diagnose button; the
+checklist is the single task list (pre-diagnosis it shows the diagnose phase +
+"…further steps after diagnosis" placeholder row).
+
+## 11.4 OS requests on software jobs (ENGINE + UI)
+os_install/reinstall jobs specify: 60% an OS FAMILY ("any Windows 9x"), 30% an exact
+OS product, 10% "your recommendation" (free pick). Families derived engine-side from
+OS part names/brands: DOS, WIN3X, WIN9X, WINNT (NT/2000/XP), WINVISTA7 (Vista/7),
+WINMOD (8/10/11), OS2, MACOS, LINUX, OTHER. The need's options are restricted
+accordingly (exact → that part; family → members; recommendation → any), label states
+the request ("Install Windows 98 — any 9x acceptable"). Generator verifies ≥1
+purchasable member exists. Enforcement mirrors minPerf (readable rejection).
+
+## 11.5 Employee XP & levels (ENGINE + UI)
+Staff earn XP = hours of actions they boosted (applicable job types; apprentices
+everything). Fixed level thresholds (hours): L2 40, L3 120, L4 280, L5 520.
+FIXED per-role skill & wage tables replace rolled values (smooth balancing —
+e.g. Technician skill .16/.20/.25/.30/.36 by level; wageMonthly = laborRate-scaled
+fixed table; Apprentice half skill, cheapest). Existing staff migrate to the nearest
+level. Level-up → news + morning summary line + title ("Senior Technician").
+Candidates only ever spawn L1-L2 (elite talent must be grown — retention incentive);
+firing L4+ staff doubles the rep ding. getStaffView adds level, xp, nextLevelAt,
+title. UI: level pips + XP progress bar on roster cards.
+
+## 11.6 Waiting (time-gated) steps (ENGINE + UI)
+Steps get `kind: "labor" | "wait"`. Engine classifies at assembly: label matching
+/burn.?in|scan|low.?level format|imag(e|ing)|copy|clone|download|updates|rebuild/i →
+wait (TASK_STEPS may also set `wait: true` explicitly later). Wait steps: 0.1h labor
+to start ("set it running"), then RUN IN PARALLEL — they progress 1:1 with any hours
+the player spends on ANYTHING else, complete free overnight at End Day, and block
+only their own job. New `Engine.waitHour()` burns 1h (overtime rules apply) purely to
+advance running wait steps — for when there's nothing else to do. UI: ⏲ badge +
+"runs while you work on other jobs" on wait steps; a "Wait 1h ⏲" button next to End
+Day whenever a wait step is running; job cards show "waiting on burn-in (2h left)".
+
+## 11.7 Tests
+sim: witness feasibility; offer-ramp caps; diagnose-step merge (alias works, no
+duplicate open-case, fault revealed exactly at step completion); OS request
+satisfiability + readable rejection; staff XP thresholds/fixed wages/candidate level
+cap; wait-step parallelism + overnight completion + waitHour; v3 fixture → v4
+migration. E2E (overseer): no Diagnose button + diagnose steps in checklist; ⏲ wait
+UI; staff level pips; OS-request label on a software job.

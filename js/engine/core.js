@@ -71,8 +71,12 @@
     ASIS_ASK_MIN: 0.45, ASIS_ASK_MAX: 0.55,   // ask vs part value (§9.6: 40-55%)
     REFURB_SALE_RATIO: 0.66,     // of part value (§9.6 override of §5.4's 0.85:
                                  //   keeps flips at 1.2-1.8x the jobs $/hour)
-    REFURB_COND_MIN: 0.88, REFURB_COND_MAX: 0.98,  // buyers price in "refurb" —
-                                 //   mean 0.93 keeps flips inside 1.2-1.8x jobs
+    // §13.6: condition scales flip PROCEEDS but is not in the bot's buy decision
+    // and consumes the same single RNG draw whatever its range — so nudging the
+    // mean 0.93->0.99 restores flip-margin headroom (ratio back toward ~1.4)
+    // after the offer-ramp retune WITHOUT perturbing the deterministic stream.
+    REFURB_COND_MIN: 0.90, REFURB_COND_MAX: 1.00,  // buyers price in "refurb",
+                                 //   mean 0.95, still within §5.4's 0.9-1.1 band
     REFURB_PREMIUM_HOURS: 3,     // working-machine premium = laborRate*this (§9.6)
     REFURB_SCRAP_RATIO: 0.25,    // abandon: 25% of parts value
     REFURB_HOURS_MIN: 3, REFURB_HOURS_MAX: 5,  // §9.6: flips are slower work now
@@ -113,8 +117,13 @@
     STAFF_SKILL_TABLE: [0.16, 0.20, 0.25, 0.30, 0.36],
     STAFF_TITLES: ['Junior', '', 'Experienced', 'Senior', 'Master'],
     STAFF_CANDIDATE_MAX_LEVEL: 2,   // elite talent must be grown in-house (§11.5)
-    // §11.2 offer ramp-down
+    // §11.2 offer ramp-down (§13.6 retune: the rating term's transition sits at
+    //   rating = 3 + 0.5*OFFER_RATING_DIV, so a garage that has clawed to ~4.3★
+    //   still sits a notch below the +1 offer bump — keeps the 1983 40-day mean
+    //   comfortably under the 3.6 gate instead of pinning at the tier cap).
     OFFER_TIER_CAPS: [4, 6, 8, 11],   // offers/night cap by shop tier
+    OFFER_RATING_DIV: 3.0,       // divisor in clamp(round((rating-3)/div), -1, 1)
+    OFFER_EVENT_ADJ_MAX: 3,      // cap on the positive event-surge term (walk-ins)
     OFFER_BUSY_THRESHOLD: 10,    // pending offers >= this halves new arrivals
     // §11.6 waiting steps
     WAIT_START_HOURS: 0.1,       // labor cost to set a wait step running

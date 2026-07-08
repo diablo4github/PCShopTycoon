@@ -1811,12 +1811,14 @@ function articleScenario() {
   var r = E.newGame({ eraId: era.id, shopName: 'Article Test', seed: 80808 });
   if (!assert(r.ok, 'article: newGame failed')) return;
   E.getState().cash = 10000000;
-  // A future-dated article must be withheld now.
-  var lockedId = null;
+  // A future-dated article must be withheld now — pick the NEAREST locked one so
+  // the fast-forward is short.
+  var lockedId = null, lockedYear = null;
   DATA.ARTICLES.forEach(function (a) {
-    if (lockedId) return;
     var uy = a.unlockYear != null ? a.unlockYear : 9999;
-    if (uy > era.startYear + 1) lockedId = a.id;
+    if (uy > era.startYear + 1 && (lockedYear == null || uy < lockedYear)) {
+      lockedId = a.id; lockedYear = uy;
+    }
   });
   var startCount = E.getArticles().length;
   if (lockedId) {
@@ -1826,8 +1828,9 @@ function articleScenario() {
     assert(!E.getArticles().some(function (a) { return a.id === lockedId; }),
            'article: getArticles listed a still-locked article');
   }
-  // Fast-forward and confirm the unlocked set only grows and the locked one opens.
-  for (var d = 0; d < 365 * 20; d++) {
+  // Fast-forward just past the nearest locked article's unlock year.
+  var maxDays = 365 * ((lockedYear != null ? lockedYear - era.startYear : 3) + 2);
+  for (var d = 0; d < maxDays; d++) {
     var res = E.endDay();
     if (!res.ok) { assert(false, 'article: endDay failed: ' + res.error); return; }
     if (lockedId && E.getArticle(lockedId).ok) break;

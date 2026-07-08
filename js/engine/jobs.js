@@ -62,12 +62,14 @@
     var volumeMult = 1;
     for (var i = 0; i < state.market.activeEvents.length; i++)
       volumeMult *= state.market.activeEvents[i].jobVolumeMult || 1;
-    var eventAdj = Engine.clamp(Math.round((volumeMult - 1) * 3), -2, 3);
+    var eventAdj = Engine.clamp(Math.round((volumeMult - 1) * 3),
+      -2, C.OFFER_EVENT_ADJ_MAX != null ? C.OFFER_EVENT_ADJ_MAX : 3);
     var cap = C.OFFER_TIER_CAPS[
       Engine.clamp(state.shop.tier, 0, C.OFFER_TIER_CAPS.length - 1)];
+    var ratingDiv = C.OFFER_RATING_DIV || 1.5;
     var count = Engine.clamp(
       C.OFFER_BASE + (tier.offerBonus || 0) + Math.floor(rep.prestige / 2) +
-      Engine.clamp(Math.round((rep.rating - 3) / 1.5), -1, 1) + eventAdj,
+      Engine.clamp(Math.round((rep.rating - 3) / ratingDiv), -1, 1) + eventAdj,
       1, cap);
     if (state.jobs.offers.length >= C.OFFER_BUSY_THRESHOLD)
       count = Math.floor(count / 2);   // walk-ins see a busy shop

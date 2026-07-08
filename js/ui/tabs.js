@@ -2090,9 +2090,18 @@
   /* ---- §13.4 Training & Certifications section (Shop tab) ---- */
 
   function trainingSectionHTML(tv, st) {
+    var earned = arr(tv.earned);
+    var avail = arr(tv.available);
+    var studying = tv.studying;
+
     var h = '<h2 class="section-title">Training &amp; Certifications</h2>';
 
-    var earned = arr(tv.earned);
+    /* Graceful fully-empty state (e.g. DATA.CERTIFICATIONS still landing):
+     * a single calm note instead of a stack of empty boxes. */
+    if (!earned.length && !avail.length && !studying) {
+      return h + emptyBox('No certifications available yet — trade certs unlock as the years roll on.');
+    }
+
     if (!earned.length) {
       h += emptyBox('No certifications earned yet — study one below to unlock its bonus.');
     } else {
@@ -2107,7 +2116,6 @@
       h += '</ul>';
     }
 
-    var studying = tv.studying;
     if (studying) {
       var otCap = otCapValue();
       var hoursNow = Number(st.hoursLeft) || 0;
@@ -2126,7 +2134,6 @@
     }
 
     h += '<h3 class="sub-title">Available</h3>';
-    var avail = arr(tv.available);
     if (!avail.length) {
       h += emptyBox(studying
         ? 'Finish your current course before starting another.'

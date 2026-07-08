@@ -1118,3 +1118,161 @@ v4 fixture → v5 migration (single-part builds wrapped, playable).
 E2E (overseer): schematic renders slot counts from the chosen board; a red state
 appears for a wrong-socket CPU; SLI pair selectable on a dual-x16 board; device
 repair card renders; Wiki shows a Devices group.
+
+---
+
+# v0.5 Addendum — The Education Update (first externally-tested build)
+
+Binding; wins on conflict. Save `version` → **6** (migrate v1-v5: new fields default;
+never reject an older valid save). `Engine.VERSION = "0.5"` (parseFloat → 0.5, keeps
+the UI's ≥0.4 gates satisfied). **Quality bar is higher this round** — this is the
+first build shipped to outside testers. Every workstream owns hardening in its layer:
+no console errors, no dead-ends, graceful empty/error states everywhere, and readable
+first-run onboarding. The overseer runs a dedicated QA pass on top.
+
+Fresh agents: read §0 (conventions/prologue/load order), §3 (state), §4 (API style),
+and the sections named below. Do NOT reorder existing script tags except to ADD the
+two new files named in §13.7. Keep all money/round/RNG/determinism rules from §0/§5.
+
+## 13.1 Tech Chronicle (DATA + ENGINE + UI)
+A dated almanac of real computing history surfaced as **non-market news** (distinct
+from §2.7 market events, which move prices — Chronicle entries never touch the economy).
+
+- **DATA `DATA.CHRONICLE`** (js/data/events.js): 70-110 entries, chronological,
+  `{ id, date: "1984-01-24", headline, body (2-3 sentences on why it mattered — factual,
+  period-accurate), tag: "hardware"|"software"|"gaming"|"internet"|"business"|"culture" }`.
+  Span 1983→2025, ≥2 per year on average, hitting the canon: Mac 1984, Windows 1.0/3.0,
+  386, Linux 1991, Doom 1993, Win95, Pentium, Quake, iMac, Google, Napster, Win XP,
+  iPod, Wikipedia, Half-Life 2/WoW/Steam, YouTube, Core 2, iPhone 2007, Bitcoin,
+  Minecraft, SSD tipping point, Oculus, Ryzen, RTX/ray-tracing, Apple M1, ChatGPT, etc.
+  Dates must be real (month precision; use day 1 if unsure). Validator checks schema,
+  chronological sanity, ≥2/yr average, tags in enum.
+- **ENGINE**: overnight, fire Chronicle entries whose date == today as news
+  `kind:"chronicle"` (headline+body). They accrue in the normal news log AND are
+  queryable historically: `Engine.getChronicle()` → all entries with date ≤ today,
+  newest first, `{id,date,dateLabel,headline,body,tag}`. Zero price/market effect.
+  Sim: assert chronicle entries fire across a multi-year run and never appear before
+  their date.
+- **UI**: Chronicle news items get a distinct non-alarming style (📅). A **Chronicle**
+  group in the Wiki tab (chip alongside parts/devices): a vertical timeline of all
+  entries up to the current date, tag-filterable, searchable.
+
+## 13.2 Milestone Wiki articles (DATA + ENGINE + UI)
+Long-form educational articles that unlock as the calendar crosses each transition —
+the retrospective a player earns by living through it.
+
+- **DATA `DATA.ARTICLES`** (js/data/flavor.js or events.js): 16-24 articles
+  `{ id, title, category: "buses"|"storage"|"cpu"|"gpu"|"memory"|"os"|"form-factor"|
+  "culture"|"business", unlockYear (or unlockDate), summary (1 sentence), body (Markdown-
+  lite: paragraphs separated by \n\n, **bold**, and "- " bullet lines ONLY — UI renders a
+  safe subset), related: [tag or partId ...] (optional) }`. Topics: the expansion-bus
+  wars (ISA→VLB→PCI→AGP→PCIe), FAT→NTFS→exFAT, the megahertz myth & the Pentium→Core
+  shift, 3D acceleration Voodoo→RTX, RAM generations DIP→DDR5, sockets & slots, the rise
+  & fall of multi-GPU, Windows visual history, the beige→RGB aesthetic turn, the SSD
+  revolution, the mobile/post-PC squeeze, the shortage era & crypto. `unlockYear` = when
+  the story is tellable (≈ end of the transition). Validator: schema, unlockYear in
+  1983-2025, body ≥ 400 chars, categories in enum.
+- **ENGINE**: `Engine.getArticles()` → unlocked (unlockYear ≤ current year), `{id,title,
+  category,summary,unlockLabel}`; `Engine.getArticle(id)` → full incl. `body`, or
+  `{ok:false}` if still locked. On first crossing of an article's unlock, fire a news
+  note ("New Wiki article: …", kind "chronicle"). Sim: articles unlock over time,
+  locked ones are withheld.
+- **UI**: an **Articles** group in the Wiki tab — list by category with summaries;
+  click → readable long-form panel/modal rendering the safe Markdown subset (escape all
+  content first, then apply bold/bullets/paragraphs). Newly-unlocked badge.
+
+## 13.3 Period software in job copy (DATA + ENGINE)
+Customers name real era software, deepening flavor and education at zero UI cost.
+
+- **DATA `DATA.PERIOD_SOFTWARE`** (js/data/flavor.js): `[{ name, minYear, maxYear,
+  kind: "game"|"office"|"creative"|"web"|"os"|"utility", customers: [types] | null }]`,
+  40+ titles across eras (Lotus 1-2-3, WordPerfect, dBASE, Doom, Myst, Win 3.1,
+  Photoshop, Netscape, Quake, Office 97, Napster, WoW, Crysis, Premiere, Chrome, Fortnite,
+  OBS, Zoom, Blender, Stable Diffusion…). Also add tokened complaint/blurb variants using
+  `{SW}` / `{GAME}` / `{OFFICE}` / `{CREATIVE}` placeholders in `faults[].complaints`
+  and `jobBlurbs` (keep untokened variants too).
+- **ENGINE**: a `fillCopyTokens(str, {year, customerType})` pass runs on every generated
+  title/blurb/complaint: replace each token with an era-valid, customer-appropriate
+  title (seeded RNG; `{SW}` = any kind, others filter by kind). No match → drop the token
+  cleanly (never leave a literal `{...}` or double space). Deterministic. Sim: no
+  unresolved `{` survives in any generated copy across a 60-day run in every era.
+
+## 13.4 Certifications (DATA + ENGINE + UI)
+An era-authentic owner-progression track: study to unlock/boost work.
+
+- **DATA `DATA.CERTIFICATIONS`** (js/data/eras.js): `[{ id, name, abbr, minYear,
+  costBase (1983-scale, engine year-scales), studyHours, desc (what it taught & why it
+  mattered), prereq?: certId, effects }]`. ≥8 real certs gated by era: CompTIA A+ (1993),
+  Network+ (1999), Novell CNE (1990), Microsoft MCSE (1994), MCSA, Cisco CCNA (1998),
+  Apple Certified Mac Tech (2005), Security+ (2002), a data-recovery cert, a modern
+  cloud/CE cert. `effects` vocabulary (engine consumes exactly these):
+  `{ jobTimeMult: {type|"all": 0.85}, payMult: {type|category: 1.1}, callbackMult: 0.9,
+  prestigeBonus: 1, reliabilityBonus: 3, unlocks: ["jobtype"...] }`.
+- **ENGINE state**: `training: { certsEarned: [ids], studying: { certId, hoursDone } |
+  null }`. API: `getCertifications()` → `{ earned:[{id,name,abbr,effectsNote}],
+  available:[{id,name,abbr,cost,studyHours,desc,canStart,reason}], studying:{id,name,
+  hoursDone,hoursTotal,pct}|null }`. `startCertification(id)` → `{ok}` (validates era/
+  prereq/affordability; charges cost; sets studying). `studyCert(hours?)` → `{ok,
+  hoursSpent, completed}` — spends work hours (overtime rules apply, staff do NOT speed
+  studying — it's the owner's time), advances the current cert; on completion apply
+  effects, add to certsEarned, clear studying, fire news + summary line. Effects fold
+  into the existing multiplier paths (job time, pay, callbacks, prestige, unlock gates)
+  additively/multiplicatively alongside equipment & staff, sensibly capped. Save v6
+  migrates `training` in. Sim: study a cert to completion, assert its effect applies
+  (e.g. measured job time drops or an unlocked type appears), cost charged once.
+- **UI**: a **Training & Certifications** section in the Shop tab: earned certs (chips +
+  effect notes), the current study progress bar with a **Study (spend hours)** button
+  wired through UI.act (hour delta floats; disabled at overtime floor), and available
+  certs as cards (cost, study hours, what it unlocks, Start button with gating reasons).
+
+## 13.5 Guided first-run tutorial (UI, engine-read-only)
+The critical new-player on-ramp. Pure UI reading existing state; NO engine writes.
+
+- New Game screen: a **tutorial toggle** (default ON when `localStorage["cst-tutorial"]`
+  is unset — i.e. first-ever play; OFF once completed/skipped). A short one-line "New to
+  the shop? Keep the guided tour on." note.
+- On starting a game with the tour ON: a coach-mark/overlay sequence (own overlay layer,
+  not the modal root; dimmed spotlight on the referenced element via computed rect +
+  a callout bubble with title, 1-2 sentences, Back/Next/Skip). ~10-14 steps that teach
+  BOTH mechanics AND 1983 context, e.g.: welcome + why home PCs created a repair market →
+  the header (date, cash, hours, End Day) → Offers tab, accept a repair → Workbench, the
+  step checklist & how diagnosis works → sourcing/assigning a part → finishing a job →
+  the Parts Market & why prices drift → End Day → reputation/prestige → the Wiki as your
+  history reference → "you're on your own now." Steps that reference a tab switch to it;
+  steps tied to an action (accept a job, end a day) advance when the player does it OR via
+  Next. Fully skippable at any point; completion/skip persists to localStorage so it
+  never reappears unless replayed.
+- A persistent **Help ( ? )** button in the header opening a reference modal any time
+  (not just first run): a concise mechanics guide (tabs overview, the day loop, work
+  speeds & callbacks, staff, certifications, saving) + a **Replay tutorial** button.
+  Keyboard accessible; Escape closes.
+
+## 13.6 Polish & hardening (ALL) — external-test quality gate
+- Every workstream: audit your layer for console errors, unhandled `{ok:false}`, NaN/
+  Infinity in displayed numbers, empty-state text on every list/section, and confirm
+  dialogs on all destructive/irreversible actions. Fix what you find.
+- ENGINE: guard every new API against missing/old-save state; `getConfig()` exposes any
+  new tunables; re-verify the 1983 band + flips ratio + offer-ramp after content lands.
+- UI: verify all four era skins remain readable with the new sections; the two new
+  header buttons (Help, and any tour affordance) fit the layout at all zoom levels;
+  tutorial overlay repositions on resize and never traps focus.
+- DATA: validator must stay green with all new tables; keep per-year buildability green.
+
+## 13.7 New files & load order (UI owns index.html)
+Add after the existing data files: `js/data/` new content stays in existing owned files
+(no new data file needed). UI adds ONE new script `js/ui/tutorial.js` loaded AFTER
+`js/ui/tabs.js` and before `js/ui/screens.js`. (Chronicle/articles/certs UI live in the
+existing ui/tabs.js/screens.js.) Engine adds no new files (new APIs go in existing
+engine modules). If a new engine module is unavoidable, name it `js/engine/education.js`
+loaded after simulation.js and before api.js, and tell the overseer.
+
+## 13.8 Testing
+- validate-data: CHRONICLE, ARTICLES, PERIOD_SOFTWARE, CERTIFICATIONS schemas + the
+  checks named above; all prior checks green.
+- sim-test: chronicle firing & date-gating; article unlock gating; no unresolved copy
+  tokens; certification study→completion→effect; save v5→v6 migration; the market-
+  liveness + band + ramp guards from prior rounds still pass.
+- Overseer E2E: chronicle news + Wiki Chronicle timeline; an Articles entry opens and
+  renders; a certification can be started & studied with the hour delta; the tutorial
+  runs, advances, and is skippable; the Help modal opens; no console errors across a
+  multi-era playthrough.

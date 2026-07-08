@@ -14,7 +14,8 @@
     return { dateStr: '', skippedSunday: false, newOffers: [], expired: [],
              callbacks: [], priceMovers: [], news: [], charges: [], payouts: [],
              graceWarning: null, gameOver: false,
-             overtimeNote: null };
+             overtimeNote: null,
+             levelUps: [] };            // §11.5 staff level-ups since last morning
   };
 
   /* Run ONE calendar night. Steps numbered per SPEC §5.3. */
@@ -43,6 +44,15 @@
         state.injuryDaysLeft > 0 ? 'Still on the mend — another day lost.'
                                  : 'Back on the bench tomorrow.');
     }
+
+    // 1b. §11.6: running wait steps (burn-ins, scans) complete free overnight —
+    // before the deadline sweep so an overnight burn-in never "misses" its due
+    // date. §11.5: day-time level-ups surface in this morning's summary.
+    Engine.Jobs.completeWaitsOvernight(state);
+    if (summary && state.levelUpsToday && state.levelUpsToday.length) {
+      summary.levelUps = summary.levelUps.concat(state.levelUpsToday);
+    }
+    state.levelUpsToday = [];
 
     // 2. Historical events start/stop + random event firing
     Sim.updateEvents(state);
@@ -201,19 +211,23 @@
     var st = Engine.storageInfo(state);
     if (st.overage > 0) charge('Storage overage (' + st.overage + ' slots)',
                                st.overage * st.feePerSlot);
-    // §10.7: staff wages, year-rescaled on the 1st, listed in the summary
+    // §10.7/§11.5: staff wages from the fixed level table, year-rescaled on
+    // the 1st, listed in the summary.
     for (var w = 0; w < (state.staff || []).length; w++) {
       var member = state.staff[w];
       var role = Engine.staffRoleById(member.role);
+      member.skill = Engine.staffSkillFor(member.level || 1);
       member.wageMonthly = Engine.staffWageFor(year, member.skill,
                                                role ? role.wageFactor : 1);
-      charge('Wages — ' + member.name + ' (' + (role ? role.name : member.role) + ')',
+      charge('Wages — ' + member.name + ' (' +
+             (member.title || (role ? role.name : member.role)) + ')',
              member.wageMonthly);
     }
   };
 
   // ------------------------------------------------------------------
-  // §10.7: staff candidate market (2-4 candidates, weekly refresh)
+  // §10.7/§11.5: staff candidate market (2-4 candidates, weekly refresh).
+  // Candidates only ever spawn L1-L2 — elite talent must be grown in-house.
   // ------------------------------------------------------------------
   Sim.refreshStaffMarket = function (state) {
     var C = CFG();
@@ -227,13 +241,17 @@
     var out = [];
     for (var i = 0; i < n; i++) {
       var role = Engine.pick(roles);
-      var skill = Engine.round2(Engine.uniform(C.STAFF_SKILL_MIN, C.STAFF_SKILL_MAX));
+      var level = Engine.randInt(1, C.STAFF_CANDIDATE_MAX_LEVEL);
+      var skill = Engine.staffSkillFor(level);
       out.push({
         id: 'c' + (state.staffNextId = (state.staffNextId || 1) + 1),
         name: (Engine.pick(F.firstNames || ['Jo']) || 'Jo') + ' ' +
               (Engine.pick(F.lastNames || ['Doe']) || 'Doe'),
         role: role.id,
+        level: level,
+        xp: C.STAFF_LEVEL_THRESHOLDS[level - 1],
         skill: skill,
+        title: Engine.staffTitleFor(role, level),
         wageMonthly: Engine.staffWageFor(year, skill, role.wageFactor)
       });
     }

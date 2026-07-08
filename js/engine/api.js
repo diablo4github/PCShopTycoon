@@ -37,7 +37,7 @@
     if (!isFinite(seed)) seed = 42;
     var startDi = null;
     var state = {
-      version: 3,
+      version: 4,
       seed: seed, rngState: seed | 0,
       shopName: String(opts.shopName ||
         ((DATA.FLAVOR && DATA.FLAVOR.shopNameSuggestions) ?
@@ -68,9 +68,9 @@
                     refurbsSold: 0, daysPlayed: 0 }
       },
       workedToday: [], declinesToday: 0, lastContractDay: null, injuryDaysLeft: 0,
-      // §10.7 staff
+      // §10.7 staff (+§11.5 level-up queue for morning summaries)
       staff: [], staffMarket: [], staffNextRefreshDay: Engine.CONFIG.STAFF_REFRESH_DAYS,
-      staffNextId: 1
+      staffNextId: 1, levelUpsToday: []
     };
     Engine._state = state;
     startDi = Engine.dateInfo(0, state);

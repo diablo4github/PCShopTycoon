@@ -783,6 +783,7 @@
             osNeed.label = 'Install an operating system — your recommendation';
           }
           job.needs = [osNeed];
+          job.osRequest = osNeed.label;   // §11.4 UI contract
           job.hoursRequired = 1.5;   // fallback-step sizing only
           job.title = 'Software: ' + (osNeed.osExactId || osNeed.osFamily ?
             osNeed.label.replace(/^Install /, '').replace(/ — .*$/, '') + ' install'
@@ -1180,6 +1181,7 @@
     var spent = Engine.spendHours(state, h);
     if (!spent.ok) return spent;
     state.supplyRunDoneToday = true;
+    Jobs.tickWaits(state, h, null);   // §11.6: time passes for running waits
     return { ok: true, hours: h };
   }
 
@@ -2115,6 +2117,8 @@
       C.STRIP_HOURS * Engine.staffTimeMult(state, 'refurb')));   // §10.7
     var spent = Engine.spendHours(state, stripHours);
     if (!spent.ok) return spent;
+    Engine.accrueStaffXp(state, 'refurb', stripHours);   // §11.5
+    Jobs.tickWaits(state, stripHours, job.id);           // §11.6
     var survival = Engine.equipmentOwned(state, 'esd-setup') ?
         C.STRIP_SURVIVAL_ESD : C.STRIP_SURVIVAL;
     var recovered = [], lost = [];

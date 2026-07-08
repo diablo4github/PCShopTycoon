@@ -122,26 +122,35 @@
 
   /* Validate a full part list (build validation & tooling).
    * opts: { requireFull: bool (default true), minPerfGpu: number|null, year: number }
-   * Returns { valid, problems: [str], perf, composite, style, watts: {required, provided} }.
+   * Returns { valid, problems: [str], problemsInfo: [{category, text}], perf,
+   *           composite, style, watts: {required, provided} }.
+   * §12.2 UI contract: problemsInfo.category maps each problem onto a build
+   * slot zone — cpu|motherboard|ram|gpu|storage|psu|case|cooling|os|expansion|general.
    */
   Compat.validatePartList = function (partIds, opts) {
     opts = opts || {};
     var requireFull = opts.requireFull !== false;
     var year = opts.year || (Engine._state ? Engine.currentYear(Engine._state) : 1996);
-    var problems = [];
+    var KNOWN_CATS = ['cpu', 'motherboard', 'ram', 'gpu', 'storage', 'psu',
+                      'case', 'cooling', 'os', 'expansion'];
+    var problemsInfo = [];
+    function prob(category, text) {
+      if (KNOWN_CATS.indexOf(category) === -1) category = 'general';
+      problemsInfo.push({ category: category, text: text });
+    }
     var parts = [], counts = {};
     var i, p;
     partIds = Array.isArray(partIds) ? partIds : [];
     for (i = 0; i < partIds.length; i++) {
       p = Engine.partById(partIds[i]);
-      if (!p) { problems.push('Unknown part id: ' + partIds[i]); continue; }
+      if (!p) { prob('general', 'Unknown part id: ' + partIds[i]); continue; }
       parts.push(p);
       counts[p.category] = (counts[p.category] || 0) + 1;
     }
     var mobo = null;
     for (i = 0; i < parts.length; i++) if (parts[i].category === 'motherboard') mobo = parts[i];
     if ((counts.motherboard || 0) !== 1) {
-      problems.push((counts.motherboard || 0) === 0 ?
+      prob('motherboard', (counts.motherboard || 0) === 0 ?
         'No motherboard selected' : 'More than one motherboard selected');
     }
     // Per-part namespace fit vs the motherboard
@@ -149,7 +158,7 @@
       for (i = 0; i < parts.length; i++) {
         if (parts[i] === mobo) continue;
         var res = Compat.fits(parts[i], mobo);
-        if (!res.fits) problems.push(parts[i].name + ': ' + res.why);
+        if (!res.fits) prob(parts[i].category, parts[i].name + ': ' + res.why);
       }
     }
     // §12.1 capacity: ram/gpu/storage part counts vs the board's slots.
@@ -164,8 +173,8 @@
         var cap = (slots[sc] != null && isFinite(slots[sc])) ?
           Math.floor(slots[sc]) : Engine.CONFIG.SLOT_DEFAULTS[sc];
         if ((counts[sc] || 0) > cap) {
-          problems.push('Board has ' + cap + ' ' + slotLabel[sc] +
-                        ' — build uses ' + counts[sc]);
+          prob(sc, 'Board has ' + cap + ' ' + slotLabel[sc] +
+                   ' — build uses ' + counts[sc]);
         }
       }
     }
@@ -180,14 +189,14 @@
     var addonUncovered = addonGpus.length > 0 && standardGpus.length === 0 &&
                          !(mobo && mobo.integratedVideo);
     if (addonUncovered) {
-      problems.push(addonGpus[0].name + ' is a 3D add-on — it needs a 2D card beside it');
+      prob('gpu', addonGpus[0].name + ' is a 3D add-on — it needs a 2D card beside it');
     }
     if (standardGpus.length >= 2) {
       var lead = standardGpus[0];
       for (i = 1; i < standardGpus.length; i++) {
         var sg = standardGpus[i];
         if (!lead.sliTag || !sg.sliTag || sg.sliTag !== lead.sliTag) {
-          problems.push(sg.name + " isn't SLI/CrossFire-compatible with " + lead.name);
+          prob('gpu', sg.name + " isn't SLI/CrossFire-compatible with " + lead.name);
         }
       }
     }
@@ -196,8 +205,8 @@
       for (i = 1; i < addonGpus.length; i++) {
         if (!alead.sliTag || !addonGpus[i].sliTag ||
             addonGpus[i].sliTag !== alead.sliTag) {
-          problems.push(addonGpus[i].name + ' must be an identical pair with ' +
-                        alead.name + ' to interleave');
+          prob('gpu', addonGpus[i].name + ' must be an identical pair with ' +
+                      alead.name + ' to interleave');
         }
       }
     }
@@ -206,16 +215,18 @@
     if (requireFull) {
       var needCats = ['cpu', 'motherboard', 'ram', 'storage', 'case', 'psu', 'os'];
       for (i = 0; i < needCats.length; i++) {
-        if (!counts[needCats[i]]) problems.push('Missing ' + needCats[i].toUpperCase());
+        if (!counts[needCats[i]])
+          prob(needCats[i], 'Missing ' + needCats[i].toUpperCase());
       }
       // §12.2: an addon-only 3D card is not a video source by itself (that case
       // already raised the clearer "needs a 2D card" problem above).
       var hasVideo = standardGpus.length > 0 || (mobo && mobo.integratedVideo) ||
                      addonUncovered;
-      if (!hasVideo && !gpus.length) problems.push('Missing GPU (board has no integrated video)');
+      if (!hasVideo && !gpus.length)
+        prob('gpu', 'Missing GPU (board has no integrated video)');
       if ((counts.gpu || 0) === 0 && mobo && mobo.integratedVideo &&
           opts.minPerfGpu != null && opts.minPerfGpu > Engine.CONFIG.INTEGRATED_GPU_PERF) {
-        problems.push('Integrated video too weak — a graphics card is required');
+        prob('gpu', 'Integrated video too weak — a graphics card is required');
       }
     }
     // PSU wattage: watts >= 1.15 x sum(powerDraw)
@@ -226,7 +237,7 @@
     }
     var required = Math.ceil(draw * Engine.CONFIG.PSU_HEADROOM);
     if (psu && (psu.watts || 0) < required) {
-      problems.push('PSU ' + (psu.watts || 0) + 'W < required ' + required + 'W');
+      prob('psu', 'PSU ' + (psu.watts || 0) + 'W < required ' + required + 'W');
     }
     var perf = Compat.machinePerf(parts);
     var style = 0;
@@ -235,8 +246,9 @@
         style += parts[i].style || 0;
     }
     return {
-      valid: problems.length === 0,
-      problems: problems,
+      valid: problemsInfo.length === 0,
+      problems: problemsInfo.map(function (pi) { return pi.text; }),
+      problemsInfo: problemsInfo,
       perf: perf,
       composite: Compat.composite(perf, year),
       style: style,

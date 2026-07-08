@@ -37,7 +37,7 @@
     if (!isFinite(seed)) seed = 42;
     var startDi = null;
     var state = {
-      version: 4,
+      version: 5,
       seed: seed, rngState: seed | 0,
       shopName: String(opts.shopName ||
         ((DATA.FLAVOR && DATA.FLAVOR.shopNameSuggestions) ?
@@ -259,11 +259,28 @@
     (obj.jobs.active || []).forEach(fixJob);
     return obj;
   }
+  // v4 -> v5 migration (§12): single build selections wrap into per-category
+  // slot arrays; device-repair fields default. Boards without slots data keep
+  // working via the {ram:99,gpu:99,storage:99} engine default (§12.1).
+  function migrateV4toV5(obj) {
+    obj.version = 5;
+    function fixJob(job) {
+      if (!job || typeof job !== 'object') return;
+      if (!('device' in job)) job.device = null;
+      if (job.deviceModern == null) job.deviceModern = false;
+      if (job.devicePartsCost == null) job.devicePartsCost = 0;
+      if (!('devicePayBase' in job)) job.devicePayBase = null;
+      if (job.build) Engine.Jobs.wrapBuildParts(job.build);   // flat -> slot map
+    }
+    (obj.jobs.offers || []).forEach(fixJob);
+    (obj.jobs.active || []).forEach(fixJob);
+    return obj;
+  }
   Engine.importSave = function (str) {
     var obj;
     try { obj = JSON.parse(String(str)); }
     catch (e) { return err('Not valid save JSON'); }
-    if (!obj || [1, 2, 3, 4].indexOf(obj.version) === -1)
+    if (!obj || [1, 2, 3, 4, 5].indexOf(obj.version) === -1)
       return err('Unsupported save version');
     var required = ['seed', 'rngState', 'eraId', 'startDate', 'day', 'cash',
                     'hoursLeft', 'flags', 'reputation', 'shop', 'inventory',
@@ -274,6 +291,7 @@
     if (obj.version === 1) migrateV1toV2(obj);
     if (obj.version === 2) migrateV2toV3(obj);
     if (obj.version === 3) migrateV3toV4(obj);
+    if (obj.version === 4) migrateV4toV5(obj);
     Engine._state = obj;
     return { ok: true };
   };
@@ -349,12 +367,15 @@
   Engine.getBuildCatalog = function (jobId) {
     return S() ? Engine.Jobs.getBuildCatalog(S(), jobId) : { categories: {} };
   };
-  Engine.setBuildPart = function (jobId, category, partId) {
+  // §12.2: slotIndex targets a specific slot (default 0 — old callers keep working)
+  Engine.setBuildPart = function (jobId, category, partId, slotIndex) {
     var bad = needLive(); if (bad) return bad;
-    return Engine.Jobs.setBuildPart(S(), jobId, category, partId);
+    return Engine.Jobs.setBuildPart(S(), jobId, category, partId, slotIndex);
   };
   Engine.validateBuild = function (jobId) {
-    if (!S()) return { valid: false, problems: ['No game in progress'], perf: {},
+    if (!S()) return { valid: false, problems: ['No game in progress'],
+                       problemsInfo: [{ category: 'general', text: 'No game in progress' }],
+                       perf: {},
                        meetsTarget: false, style: 0, partsCost: 0, budget: 0,
                        underBudget: false };
     return Engine.Jobs.validateBuild(S(), jobId);
@@ -471,6 +492,43 @@
   };
   Engine.getWiki = function (filter) {
     return S() ? Engine.Pricing.getWiki(S(), filter) : [];
+  };
+  // §12.4 Devices wiki: read-only render of the Apple/mobile device tables.
+  // Returns [] when the tables are absent (UI hides the Devices group).
+  function appleRepairNote(d) {
+    var bits = [];
+    bits.push(d.ramUpgradable ? 'RAM upgradable' : 'RAM fixed');
+    bits.push(d.hddUpgradable ? 'drive serviceable' : 'storage sealed');
+    bits.push('no CPU upgrades');
+    return bits.join(', ');
+  }
+  Engine.getDeviceWiki = function () {
+    var DATA = Engine.getData();
+    var out = [];
+    (DATA.APPLE_MACHINES || []).forEach(function (d) {
+      if (!d || !d.id) return;
+      out.push({
+        id: d.id, name: d.name || d.id, kind: 'apple',
+        family: d.family || null, tier: null,
+        introYear: d.introYear || null, eolYear: d.eolYear || null,
+        ramUpgradable: !!d.ramUpgradable, hddUpgradable: !!d.hddUpgradable,
+        desc: d.desc || '',
+        repairNote: d.repairNote || appleRepairNote(d)
+      });
+    });
+    (DATA.MOBILE_DEVICES || []).forEach(function (d) {
+      if (!d || !d.id) return;
+      out.push({
+        id: d.id, name: d.name || d.id,
+        kind: d.kind === 'tablet' ? 'tablet' : 'smartphone',
+        family: null, tier: d.tier || null,
+        introYear: d.introYear || null, eolYear: d.eolYear || null,
+        desc: d.desc || '',
+        repairNote: d.repairNote ||
+          'Screen, battery, port & board-level service — no upgrades'
+      });
+    });
+    return out;
   };
 
   // ------------------------------------------------------------------

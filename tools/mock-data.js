@@ -23,6 +23,7 @@
     { id: 'mobo-xt-clone', name: 'XT Clone Board', category: 'motherboard', brand: 'ValuTech',
       platformTags: ['SKT-8088', 'MEM-DIP', 'BUS-ISA8', 'STOR-FDD', 'STOR-MFM',
                      'FF-XT', 'ARCH-8BIT', 'ARCH-16'],
+      slots: { ram: 4, gpu: 5, storage: 2 },
       perf: {}, reliability: 84, basePrice: 380, introYear: 1981, eolYear: 1988,
       legacy: true, tier: 'mainstream', powerDraw: 15,
       desc: 'Taiwanese XT-compatible board that undercut IBM and built the clone industry.' },
@@ -91,12 +92,25 @@
       introYear: 1996, introMonth: 6, eolYear: 1999, legacy: true, tier: 'premium',
       powerDraw: 15,
       desc: 'Top of the Socket 7 food chain in 1996; the chip enthusiasts saved up for.' },
+    { id: 'cpu-mock-k6', name: 'Mock K6-2 300', category: 'cpu', brand: 'AMD',
+      platformTags: ['SKT-7'], perf: { cpu: 260 }, reliability: 89, basePrice: 380,
+      introYear: 1997, eolYear: 2002, legacy: true, tier: 'mainstream', powerDraw: 17,
+      desc: 'Mock late-90s Socket 7 chip — keeps 1998-era builds feasible.' },
     { id: 'mobo-p5-atx', name: 'Socket 7 ATX Board', category: 'motherboard', brand: 'ASUS',
       platformTags: ['SKT-7', 'MEM-SDR', 'BUS-PCI', 'BUS-ISA16', 'STOR-IDE',
                      'STOR-FDD', 'FF-ATX', 'ARCH-586', 'ARCH-386'],
+      slots: { ram: 4, gpu: 3, storage: 2 },
       perf: {}, reliability: 86, basePrice: 180, introYear: 1995, eolYear: 2000,
       legacy: true, tier: 'mainstream', powerDraw: 20,
       desc: 'A solid Taiwanese ATX board from the era when ATX itself was the exciting part.' },
+    { id: 'mobo-p5-matx', name: 'Socket 7 Budget mATX Board', category: 'motherboard',
+      brand: 'PCChips',
+      platformTags: ['SKT-7', 'MEM-SDR', 'BUS-PCI', 'STOR-IDE', 'STOR-FDD',
+                     'FF-MATX', 'ARCH-586', 'ARCH-386'],
+      slots: { ram: 2, gpu: 1, storage: 2 },
+      perf: {}, reliability: 80, basePrice: 95, introYear: 1995, eolYear: 2002,
+      legacy: true, tier: 'budget', powerDraw: 18,
+      desc: 'Two DIMM slots and one usable PCI slot — the corner-cutting classic.' },
     { id: 'ram-16mb-sdr', name: '16MB SDRAM DIMM', category: 'ram', brand: 'Kingston',
       platformTags: ['MEM-SDR'], perf: { ramMB: 16 }, reliability: 90, basePrice: 120,
       introYear: 1995, eolYear: 2001, legacy: true, tier: 'mainstream', powerDraw: 4,
@@ -124,6 +138,67 @@
       introYear: 1996, introMonth: 10, eolYear: 1999, legacy: true, tier: 'premium',
       powerDraw: 15,
       desc: 'The pass-through cable card that invented PC 3D gaming as a mass-market hobby.' },
+    // §12.2: Voodoo2 SLI pair (3D add-ons — need a 2D card beside them)
+    { id: 'gpu-mock-voodoo2', name: 'Mock Voodoo2 12MB', category: 'gpu', brand: '3dfx',
+      platformTags: ['BUS-PCI'], sliTag: 'VOODOO2', addonOnly: true,
+      perf: { gpu: 115 }, reliability: 91, basePrice: 299,
+      introYear: 1998, introMonth: 2, eolYear: 2001, legacy: true, tier: 'premium',
+      powerDraw: 17,
+      desc: 'Scan-line interleave: two of these render alternating lines.' },
+    { id: 'gpu-mock-voodoo2-b', name: 'Mock Monster V2 (Voodoo2)', category: 'gpu',
+      brand: 'Diamond',
+      platformTags: ['BUS-PCI'], sliTag: 'VOODOO2', addonOnly: true,
+      perf: { gpu: 115 }, reliability: 90, basePrice: 289,
+      introYear: 1998, introMonth: 3, eolYear: 2001, legacy: true, tier: 'premium',
+      powerDraw: 17,
+      desc: 'The brand-variant Voodoo2, preferably bought in pairs.' },
+
+    // ----- compact 2006 cluster (SLI/RAM-heavy/mobile-era scenarios) -----
+    { id: 'cpu-mock-c2d', name: 'Mock Core 2 Duo', category: 'cpu', brand: 'Intel',
+      platformTags: ['SKT-M06'], perf: { cpu: 900 }, reliability: 92, basePrice: 250,
+      introYear: 2004, eolYear: 2018, legacy: false, tier: 'mainstream', powerDraw: 65,
+      desc: 'Mock mid-2000s dual core.' },
+    { id: 'mobo-sli06', name: 'Mock nForce SLI Board', category: 'motherboard',
+      brand: 'ASUS',
+      platformTags: ['SKT-M06', 'MEM-DDR2', 'BUS-PCIE', 'STOR-SATA', 'FF-ATX',
+                     'ARCH-X64'],
+      slots: { ram: 4, gpu: 2, storage: 4 },
+      perf: {}, reliability: 88, basePrice: 150, introYear: 2004, eolYear: 2018,
+      legacy: false, tier: 'mainstream', powerDraw: 25,
+      desc: 'Mock dual-x16 SLI-certified board.' },
+    { id: 'ram-mock-1gb', name: 'Mock 1GB DDR2 Stick', category: 'ram', brand: 'Kingston',
+      platformTags: ['MEM-DDR2'], perf: { ramMB: 1024 }, reliability: 91, basePrice: 90,
+      introYear: 2004, eolYear: 2018, legacy: false, tier: 'mainstream', powerDraw: 3,
+      desc: 'Mock DDR2 stick — stack four for the RAM-maxed crowd.' },
+    { id: 'storage-mock-sata', name: 'Mock 160GB SATA HDD', category: 'storage',
+      brand: 'Seagate',
+      platformTags: ['STOR-SATA'], perf: { storageGB: 160, speed: 40 }, reliability: 82,
+      basePrice: 90, introYear: 2004, eolYear: 2018, legacy: false, tier: 'mainstream',
+      powerDraw: 8,
+      desc: 'Mock mid-2000s SATA drive.' },
+    { id: 'gpu-mock-7900', name: 'Mock GeForce 7900 GT', category: 'gpu', brand: 'NVIDIA',
+      platformTags: ['BUS-PCIE'], sliTag: 'SLI-MOCK', perf: { gpu: 950 },
+      reliability: 88, basePrice: 280, introYear: 2004, eolYear: 2018, legacy: false,
+      tier: 'premium', powerDraw: 80,
+      desc: 'Mock SLI-capable card — two of them beat any single card here.' },
+    { id: 'gpu-mock-x1300', name: 'Mock Radeon X1300', category: 'gpu', brand: 'ATI',
+      platformTags: ['BUS-PCIE'], perf: { gpu: 400 }, reliability: 90, basePrice: 90,
+      introYear: 2004, eolYear: 2018, legacy: false, tier: 'budget', powerDraw: 30,
+      desc: 'Mock budget PCIe card with no pairing tricks.' },
+    { id: 'psu-mock-500', name: 'Mock ATX 500W PSU', category: 'psu', brand: 'Corsair',
+      platformTags: ['FF-ATX'], perf: {}, reliability: 90, basePrice: 80, watts: 500,
+      introYear: 2004, eolYear: 2018, legacy: false, tier: 'mainstream', powerDraw: 0,
+      desc: 'Mock mid-2000s PSU with SLI headroom.' },
+    { id: 'os-mock-xp', name: 'Mock Windows XP', category: 'os', brand: 'Microsoft',
+      platformTags: ['ARCH-X64'], perf: {}, reliability: 85, basePrice: 120,
+      introYear: 2001, eolYear: 2012, legacy: false, tier: 'mainstream', powerDraw: 0,
+      desc: 'Mock 2000s OS.' },
+    // §12.3: one expansion part (bus-tag overlap, never required in builds)
+    { id: 'expansion-mock-sound', name: 'Mock Sound Blaster', category: 'expansion',
+      brand: 'Creative',
+      platformTags: ['BUS-PCI', 'BUS-ISA16'], perf: {}, reliability: 88, basePrice: 120,
+      introYear: 1992, eolYear: 2003, legacy: true, tier: 'mainstream', powerDraw: 5,
+      desc: 'Mock sound card — flavor hardware on the expansion bus.' },
     { id: 'psu-atx-250w', name: 'ATX 250W PSU', category: 'psu', brand: 'Shenzhen OEM',
       platformTags: ['FF-ATX'], perf: {}, reliability: 82, basePrice: 70, watts: 250,
       introYear: 1995, eolYear: 2005, legacy: false, tier: 'mainstream', powerDraw: 0,
@@ -162,7 +237,9 @@
     1990: { cpu: 16,  gpu: 5,   ramMB: 2,    storageGB: 0.08, laborRate: 36, buildBudget: 2400 },
     1993: { cpu: 40,  gpu: 10,  ramMB: 6,    storageGB: 0.4,  laborRate: 40, buildBudget: 2300 },
     1996: { cpu: 110, gpu: 30,  ramMB: 16,   storageGB: 1.6,  laborRate: 45, buildBudget: 2200 },
-    2000: { cpu: 350, gpu: 200, ramMB: 96,   storageGB: 15,   laborRate: 52, buildBudget: 2000 }
+    2000: { cpu: 350, gpu: 200, ramMB: 96,   storageGB: 15,   laborRate: 52, buildBudget: 2000 },
+    2006: { cpu: 700, gpu: 600, ramMB: 1024, storageGB: 160,  laborRate: 58, buildBudget: 1900 },
+    2015: { cpu: 4000, gpu: 4000, ramMB: 8192, storageGB: 1000, laborRate: 68, buildBudget: 1800 }
   };
 
   DATA.ERAS = [
@@ -304,14 +381,78 @@
         { label: 'Review original work ticket', hours: 0.25 },
         { label: 'Reproduce & rework the fault', hours: 0.75 },
         { label: 'Extended test before return', hours: 0.5 }
+      ] },
+    // §12.4 device repair — tablet template intentionally absent so the
+    // engine's synthesized fallback path gets exercised on mock.
+    { type: 'device_repair', partCategory: null, subtype: 'apple', minYear: null, maxYear: null,
+      steps: [
+        { label: 'Intake & symptom interview', hours: 0.25 },
+        { label: 'Crack the case & discharge', hours: 0.5 },
+        { label: 'Swap SIMMs / drive / module', hours: 0.5 },
+        { label: 'Reassemble & boot test', hours: 0.5 }
+      ] },
+    { type: 'device_repair', partCategory: null, subtype: 'smartphone', minYear: null, maxYear: null,
+      steps: [
+        { label: 'Intake & full-function test', hours: 0.25 },
+        { label: 'Heat & pry the assembly', hours: 0.5 },
+        { label: 'Swap the faulty module', hours: 0.5 },
+        { label: 'Reseal, calibrate & retest', hours: 0.5 }
       ] }
   ];
+
+  // §12.4 device tables (Apple + mobile) — tiny but schema-exact
+  DATA.APPLE_MACHINES = [
+    { id: 'mock-mac-plus', name: 'Mock Macintosh Plus', family: 'APPLE-68K',
+      introYear: 1986, eolYear: 1996, ramUpgradable: true, hddUpgradable: true,
+      cpuUpgradable: false, basePriceRange: [70, 110],
+      faultCategories: ['ram', 'logic-board', 'screen', 'floppy'],
+      desc: 'Mock first serviceable Mac: SIMM slots and SCSI.' },
+    { id: 'mock-powermac-g3', name: 'Mock Power Mac G3', family: 'APPLE-PPC',
+      introYear: 1997, eolYear: 2003, ramUpgradable: true, hddUpgradable: true,
+      cpuUpgradable: false, basePriceRange: [90, 140],
+      faultCategories: ['logic-board', 'storage', 'ram', 'psu'],
+      desc: 'Mock tool-less tower, tech-beloved.' },
+    { id: 'mock-mbp-retina', name: 'Mock MacBook Pro Retina', family: 'APPLE-INTEL',
+      introYear: 2012, eolYear: 2018, ramUpgradable: false, hddUpgradable: true,
+      cpuUpgradable: false, basePriceRange: [110, 180],
+      faultCategories: ['battery', 'screen', 'storage', 'logic-board'],
+      desc: 'Mock hinge-year machine: soldered RAM, glued battery.' }
+  ];
+  DATA.MOBILE_DEVICES = [
+    { id: 'mock-phone-4', kind: 'smartphone', name: 'Mock Phone 4', brand: 'Apple',
+      introYear: 2010, eolYear: 2016, tier: 'premium' },
+    { id: 'mock-droid', kind: 'smartphone', name: 'Mock Droid', brand: 'Motorola',
+      introYear: 2012, eolYear: 2024, tier: 'budget' },
+    { id: 'mock-tab', kind: 'tablet', name: 'Mock Tab', brand: 'Samsung',
+      introYear: 2011, eolYear: 2022, tier: 'mainstream' }
+  ];
+  DATA.MOBILE_FAULTS = {
+    screen: [
+      { desc: 'Cracked display assembly', laborHours: 1, partsCostFactor: 0.35,
+        complaints: ['"I dropped it face-down. Spiderweb city."',
+                     '"Half the touch does not touch anymore."'],
+        faultDescs: ['Shattered glass and digitizer', 'Fractured panel — assembly swap'] }
+    ],
+    battery: [
+      { desc: 'Swollen battery', laborHours: 0.75, partsCostFactor: 0.12,
+        complaints: ['"It dies at 40% like clockwork."',
+                     '"The back is bulging. That is new."'],
+        faultDescs: ['Cell past cycle life', 'Swollen cell pressing the case'] }
+    ],
+    'charge-port': [
+      { desc: 'Lint-packed charging port', laborHours: 1, partsCostFactor: 0.08,
+        complaints: ['"It only charges at one exact cable angle."',
+                     '"I jiggle the plug for ten seconds every night."'],
+        faultDescs: ['Port packed with lint', 'Cracked charge-port flex'] }
+    ]
+  };
 
   // §10.7 staff roles (ids match the engine fallbacks / real data)
   DATA.STAFF_ROLES = [
     { id: 'tech', name: 'Technician',
-      desc: 'Bench work: repairs, upgrades, refurbs, peripherals, cleaning.',
-      jobTypes: ['repair', 'upgrade', 'refurb', 'peripheral', 'cleaning', 'callback'],
+      desc: 'Bench work: repairs, upgrades, refurbs, peripherals, cleaning, devices.',
+      jobTypes: ['repair', 'upgrade', 'refurb', 'peripheral', 'cleaning', 'callback',
+                 'device_repair'],
       wageFactor: 1 },
     { id: 'software', name: 'Software Specialist',
       desc: 'OS installs, virus cleanup, data recovery.',

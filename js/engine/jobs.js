@@ -509,6 +509,8 @@
         job.build.budget > Engine.baselineFor(year).buildBudget * 1.15) hasPremium = true;
     if (hasPremium) d += 1;
     if (n > 0 && ageSum / n > C.LEGACY_MACHINE_YEARS) d += 1;
+    // §12.4: post-2012 Apple machines are glued, soldered and parts-paired
+    if (job.type === 'device_repair' && job.deviceModern) d += 1;
     return Engine.clamp(Math.round(d), 1, 5);
   }
 
@@ -574,7 +576,7 @@
     function slotCap(mobo, cat) {
       var slots = mobo.slots || C.SLOT_DEFAULTS;
       var n = slots[cat];
-      return (typeof n === 'number' && isFinite(n) && n >= 1) ?
+      return (typeof n === 'number' && isFinite(n) && n >= 0) ?
         Math.floor(n) : C.SLOT_DEFAULTS[cat];
     }
     // Cheapest stack of one part type summing perfKey >= target within cap.
@@ -735,6 +737,12 @@
         (state.lastContractDay == null ||
          state.day - state.lastContractDay >= C.CONTRACT_MIN_DAYS_BETWEEN))
       add('contract', null, 0.8);
+    // §12.4 device repair: Apple walk-ins from 1985, the mobile boom from 2009
+    // ramping into a major late-game volume source.
+    if (appleMachinesActive(state).length)
+      add('device_repair', 'apple', C.DEVICE_APPLE_WEIGHT);
+    if (mobileDevicesActive(state).length)
+      add('device_repair', 'mobile', mobileOfferWeight(year));
     if (!pool.length) return null;
 
     var total = 0, i;
@@ -764,6 +772,8 @@
       machine: null,
       peripheral: null,           // §10.5 {name, kind}
       osRequest: null,            // §11.4 (UI contract: string label)
+      device: null,               // §12.4 (UI contract: {name, kind, year, ...})
+      deviceModern: false, devicePartsCost: 0, devicePayBase: null,
       drTier: 0,
       crt: false,
       result: null
@@ -933,15 +943,44 @@
             ramMB: Engine.round2(bl.ramMB * t.ramMB),
             storageGB: Engine.round2(bl.storageGB * t.storageGB)
           },
-          minStyle: 0, parts: [], validated: false, committed: false
+          minStyle: 0, parts: emptyBuildParts(), validated: false, committed: false
         };
+        // §12.2 gamer SLI/CrossFire request (Voodoo2 1998-2000, SLI/CF 2005-16)
+        if (useCase === 'gaming') {
+          var inV2 = year >= C.VOODOO2_WINDOW[0] && year <= C.VOODOO2_WINDOW[1];
+          var inSLI = year >= C.SLI_WINDOW[0] && year <= C.SLI_WINDOW[1];
+          if ((inV2 || inSLI) && Engine.chance(C.MULTI_GPU_CHANCE)) {
+            var pairReq = bestPairRequest(state, inV2 && !inSLI);
+            if (pairReq) {
+              job.build.minPerf.gpu = pairReq.minGpu;   // implies the pair (§12.2)
+              job.build.wantsMultiGpu = true;
+              job.build.sliTag = pairReq.tag;
+              job.build.multiGpuLabel = pairReq.label;
+            }
+          }
+        } else if (year >= 2003 && Engine.chance(C.RAM_HEAVY_CHANCE)) {
+          // §12.2 office/server RAM-maxed contract build (3+ sticks by design)
+          var rhPlan = ramHeavyPlan(state);
+          if (rhPlan && rhPlan.target > (job.build.minPerf.ramMB || 0)) {
+            job.build.minPerf.ramMB = rhPlan.target;
+            job.build.ramHeavy = true;
+          }
+        }
         job.pay = budget;
         if (!ensureBuildFeasible(state, job)) return null;   // §11.1: unbuildable
         job.hoursRequired = C.BUILD_HOURS +
           (job.build.budget > bl.buildBudget * 1.15 ? C.BUILD_HOURS_PREMIUM_EXTRA : 0);
         job.deadlineDay = state.day + Engine.randInt(4, C.DEADLINE_MAX);
-        job.title = 'Custom build: ' + useCase + ' PC (' +
-          Engine.fmtMoney(job.build.budget) + ' budget)';
+        if (job.build.wantsMultiGpu) {
+          job.title = 'Custom build: ' + job.build.multiGpuLabel + ' gaming rig (' +
+            Engine.fmtMoney(job.build.budget) + ' budget)';
+        } else if (job.build.ramHeavy) {
+          job.title = 'Custom build: RAM-maxed ' + useCase + ' box (' +
+            Engine.fmtMoney(job.build.budget) + ' budget)';
+        } else {
+          job.title = 'Custom build: ' + useCase + ' PC (' +
+            Engine.fmtMoney(job.build.budget) + ' budget)';
+        }
         break;
       }
       case 'enthusiast': {
@@ -960,7 +999,8 @@
               ramMB: Engine.round2(bl.ramMB * at.ramMB),
               storageGB: Engine.round2(bl.storageGB * at.storageGB)
             },
-            minStyle: C.AESTHETIC_MIN_STYLE, parts: [], validated: false, committed: false
+            minStyle: C.AESTHETIC_MIN_STYLE, parts: emptyBuildParts(),
+            validated: false, committed: false
           };
           job.pay = abudget;
           if (!ensureBuildFeasible(state, job)) return null;   // §11.1
@@ -997,6 +1037,73 @@
         }
         break;
       }
+      case 'device_repair': {
+        // §12.4: pick the device first, then a fault it can actually have —
+        // the whole branch skips compat/catalog parts; parts money is a cost
+        // line charged at completion.
+        var laborRateNow = Engine.laborRate(year);
+        if (choice.subtype === 'apple') {
+          var adev = Engine.pick(appleMachinesActive(state));
+          if (!adev) return null;
+          // Upgrade-ish fault categories only where the flags allow (§12.4:
+          // no CPU work ever; RAM/HDD only where upgradable/serviceable).
+          var acats = (adev.faultCategories || []).filter(function (fc) {
+            if (fc === 'cpu') return false;
+            if (fc === 'ram') return !!adev.ramUpgradable;
+            if (fc === 'storage') return !!adev.hddUpgradable;
+            return true;
+          });
+          if (!acats.length) acats = ['logic-board'];
+          var ainfo = appleFaultInfo(Engine.pick(acats));
+          var modern = (adev.introYear || 0) >= C.APPLE_MODERN_YEAR;
+          job.subtype = 'apple';
+          job.device = { id: adev.id, name: adev.name, kind: 'apple',
+                         year: adev.introYear || year,
+                         family: adev.family || null, tier: null,
+                         ramUpgradable: !!adev.ramUpgradable,
+                         hddUpgradable: !!adev.hddUpgradable };
+          job.deviceModern = modern;
+          job.fault = { desc: ainfo.desc, partCategory: null,
+                        laborHours: Engine.clamp(Math.round(ainfo.laborHours || 2), 1, 3) };
+          var arange = (Array.isArray(adev.basePriceRange) && adev.basePriceRange.length === 2) ?
+            adev.basePriceRange : [laborRateNow * 2.5, laborRateNow * 4];
+          var avalue = ((arange[0] + arange[1]) / 2) * C.APPLE_VALUE_MULT;
+          job.devicePartsCost = Engine.round2(
+            (ainfo.partsCostFactor != null ? ainfo.partsCostFactor : 0.3) * avalue *
+            (modern ? C.APPLE_MODERN_PARTS_MULT : 1));
+          job.devicePayBase = Math.round(Engine.uniform(arange[0], arange[1]));
+          job.hoursRequired = job.fault.laborHours;
+          job.title = 'Device repair: ' + adev.name + ' — ' + ainfo.desc;
+          if (Array.isArray(ainfo.complaints) && ainfo.complaints.length)
+            job.blurbOverride = Engine.pick(ainfo.complaints);
+        } else {
+          var mdev = Engine.pick(mobileDevicesActive(state));
+          if (!mdev) return null;
+          var mf = mobileFaultEntry(mdev.kind);
+          if (!mf) return null;
+          job.subtype = mdev.kind === 'tablet' ? 'tablet' : 'smartphone';
+          job.device = { id: mdev.id, name: mdev.name, kind: job.subtype,
+                         year: mdev.introYear || year,
+                         family: null, tier: mdev.tier || 'mainstream' };
+          var mdesc = mf.tpl.desc ||
+            (Array.isArray(mf.tpl.faultDescs) ? Engine.pick(mf.tpl.faultDescs) : null) ||
+            (mf.key.charAt(0).toUpperCase() + mf.key.slice(1) + ' failure');
+          job.fault = { desc: mdesc, partCategory: null,
+                        laborHours: Engine.clamp(Math.round(mf.tpl.laborHours || 2), 1, 3) };
+          var tierFactor = C.DEVICE_TIER_FACTOR[mdev.tier] != null ?
+            C.DEVICE_TIER_FACTOR[mdev.tier] : C.DEVICE_TIER_FACTOR.mainstream;
+          var mvalue = tierFactor * laborRateNow *
+            (job.subtype === 'tablet' ? C.TABLET_VALUE_MULT : 1);
+          job.devicePartsCost = Engine.round2(
+            (mf.tpl.partsCostFactor != null ? mf.tpl.partsCostFactor : 0.3) * mvalue);
+          job.devicePayBase = null;   // mobile: fault labor x laborRate (post-switch)
+          job.hoursRequired = job.fault.laborHours;
+          job.title = 'Device repair: ' + mdev.name + ' — ' + mdesc;
+          if (Array.isArray(mf.tpl.complaints) && mf.tpl.complaints.length)
+            job.blurbOverride = Engine.pick(mf.tpl.complaints);
+        }
+        break;
+      }
     }
 
     // §10.1: assemble the step checklist (sets hoursRequired deterministically),
@@ -1010,7 +1117,14 @@
       for (var dp = 0; dp < job.steps.length; dp++) diagPhaseHours += job.steps[dp].hours;
     }
     var payHours = Math.max(0.5, Engine.round2(job.hoursRequired - diagPhaseHours));
-    if (!isBuildJob(job) && job.type !== 'contract') {
+    if (job.type === 'device_repair') {
+      // §12.4: Apple pay from the machine's basePriceRange; mobile from fault
+      // labor x laborRate. Parts money is a completion cost line, so the quote
+      // covers it at the standard markup.
+      var deviceLabor = job.devicePayBase != null ? job.devicePayBase :
+        basePay(state, 'device_repair', payHours, job.difficulty);
+      job.pay = Math.round(deviceLabor + job.devicePartsCost * C.PARTS_MARKUP);
+    } else if (!isBuildJob(job) && job.type !== 'contract') {
       job.pay = Math.round(basePay(state, job.type, payHours, job.difficulty));
     } else if (job.type === 'contract') {
       job.pay = Math.round(basePay(state, 'contract', payHours, job.difficulty));
@@ -1036,6 +1150,176 @@
     // §10.6: deadlines never land on Sunday
     if (job.deadlineDay != null) job.deadlineDay = shiftOffSunday(state, job.deadlineDay);
     return job;
+  }
+
+  // ------------------------------------------------------------------
+  // §12.4 device-repair tables (Apple + mobile) — defensive against missing
+  // or partial DATA while the tables are being transcribed.
+  // ------------------------------------------------------------------
+  function deviceActive(dev, year) {
+    if (!dev) return false;
+    var tail = CFG().DEVICE_REPAIR_TAIL_YEARS;
+    var intro = dev.introYear || 0;
+    var eol = dev.eolYear || 9999;
+    return year >= intro && year <= eol + tail;
+  }
+  function appleMachinesActive(state) {
+    var year = Engine.currentYear(state);
+    if (year < 1985) return [];   // §12.4 era gate
+    return (Engine.getData().APPLE_MACHINES || []).filter(function (d) {
+      return deviceActive(d, year);
+    });
+  }
+  function mobileDevicesActive(state) {
+    var year = Engine.currentYear(state);
+    if (year < 2009) return [];   // §12.4 era gate
+    return (Engine.getData().MOBILE_DEVICES || []).filter(function (d) {
+      if (!deviceActive(d, year)) return false;
+      if (d.kind === 'tablet' && year < 2010) return false;
+      return true;
+    });
+  }
+  // §12.4: mobile repair ramps hard through the 2010s (research §4.2).
+  function mobileOfferWeight(year) {
+    var ramp = CFG().DEVICE_MOBILE_RAMP || {};
+    var w = 0, keys = Object.keys(ramp);
+    for (var i = 0; i < keys.length; i++) {
+      var y = Number(keys[i]);
+      if (year >= y && ramp[keys[i]] > w) w = ramp[keys[i]];
+    }
+    return w;
+  }
+  // Fallback Apple fault info by category — used when DATA.APPLE_FAULTS is
+  // absent (the schema only mandates faultCategories on the machines).
+  var APPLE_FAULT_FALLBACK = {
+    ram: { desc: 'Failing memory module', laborHours: 2, partsCostFactor: 0.22,
+           complaints: ['"It bombs with a sad face and strange chimes."',
+                        '"It forgets what it was doing mid-document."'] },
+    storage: { desc: 'Dying internal drive', laborHours: 2, partsCostFactor: 0.35,
+               complaints: ['"It clicks and takes forever to find my files."',
+                            '"The flashing question mark is back."'] },
+    screen: { desc: 'Failing display', laborHours: 2, partsCostFactor: 0.4,
+              complaints: ['"The screen flickers and dims to nothing."',
+                           '"There are lines across everything."'] },
+    battery: { desc: 'Swollen battery', laborHours: 2, partsCostFactor: 0.25,
+               complaints: ['"The case is bulging. That seems bad."',
+                            '"It dies the second it leaves the charger."'] },
+    'logic-board': { desc: 'Logic board fault', laborHours: 3, partsCostFactor: 0.5,
+                     complaints: ['"It powers on but never chimes."',
+                                  '"It crashes no matter what we try."'] },
+    psu: { desc: 'Dead power supply', laborHours: 2, partsCostFactor: 0.25,
+           complaints: ['"Nothing happens when I press the power key."'] },
+    floppy: { desc: 'Jammed floppy mechanism', laborHours: 1, partsCostFactor: 0.15,
+              complaints: ['"The disk went in and will not come out."'] },
+    keyboard: { desc: 'Dead keys on the keyboard', laborHours: 1, partsCostFactor: 0.15,
+                complaints: ['"Half the keys stopped typing."'] },
+    'speaker-mic': { desc: 'Crackling speaker', laborHours: 1, partsCostFactor: 0.12,
+                     complaints: ['"The startup chime sounds like gravel."'] },
+    gpu: { desc: 'Failing graphics board', laborHours: 3, partsCostFactor: 0.45,
+           complaints: ['"The picture tears and artifacts under load."'] },
+    cooling: { desc: 'Failed fan & thermal shutdowns', laborHours: 2, partsCostFactor: 0.18,
+               complaints: ['"It roars, gets hot, then just turns off."'] }
+  };
+  function appleFaultInfo(cat) {
+    var table = Engine.getData().APPLE_FAULTS || {};
+    var entry = table[cat];
+    if (Array.isArray(entry)) entry = Engine.pick(entry);
+    return entry || APPLE_FAULT_FALLBACK[cat] ||
+           { desc: 'Hardware fault', laborHours: 2, partsCostFactor: 0.3, complaints: [] };
+  }
+  function mobileFaultEntry(kind) {
+    var table = Engine.getData().MOBILE_FAULTS || {};
+    var keys = Object.keys(table).filter(function (k) {
+      var e = table[k];
+      return e && (Array.isArray(e) ? e.length : true);
+    });
+    if (!keys.length) return null;
+    var key = Engine.pick(keys);
+    var entry = table[key];
+    if (Array.isArray(entry)) entry = Engine.pick(entry);
+    if (!entry) return null;
+    return { key: key, tpl: entry };
+  }
+
+  // ------------------------------------------------------------------
+  // §12.2 special build requests: SLI/CrossFire pairs & RAM-maxed contracts
+  // ------------------------------------------------------------------
+  function multiGpuLabelFor(tag) {
+    if (/voodoo/i.test(tag)) return 'Voodoo2 SLI';
+    if (/cross|cf|radeon|x8|hd/i.test(tag)) return 'CrossFire';
+    return 'SLI';
+  }
+  /* Find the strongest matched-pair request the market supports right now.
+   * Returns { tag, minGpu, label } or null when no pair beats every single
+   * card (a pair the customer could skip is not a pair request). */
+  function bestPairRequest(state, wantAddon) {
+    var C = CFG();
+    var gpus = purchasableByCategory(state, 'gpu');
+    var boards = purchasableByCategory(state, 'motherboard');
+    var bestSingle = 0, groups = {}, i;
+    for (i = 0; i < gpus.length; i++) {
+      var g = gpus[i];
+      var score = (g.perf || {}).gpu || 0;
+      if (!g.addonOnly && score > bestSingle) bestSingle = score;
+      if (g.sliTag && !!g.addonOnly === wantAddon)
+        (groups[g.sliTag] = groups[g.sliTag] || []).push(g);
+    }
+    var best = null;
+    for (var tag in groups) {
+      if (!Object.prototype.hasOwnProperty.call(groups, tag)) continue;
+      var list = groups[tag].slice().sort(function (a, b) {
+        return ((b.perf || {}).gpu || 0) - ((a.perf || {}).gpu || 0);
+      });
+      var top = list[0];
+      var second = list[1] || list[0];   // two copies of one card pair fine
+      var slotsNeeded = wantAddon ? 3 : 2;   // Voodoo2 pair rides beside a 2D card
+      var boardOk = boards.some(function (b) {
+        var slots = b.slots || C.SLOT_DEFAULTS;
+        var cap = (slots.gpu != null && isFinite(slots.gpu)) ?
+          Math.floor(slots.gpu) : C.SLOT_DEFAULTS.gpu;
+        var need = (wantAddon && b.integratedVideo) ? 2 : slotsNeeded;
+        if (cap < need) return false;
+        return Engine.Compat.fits(top, b).fits && Engine.Compat.fits(second, b).fits;
+      });
+      if (!boardOk) continue;
+      if (wantAddon && !boards.some(function (b) { return b.integratedVideo; }) &&
+          !gpus.some(function (g2) { return !g2.addonOnly; })) continue;   // no 2D source
+      var eff = ((top.perf || {}).gpu || 0) +
+                Engine.Compat.pairFactor(tag) * ((second.perf || {}).gpu || 0);
+      if (!best || eff > best.eff) best = { tag: tag, eff: eff };
+    }
+    if (!best) return null;
+    var minGpu = Engine.round2(best.eff * 0.92);
+    if (minGpu <= bestSingle) return null;   // a lone flagship would do — not a pair ask
+    return { tag: best.tag, minGpu: minGpu, label: multiGpuLabelFor(best.tag) };
+  }
+  /* §12.2 RAM-heavy target: total ramMB above 2x the biggest purchasable stick
+   * (so every solution stacks 3+ sticks) yet reachable on a >=4-slot board. */
+  function ramHeavyPlan(state) {
+    var C = CFG();
+    var sticks = purchasableByCategory(state, 'ram');
+    var boards = purchasableByCategory(state, 'motherboard');
+    var maxStick = 0, i;
+    for (i = 0; i < sticks.length; i++)
+      maxStick = Math.max(maxStick, (sticks[i].perf || {}).ramMB || 0);
+    if (!(maxStick > 0)) return null;
+    var target = Engine.round2(maxStick * C.RAM_HEAVY_STICK_MULT);
+    for (i = 0; i < boards.length; i++) {
+      var b = boards[i];
+      var slots = b.slots || C.SLOT_DEFAULTS;
+      var cap = (slots.ram != null && isFinite(slots.ram)) ?
+        Math.floor(slots.ram) : C.SLOT_DEFAULTS.ram;
+      if (cap < 4) continue;
+      var fitting = 0;
+      for (var s = 0; s < sticks.length; s++) {
+        if (!Engine.Compat.fits(sticks[s], b).fits) continue;
+        var per = (sticks[s].perf || {}).ramMB || 0;
+        if (per > 0 && Math.ceil(target / per - 1e-9) <= Math.min(cap, 16))
+          fitting++;
+      }
+      if (fitting > 0) return { target: target };
+    }
+    return null;
   }
 
   // Weighted list of eligible fault sources (CONFIG.FAULT_CATEGORY_WEIGHTS).
@@ -1461,21 +1745,57 @@
     if (!mobo) return 0;
     if (!mobo.slots) return null;
     var n = mobo.slots[cat];
-    return (typeof n === 'number' && isFinite(n) && n >= 1) ? Math.floor(n) : null;
+    // 0 is a real count (i810-class boards have no GPU slot at all)
+    return (typeof n === 'number' && isFinite(n) && n >= 0) ? Math.floor(n) : null;
   }
   Jobs.slotCountFor = slotCountFor;
   function trimTrailingNulls(arr) {
     while (arr.length && arr[arr.length - 1] == null) arr.pop();
   }
 
+  /* §12.2: can this single part contribute toward the job's minPerf in its
+   * category? Drives the catalog `meets` flag (the UI's yellow slot state).
+   * Stackable categories judge the part times the usable slot count; GPUs
+   * count a self-pair when the card carries an sliTag; add-on 3D cards ride
+   * on their pair potential. */
+  function catalogMeets(part, cat, mp, mobo, slotCount) {
+    if (!mp) return true;
+    var pp = part.perf || {};
+    if (cat === 'cpu') return (pp.cpu || 0) >= (mp.cpu || 0);
+    if (cat === 'gpu') {
+      var target = mp.gpu || 0;
+      if (!target) return true;
+      var solo = pp.gpu || 0;
+      if (solo >= target) return true;
+      if (part.sliTag) {
+        var pairEff = solo + Engine.Compat.pairFactor(part.sliTag) * solo;
+        if (pairEff >= target) return true;
+      }
+      return false;
+    }
+    if (cat === 'ram' || cat === 'storage') {
+      var key = cat === 'ram' ? 'ramMB' : 'storageGB';
+      var need = mp[key] || 0;
+      if (!need) return true;
+      var per = pp[key] || 0;
+      var cap = (slotCount != null && slotCount >= 1) ? slotCount : 4;
+      return per * Math.min(cap, 16) >= need;
+    }
+    return true;   // psu/case/cooling/os/motherboard: no direct minPerf axis
+  }
+
   Jobs.getBuildCatalog = function (state, jobId) {
     var g = buildJobOrErr(state, jobId);
-    if (g.error) return { categories: {}, slots: {} };
+    if (g.error) return { categories: {} };
     var job = g.job;
     var mobo = selectedMobo(job);
-    var categories = {}, slotsView = {};
+    var mp = job.build.minPerf || {};
+    var categories = {};
     for (var c = 0; c < BUILD_CATS.length; c++) {
       var cat = BUILD_CATS[c];
+      // §12.2: slotCount 0 = no board chosen yet (ram/gpu/storage); null = the
+      // board has no slots data (UI feature-detects, falls back to selects).
+      var slotCount = slotCountFor(cat, mobo);
       var list = [];
       var cands = purchasableByCategory(state, cat);
       for (var i = 0; i < cands.length; i++) {
@@ -1490,22 +1810,19 @@
           watts: part.watts || 0, style: part.style || 0,
           inStock: inv ? inv.qty : 0,
           compatible: fit.fits, why: fit.why,
+          meets: catalogMeets(part, cat, mp, mobo, slotCount),   // §12.2 yellow state
+          sliTag: part.sliTag || null, addonOnly: !!part.addonOnly,
           tasteMatch: tasteMatchesPart(job.taste, part)   // §9.2
         });
       }
       list.sort(function (a, b) { return a.price - b.price; });
-      categories[cat] = list;
-      // §12.2: per-category slotCount + current selections padded to length.
-      // slotCount 0 = no board chosen yet (ram/gpu/storage); null = the board
-      // has no slots data (UI feature-detects and falls back to select lists).
-      var slotCount = slotCountFor(cat, mobo);
       var sel = selArray(job.build, cat).slice();
       var padTo = (slotCount == null) ? Math.max(sel.length, 1) : slotCount;
       while (sel.length < padTo) sel.push(null);
       if (slotCount != null && sel.length > slotCount) sel.length = slotCount;
-      slotsView[cat] = { slotCount: slotCount, selected: sel };
+      categories[cat] = { slotCount: slotCount, selected: sel, options: list };
     }
-    return { categories: categories, slots: slotsView };
+    return { categories: categories };
   };
 
   Jobs.setBuildPart = function (state, jobId, category, partId, slotIndex) {
@@ -1540,14 +1857,17 @@
       trimTrailingNulls(arr);
     }
     // Board change: selections past the new board's capacity fall out.
+    // (Clearing the board keeps picks — the old pick-parts-first flow.)
     if (category === 'motherboard') {
       var newMobo = selectedMobo(job);
-      for (var m = 0; m < MULTI_SLOT_CATS.length; m++) {
-        var mc = MULTI_SLOT_CATS[m];
-        var mcCap = slotCountFor(mc, newMobo);
-        var mcArr = selArray(job.build, mc);
-        if (mcCap != null && mcCap >= 1 && mcArr.length > mcCap) mcArr.length = mcCap;
-        trimTrailingNulls(mcArr);
+      if (newMobo) {
+        for (var m = 0; m < MULTI_SLOT_CATS.length; m++) {
+          var mc = MULTI_SLOT_CATS[m];
+          var mcCap = slotCountFor(mc, newMobo);
+          var mcArr = selArray(job.build, mc);
+          if (mcCap != null && mcArr.length > mcCap) mcArr.length = mcCap;
+          trimTrailingNulls(mcArr);
+        }
       }
     }
     job.build.validated = false;
@@ -1556,7 +1876,9 @@
 
   Jobs.validateBuild = function (state, jobId) {
     var g = buildJobOrErr(state, jobId);
-    if (g.error) return { valid: false, problems: [g.error], perf: {}, meetsTarget: false,
+    if (g.error) return { valid: false, problems: [g.error],
+                          problemsInfo: [{ category: 'general', text: g.error }],
+                          perf: {}, meetsTarget: false,
                           style: 0, partsCost: 0, budget: 0, underBudget: false };
     var job = g.job;
     var b = job.build;
@@ -1578,7 +1900,9 @@
     if ((perf.storageGB || 0) < (mp.storageGB || 0)) meets = false;
     if (res.style < (b.minStyle || 0)) meets = false;
     return {
-      valid: res.valid, problems: res.problems, perf: perf,
+      valid: res.valid, problems: res.problems,
+      problemsInfo: res.problemsInfo || [],   // §12.2 UI contract: slot mapping
+      perf: perf,
       meetsTarget: meets, style: res.style,
       partsCost: partsCost, budget: b.budget,
       underBudget: partsCost <= b.budget
@@ -2005,6 +2329,13 @@
           job.title + ' — ' + Engine.fmtMoney(payout));
         state.ledger.lifetime.buildsDelivered++;
       }
+      // §12.4: device repair parts are sourced outside the catalog — the
+      // expense lands as a cost line when the work wraps up.
+      if (job.type === 'device_repair' && job.devicePartsCost > 0) {
+        Engine.addCash(state, -job.devicePartsCost);
+        Engine.ledgerAdd(state, 'partsCost', job.devicePartsCost);
+        notes.push('Parts & materials: -' + Engine.fmtMoney(job.devicePartsCost));
+      }
       if (payout > 0) {
         Engine.addCash(state, payout);
         Engine.ledgerAdd(state, 'revenue', payout);
@@ -2116,6 +2447,7 @@
           diagnosed: true, needsDiagnosis: false,
           fault: null, needs: [], build: null,
           units: 1, unitsDone: 0, machine: null, peripheral: null,
+          device: null, deviceModern: false, devicePartsCost: 0, devicePayBase: null,
           drTier: 0, crt: false,
           taste: null, result: null
         };

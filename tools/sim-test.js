@@ -103,7 +103,12 @@ var globals = {
   badStepsOffer: null,       // §10.1: every offer carries a checklist
   buildsSeen: 0,             // §11.1: generated build offers observed…
   buildWitnessFails: [],     // …and any that were not witness-satisfiable
-  osRequestKinds: {}         // §11.4: family/exact/recommendation seen
+  osRequestKinds: {},        // §11.4: family/exact/recommendation seen
+  multiGpuOffers: 0,         // §12.2: SLI/CF pair requests generated in-era
+  ramHeavyOffers: 0,         // §12.2: RAM-maxed contract builds generated
+  deviceOffers: 0,           // §12.4: device_repair offers seen in era runs
+  deviceOfferBad: null,      //   …first one violating the UI contract/era gate
+  deviceRepairsDone: 0       // §12.4: device jobs completed by the bot
 };
 
 // ------------------------------------------------------------------
@@ -130,18 +135,61 @@ function tracked(E, mem, isFlip, fn) {
   return out;
 }
 
+// §12.2: getBuildCatalog categories[cat] is {slotCount, selected, options}.
+function catOptions(catalog, category) {
+  var c = (catalog.categories || {})[category];
+  return (c && c.options) || [];
+}
+
+// Place the engine's own §11.1/§12.2 witness list into the configurator via
+// the slot-indexed setBuildPart API, then commit. Returns like tryConfigureBuild.
+function applyWitnessBuild(E, job) {
+  var w = Engine.Jobs.witnessBuild(E.getState(), job.build);
+  if (!w) return 'impossible';
+  // Clear any prior picks slot-by-slot
+  var catalog = E.getBuildCatalog(job.id);
+  Object.keys(catalog.categories || {}).forEach(function (c) {
+    var sel = catalog.categories[c].selected || [];
+    for (var i = sel.length - 1; i >= 0; i--) {
+      if (sel[i] != null) E.setBuildPart(job.id, c, null, i);
+    }
+  });
+  var byCat = {};
+  w.partIds.forEach(function (id) {
+    var p = Engine.partById(id);
+    if (p) (byCat[p.category] = byCat[p.category] || []).push(id);
+  });
+  if (byCat.motherboard) E.setBuildPart(job.id, 'motherboard', byCat.motherboard[0]);
+  Object.keys(byCat).forEach(function (c) {
+    if (c === 'motherboard') return;
+    byCat[c].forEach(function (id, idx) {
+      var r = E.setBuildPart(job.id, c, id, idx);
+      if (!r.ok) assert(false, 'witness placement failed (' + c + '[' + idx + ']): ' + r.error);
+    });
+  });
+  var v = E.validateBuild(job.id);
+  if (!assert(v.valid && v.meetsTarget,
+              'witness list did not validate: ' + (v.problems || []).join('; ')))
+    return 'impossible';
+  if (v.partsCost > E.getState().cash - 200) return 'wait';
+  var r = E.commitBuild(job.id);
+  return r.ok ? 'committed' : 'wait';
+}
+
 function tryConfigureBuild(E, job) {
   // Returns 'committed' | 'wait' | 'impossible'
   var s = E.getState();
   var mp = job.build.minPerf || {};
   var minStyle = job.build.minStyle || 0;
-  var mobos = (E.getBuildCatalog(job.id).categories.motherboard || []).slice(0, 8);
+  // §12.2 multi-part requests go straight to the engine witness
+  if (job.build.wantsMultiGpu || job.build.ramHeavy) return applyWitnessBuild(E, job);
+  var mobos = catOptions(E.getBuildCatalog(job.id), 'motherboard').slice(0, 8);
   var sawViable = false;
   for (var mi = 0; mi < mobos.length; mi++) {
     E.setBuildPart(job.id, 'motherboard', mobos[mi].partId);
-    var cat = E.getBuildCatalog(job.id).categories;
+    var catalog = E.getBuildCatalog(job.id);
     function cheapest(category, pred, byStyle) {
-      var list = (cat[category] || []).filter(function (c) {
+      var list = catOptions(catalog, category).filter(function (c) {
         return c.compatible && (!pred || pred(c));
       });
       if (!list.length) return null;
@@ -154,7 +202,7 @@ function tryConfigureBuild(E, job) {
       storage: cheapest('storage', function (c) { return (c.perf.storageGB || 0) >= (mp.storageGB || 0); }),
       gpu: cheapest('gpu', function (c) { return (c.perf.gpu || 0) >= (mp.gpu || 0); }),
       psu: (function () { // biggest wattage to be safe
-        var list = (cat.psu || []).filter(function (c) { return c.compatible; });
+        var list = catOptions(catalog, 'psu').filter(function (c) { return c.compatible; });
         list.sort(function (a, b) { return b.watts - a.watts; });
         return list[0] || null;
       })(),
@@ -174,6 +222,12 @@ function tryConfigureBuild(E, job) {
     var r = E.commitBuild(job.id);
     if (r.ok) return 'committed';
     return 'wait'; // hours/cash hiccup — retry tomorrow
+  }
+  // The engine guaranteed feasibility (§11.1) — lean on its witness if the
+  // greedy single-part pass came up short (multi-stick RAM budgets etc.).
+  if (!sawViable) {
+    var wres = applyWitnessBuild(E, job);
+    if (wres !== 'impossible') return wres;
   }
   return sawViable ? 'wait' : 'impossible';
 }
@@ -249,6 +303,24 @@ function botDay(E, mem) {
       globals.osRequestKinds[kind] = (globals.osRequestKinds[kind] || 0) + 1;
       if (!o.osRequest && !globals.badStepsOffer)
         globals.badStepsOffer = o.title + ' missing osRequest label';
+    }
+    // §12.2 sweep: multi-part build request flavors
+    if (o.build && o.build.wantsMultiGpu) globals.multiGpuOffers++;
+    if (o.build && o.build.ramHeavy) globals.ramHeavyOffers++;
+    // §12.4 sweep: device jobs expose the UI contract & honor era gates
+    if (o.type === 'device_repair') {
+      globals.deviceOffers++;
+      var yNow = E.dateInfo(E.getState().day).y;
+      if (!globals.deviceOfferBad) {
+        if (!o.device || !o.device.name || !o.device.kind || !o.device.year)
+          globals.deviceOfferBad = o.title + ': job.device incomplete';
+        else if (o.device.kind === 'apple' && yNow < 1985)
+          globals.deviceOfferBad = o.title + ': apple job before 1985';
+        else if (o.device.kind !== 'apple' && yNow < 2009)
+          globals.deviceOfferBad = o.title + ': mobile job before 2009';
+        else if (o.pay <= 0 || !Number.isInteger(o.pay))
+          globals.deviceOfferBad = o.title + ': bad pay ' + o.pay;
+      }
     }
     if (o.crt && !ownsCrtKit) { E.declineOffer(o.id); continue; }
     // Benchmark-era bot skips sub-$20 cleaning gigs — bench time goes to repairs
@@ -375,6 +447,7 @@ function botDay(E, mem) {
       }
       var w = tracked(E, mem, isFlip, function () { return E.workJob(job.id); });
       if (w.ok && (w.hoursSpent > 0 || w.completed)) progress = true;
+      if (w.ok && w.completed && job.type === 'device_repair') globals.deviceRepairsDone++;
       if (w.ok && w.completed && w.result && w.result.tasteMatched) {
         globals.tasteBonusJobs++;
         if (!globals.tasteSampleNotes) globals.tasteSampleNotes = (w.result.notes || []).join(' | ');
@@ -1305,10 +1378,347 @@ function staffXpScenario() {
 }
 
 // ------------------------------------------------------------------
-// Scenario (§10.8/§11.7): v1, v2 AND v3 fixtures migrate to v4 and play
+// Scenario (§12.1): slot capacity limits with readable problems
+// ------------------------------------------------------------------
+function capacityScenario() {
+  console.log('--- Slot capacity (§12.1) ---');
+  var boards = DATA.PARTS.filter(function (p) {
+    return p.category === 'motherboard' && p.slots &&
+           isFinite(p.slots.ram) && p.slots.ram >= 1 && p.slots.ram <= 8;
+  });
+  var found = null;
+  for (var i = 0; i < boards.length && !found; i++) {
+    var b = boards[i];
+    var stick = DATA.PARTS.filter(function (p) {
+      return p.category === 'ram' && Engine.Compat.fits(p, b).fits;
+    })[0];
+    if (stick) found = { board: b, stick: stick };
+  }
+  if (!found) { console.log('  (no slotted board + fitting stick in data — skipped)'); return; }
+  var cap = found.board.slots.ram, n = cap + 1;
+  var ids = [found.board.id];
+  for (var k = 0; k < n; k++) ids.push(found.stick.id);
+  var v = Engine.Compat.validatePartList(ids, { requireFull: false });
+  var reRam = new RegExp('Board has ' + cap + ' RAM slots — build uses ' + n);
+  assert(!v.valid && v.problems.some(function (p) { return reRam.test(p); }),
+         'capacity: expected RAM overflow problem, got: ' + v.problems.join('; '));
+  assert((v.problemsInfo || []).some(function (pi) {
+    return pi.category === 'ram' && reRam.test(pi.text);
+  }), 'capacity: problemsInfo should map the RAM overflow to category "ram"');
+  // GPU overflow (finite-slot board; a 0-slot i810-class board counts too)
+  var gpuHit = null;
+  var gBoards = DATA.PARTS.filter(function (p) {
+    return p.category === 'motherboard' && p.slots &&
+           isFinite(p.slots.gpu) && p.slots.gpu <= 2;
+  });
+  for (var gi = 0; gi < gBoards.length && !gpuHit; gi++) {
+    var gb = gBoards[gi];
+    var card = DATA.PARTS.filter(function (p) {
+      return p.category === 'gpu' && Engine.Compat.fits(p, gb).fits;
+    })[0];
+    if (card) gpuHit = { board: gb, card: card };
+  }
+  if (gpuHit) {
+    var gcap = gpuHit.board.slots.gpu, gn = gcap + 1;
+    var gids = [gpuHit.board.id];
+    for (var gk = 0; gk < gn; gk++) gids.push(gpuHit.card.id);
+    var gv = Engine.Compat.validatePartList(gids, { requireFull: false });
+    var reGpu = new RegExp('Board has ' + gcap + ' GPU slots — build uses ' + gn);
+    assert(gv.problems.some(function (p) { return reGpu.test(p); }),
+           'capacity: expected GPU overflow problem, got: ' + gv.problems.join('; '));
+  }
+  console.log('  RAM cap ' + cap + ' enforced ("' +
+              v.problems.filter(function (p) { return reRam.test(p); })[0] + '")' +
+              (gpuHit ? ', GPU cap ' + gpuHit.board.slots.gpu + ' enforced' : ''));
+}
+
+// ------------------------------------------------------------------
+// Scenario (§12.2): multi-GPU pairing rules & perf aggregation
+// ------------------------------------------------------------------
+function multiGpuRulesScenario() {
+  console.log('--- Multi-GPU rules (§12.2) ---');
+  var gpus = DATA.PARTS.filter(function (p) { return p.category === 'gpu'; });
+  var tagged = gpus.filter(function (p) { return p.sliTag; });
+  if (!tagged.length) { console.log('  (no sliTag cards in data — skipped)'); return; }
+  // (a) matched self-pair perf = first + factor x second
+  var card = tagged.filter(function (p) { return !p.addonOnly; })[0] || tagged[0];
+  var f = Engine.Compat.pairFactor(card.sliTag);
+  var eff = Engine.Compat.gpuEffective([card, card]);
+  var want = Engine.round2((card.perf.gpu || 0) * (1 + f));
+  assert(Math.abs(eff - want) < 0.01,
+         'pair perf: gpuEffective ' + eff + ' != ' + want + ' (' + card.sliTag + ')');
+  // (b) mismatched second card: validation problem + no perf stacking
+  var board = DATA.PARTS.filter(function (p) {
+    return p.category === 'motherboard' &&
+           (!p.slots || !isFinite(p.slots.gpu) || p.slots.gpu >= 2) &&
+           Engine.Compat.fits(card, p).fits;
+  })[0];
+  var other = gpus.filter(function (p) {
+    return !p.addonOnly && p.id !== card.id && p.sliTag !== card.sliTag &&
+           (!board || Engine.Compat.fits(p, board).fits);
+  })[0];
+  if (board && other && !card.addonOnly) {
+    var v = Engine.Compat.validatePartList([board.id, card.id, other.id],
+                                           { requireFull: false });
+    assert(v.problems.some(function (p) { return /isn't SLI\/CrossFire-compatible/.test(p); }),
+           'mismatch: expected pairing problem, got: ' + v.problems.join('; '));
+    var mp = Engine.Compat.machinePerf([board, card, other]);
+    var wantG = Math.max(card.perf.gpu || 0, other.perf.gpu || 0);
+    assert(Math.abs(mp.gpu - wantG) < 0.01,
+           'mismatch: second card must contribute nothing (' + mp.gpu + ' vs ' + wantG + ')');
+  }
+  // (c) Voodoo2 add-on rule + the historical 2D-card-plus-pair config
+  var addon = gpus.filter(function (p) { return p.addonOnly && p.sliTag; })[0];
+  if (addon) {
+    var vboard = DATA.PARTS.filter(function (p) {
+      return p.category === 'motherboard' && !p.integratedVideo &&
+             Engine.Compat.fits(addon, p).fits;
+    })[0];
+    if (vboard) {
+      var v2 = Engine.Compat.validatePartList([vboard.id, addon.id], { requireFull: false });
+      assert(v2.problems.some(function (p) { return /3D add-on/.test(p); }),
+             'voodoo: lone add-on card should demand a 2D companion, got: ' +
+             v2.problems.join('; '));
+      var twoD = gpus.filter(function (p) {
+        return !p.addonOnly && Engine.Compat.fits(p, vboard).fits;
+      })[0];
+      var vcap = vboard.slots && isFinite(vboard.slots.gpu) ?
+        vboard.slots.gpu : 99;
+      if (twoD && vcap >= 3) {
+        var v3 = Engine.Compat.validatePartList(
+          [vboard.id, twoD.id, addon.id, addon.id], { requireFull: false });
+        assert(!v3.problems.some(function (p) { return /3D add-on|SLI\/CrossFire|identical pair/.test(p); }),
+               'voodoo: 2D + matched pair should raise no GPU problems, got: ' +
+               v3.problems.join('; '));
+        var vf = Engine.Compat.pairFactor(addon.sliTag);
+        var mp2 = Engine.Compat.machinePerf([vboard, twoD, addon, addon]);
+        var wantV = Engine.round2(
+          Math.max((twoD.perf.gpu || 0), (addon.perf.gpu || 0) * (1 + vf)));
+        assert(Math.abs(mp2.gpu - wantV) < 0.01,
+               'voodoo: interleave perf ' + mp2.gpu + ' != ' + wantV);
+      }
+    }
+  }
+  console.log('  pair +' + Math.round(f * 100) + '% ok, mismatch problem ok' +
+              (addon ? ', Voodoo2 add-on rule ok' : ' (no add-on cards in data)'));
+}
+
+// ------------------------------------------------------------------
+// Scenario (§12.6): SLI build request generated & completed (2005-08);
+// Voodoo2-window request generated (1998-2000)
+// ------------------------------------------------------------------
+function eraLatestAtOrBefore(y) {
+  var best = null;
+  DATA.ERAS.forEach(function (e) {
+    if (e.startYear <= y && (!best || e.startYear > best.startYear)) best = e;
+  });
+  return best;
+}
+function pokeYear(iso) {
+  var s = Engine.getState();
+  s.day = Math.max(0, Engine.dayIndexOfISO(iso, s));
+  s.cash = 60000;
+  s.customBuildsUnlocked = true;
+  if (s.shop.equipment.indexOf('build-bench') === -1) s.shop.equipment.push('build-bench');
+  return s;
+}
+function generateUntil(s, pred, tries) {
+  var found = null, guard = 0;
+  while (!found && guard++ < (tries || 400)) {
+    s.jobs.offers.length = 0;
+    Engine.Jobs.generateOffers(s, null);
+    found = s.jobs.offers.filter(pred)[0] || null;
+  }
+  return found;
+}
+function workToDone(E, job) {
+  var guard = 0;
+  while (job.status === 'active' && guard++ < 300) {
+    var w = E.workJob(job.id);
+    if (w.ok && w.completed) break;
+    if (!w.ok) {
+      if (/waiting/i.test(w.error || '')) {
+        var wh = E.waitHour();
+        if (!wh.ok) E.endDay();
+      } else if (/exhaust|time/i.test(w.error || '')) {
+        E.endDay();
+      } else {
+        return w.error || 'unknown workJob error';
+      }
+    }
+  }
+  return null;
+}
+function sliBuildScenario() {
+  console.log('--- SLI/CrossFire build requests (§12.2) ---');
+  var E = Engine;
+  var era = eraLatestAtOrBefore(2005);
+  if (!era) { console.log('  (no era at/before 2005 — skipped)'); return; }
+  var r = E.newGame({ eraId: era.id, shopName: 'SLI Test', seed: 8181 });
+  if (!assert(r.ok, 'sli: newGame failed')) return;
+  var s = pokeYear('2006-06-15');
+  var haveSli = E.Jobs.purchasableByCategory(s, 'gpu').some(function (g) {
+    return g.sliTag && !g.addonOnly;
+  });
+  if (!haveSli) { console.log('  (no purchasable SLI cards at 2006 — skipped)'); return; }
+  var offer = generateUntil(s, function (o) { return o.build && o.build.wantsMultiGpu; });
+  if (!assert(offer, 'sli: no multi-GPU build request generated in 400 nights')) return;
+  assert(/SLI|CrossFire/i.test(offer.title),
+         'sli: title should read like a pair request: ' + offer.title);
+  var acc = E.acceptOffer(offer.id);
+  if (!assert(acc.ok, 'sli: accept failed: ' + (acc.error || ''))) return;
+  var job = E.getActiveJobs().filter(function (j) { return j.id === offer.id; })[0];
+  var cres = applyWitnessBuild(E, job);
+  if (!assert(cres === 'committed', 'sli: witness commit failed (' + cres + ')')) return;
+  var gpuSel = (job.build.parts.gpu || []).filter(function (id) { return id != null; });
+  assert(gpuSel.length >= 2, 'sli: committed build should hold 2+ GPUs, has ' + gpuSel.length);
+  var tags = gpuSel.map(function (id) { return (E.partById(id) || {}).sliTag; });
+  assert(tags[0] && tags.every(function (t) { return t === tags[0]; }),
+         'sli: the pair must share an sliTag: ' + JSON.stringify(tags));
+  var werr = workToDone(E, job);
+  assert(!werr, 'sli: work loop broke: ' + werr);
+  assert(job.status === 'done' && job.result && job.result.payout > 0,
+         'sli: multi-GPU build not completed/paid');
+  console.log('  completed "' + offer.title + '" with a matched ' + tags[0] +
+              ' pair, payout ' + Engine.fmtMoney(job.result ? job.result.payout : 0));
+  // Voodoo2 window (1998-2000): request generated, witness carries pair + 2D
+  var vEra = eraLatestAtOrBefore(1998);
+  if (!vEra) return;
+  var r2 = E.newGame({ eraId: vEra.id, shopName: 'V2 Test', seed: 8282 });
+  if (!r2.ok) return;
+  var s2 = pokeYear('1998-09-01');
+  var haveV2 = E.Jobs.purchasableByCategory(s2, 'gpu').some(function (g) {
+    return g.sliTag && g.addonOnly;
+  });
+  if (!haveV2) { console.log('  (no purchasable Voodoo2-class cards at 1998 — skipped)'); return; }
+  var v2offer = generateUntil(s2, function (o) {
+    return o.build && o.build.wantsMultiGpu && /voodoo/i.test(o.build.sliTag || '');
+  });
+  if (!assert(v2offer, 'voodoo: no Voodoo2 SLI request generated in 400 nights')) return;
+  var wtn = E.Jobs.witnessBuild(s2, v2offer.build);
+  if (assert(wtn, 'voodoo: request must be witness-satisfiable')) {
+    var wparts = wtn.partIds.map(function (id) { return E.partById(id); });
+    var waddons = wparts.filter(function (p) { return p && p.addonOnly; });
+    var w2d = wparts.filter(function (p) { return p && p.category === 'gpu' && !p.addonOnly; });
+    assert(waddons.length >= 2, 'voodoo: witness should pair 2 add-on cards');
+    var wboard = wparts.filter(function (p) { return p && p.category === 'motherboard'; })[0];
+    assert(w2d.length >= 1 || (wboard && wboard.integratedVideo),
+           'voodoo: witness needs a 2D source beside the pair');
+    console.log('  Voodoo2 request "' + v2offer.title + '" witnessed: pair + 2D companion');
+  }
+}
+
+// ------------------------------------------------------------------
+// Scenario (§12.6): RAM-heavy contract build completed with 3+ sticks
+// ------------------------------------------------------------------
+function ramHeavyScenario() {
+  console.log('--- RAM-heavy contract build (§12.2) ---');
+  var E = Engine;
+  var era = eraLatestAtOrBefore(2005);
+  if (!era) { console.log('  (no era at/before 2005 — skipped)'); return; }
+  var r = E.newGame({ eraId: era.id, shopName: 'RAM Test', seed: 8383 });
+  if (!assert(r.ok, 'ramheavy: newGame failed')) return;
+  var s = pokeYear('2006-06-15');
+  var haveBigBoard = E.Jobs.purchasableByCategory(s, 'motherboard').some(function (b) {
+    return b.slots && isFinite(b.slots.ram) && b.slots.ram >= 4;
+  });
+  if (!haveBigBoard) { console.log('  (no purchasable >=4-DIMM board at 2006 — skipped)'); return; }
+  var offer = generateUntil(s, function (o) { return o.build && o.build.ramHeavy; });
+  if (!assert(offer, 'ramheavy: no RAM-maxed build request generated in 400 nights')) return;
+  var acc = E.acceptOffer(offer.id);
+  if (!assert(acc.ok, 'ramheavy: accept failed: ' + (acc.error || ''))) return;
+  var job = E.getActiveJobs().filter(function (j) { return j.id === offer.id; })[0];
+  var cres = applyWitnessBuild(E, job);
+  if (!assert(cres === 'committed', 'ramheavy: witness commit failed (' + cres + ')')) return;
+  var ramSel = (job.build.parts.ram || []).filter(function (id) { return id != null; });
+  assert(ramSel.length >= 3,
+         'ramheavy: needs 3+ sticks by design, committed ' + ramSel.length);
+  var werr = workToDone(E, job);
+  assert(!werr, 'ramheavy: work loop broke: ' + werr);
+  assert(job.status === 'done' && job.result && job.result.payout > 0,
+         'ramheavy: build not completed/paid');
+  console.log('  completed "' + offer.title + '" with ' + ramSel.length +
+              ' sticks, payout ' + Engine.fmtMoney(job.result ? job.result.payout : 0));
+}
+
+// ------------------------------------------------------------------
+// Scenario (§12.4): device repair completes for apple (1990s) and mobile (2013+)
+// ------------------------------------------------------------------
+function deviceScenario() {
+  console.log('--- Device repair (§12.4) ---');
+  var E = Engine;
+  function runOne(label, eraYearCap, pokeIso, wantKinds, gate) {
+    var era = eraLatestAtOrBefore(eraYearCap);
+    if (!era) { console.log('  (' + label + ': no suitable era — skipped)'); return; }
+    var r = E.newGame({ eraId: era.id, shopName: 'Device Test', seed: 9700 + eraYearCap });
+    if (!assert(r.ok, label + ': newGame failed')) return;
+    var s = E.getState();
+    if (pokeIso) s.day = Math.max(0, Engine.dayIndexOfISO(pokeIso, s));
+    s.cash = 20000;
+    if (!gate(s)) { console.log('  (' + label + ': device tables absent/inactive — skipped)'); return; }
+    var offer = generateUntil(s, function (o) {
+      return o.type === 'device_repair' && wantKinds.indexOf(o.subtype) !== -1;
+    });
+    if (!assert(offer, label + ': no device_repair offer generated in 400 nights')) return;
+    assert(offer.device && offer.device.name && offer.device.kind && offer.device.year,
+           label + ': job.device {name, kind, year} incomplete: ' + JSON.stringify(offer.device));
+    assert((offer.steps.length + (offer.pendingSteps || []).length) >= 3,
+           label + ': device job needs a checklist');
+    assert(offer.needs.length === 0 && !offer.needsDiagnosis,
+           label + ': device jobs must skip catalog parts & diagnosis');
+    var acc = E.acceptOffer(offer.id);
+    if (!assert(acc.ok, label + ': accept failed: ' + (acc.error || ''))) return;
+    var job = E.getActiveJobs().filter(function (j) { return j.id === offer.id; })[0];
+    var partsBefore = s.ledger.lifetime.partsCost;
+    var werr = workToDone(E, job);
+    assert(!werr, label + ': work loop broke: ' + werr);
+    if (!assert(job.status === 'done' && job.result, label + ': job not completed')) return;
+    assert(job.result.payout > 0, label + ': payout should be positive');
+    if (job.devicePartsCost > 0) {
+      var spent = Engine.round2(s.ledger.lifetime.partsCost - partsBefore);
+      assert(spent === job.devicePartsCost,
+             label + ': parts cost line ' + spent + ' != ' + job.devicePartsCost);
+      assert((job.result.notes || []).some(function (nt) { return /Parts & materials/.test(nt); }),
+             label + ': completion notes should carry the parts cost line');
+    }
+    console.log('  ' + label + ': "' + job.title + '" done, payout ' +
+                Engine.fmtMoney(job.result.payout) + ', parts ' +
+                Engine.fmtMoney(job.devicePartsCost));
+  }
+  runOne('apple-90s', 1999, null, ['apple'], function (s) {
+    return (DATA.APPLE_MACHINES || []).length > 0;
+  });
+  runOne('mobile-2010s', 2015, '2015-06-15', ['smartphone', 'tablet'], function (s) {
+    return (DATA.MOBILE_DEVICES || []).length > 0 && Engine.currentYear(s) >= 2009;
+  });
+}
+
+// ------------------------------------------------------------------
+// Scenario (§12.4): Devices wiki shape
+// ------------------------------------------------------------------
+function deviceWikiScenario() {
+  console.log('--- Device wiki (§12.4) ---');
+  var wiki = Engine.getDeviceWiki();
+  var expected = (DATA.APPLE_MACHINES || []).length + (DATA.MOBILE_DEVICES || []).length;
+  assert(wiki.length === expected,
+         'device wiki: ' + wiki.length + ' entries, expected ' + expected);
+  if (!expected) { console.log('  (no device tables — empty wiki ok)'); return; }
+  var bad = wiki.filter(function (w) {
+    return !w.id || !w.name || ['apple', 'smartphone', 'tablet'].indexOf(w.kind) === -1 ||
+           !w.introYear || typeof w.desc !== 'string' || !w.repairNote;
+  });
+  assert(bad.length === 0, 'device wiki: malformed entries: ' +
+         bad.slice(0, 3).map(function (w) { return w.id; }).join(','));
+  var kinds = {};
+  wiki.forEach(function (w) { kinds[w.kind] = true; });
+  console.log('  ' + wiki.length + ' entries (' + Object.keys(kinds).join('/') + '), shape ok');
+}
+
+// ------------------------------------------------------------------
+// Scenario (§10.8/§11.7/§12.6): v1-v4 fixtures migrate to v5 and play
 // ------------------------------------------------------------------
 function migrationScenario(era) {
-  console.log('--- Save migration (v1/v2/v3 -> v4) ---');
+  console.log('--- Save migration (v1/v2/v3/v4 -> v5) ---');
   var E = Engine;
   var r = E.newGame({ eraId: era.id, shopName: 'Migrate Test', seed: 73737 });
   if (!assert(r.ok, 'migration: newGame failed')) return;
@@ -1317,17 +1727,33 @@ function migrationScenario(era) {
   E.getState().cash = 50000;
   var listing = E.getAsIsMarket()[0];
   if (listing) E.buyAsIsMachine(listing.id);
-  var v4snapshot = E.exportSave();
+  var v5snapshot = E.exportSave();
 
   function downgrade(version) {
-    var obj = JSON.parse(v4snapshot);
+    var obj = JSON.parse(v5snapshot);
     obj.version = version;
-    delete obj.levelUpsToday;
-    (obj.staff || []).concat(obj.staffMarket || []).forEach(function (m) {
-      delete m.level; delete m.xp; delete m.title;
-    });
+    function stripV5(job) {   // v4 fixtures: flat build parts, no device fields
+      if (!job) return;
+      delete job.device; delete job.deviceModern;
+      delete job.devicePartsCost; delete job.devicePayBase;
+      if (job.build && job.build.parts && !Array.isArray(job.build.parts)) {
+        var flat = [];
+        Object.keys(job.build.parts).forEach(function (c) {
+          (job.build.parts[c] || []).forEach(function (id) {
+            if (id != null) flat.push(id);
+          });
+        });
+        job.build.parts = flat;
+      }
+      if (job.build) {
+        delete job.build.wantsMultiGpu; delete job.build.sliTag;
+        delete job.build.multiGpuLabel; delete job.build.ramHeavy;
+      }
+    }
     function strip(job) {
       if (!job) return;
+      stripV5(job);
+      if (version >= 4) return;
       delete job.pendingSteps; delete job.osRequest;
       (job.steps || []).forEach(function (st) {
         delete st.kind; delete st.running; delete st.diag;
@@ -1348,6 +1774,19 @@ function migrationScenario(era) {
         if (job.machine) { delete job.machine.specSummary; delete job.machine.faultRepaired; }
       }
     }
+    // v4-and-earlier saves never carried device jobs
+    obj.jobs.offers = (obj.jobs.offers || []).filter(function (j) {
+      return j.type !== 'device_repair';
+    });
+    obj.jobs.active = (obj.jobs.active || []).filter(function (j) {
+      return j.type !== 'device_repair';
+    });
+    if (version < 4) {
+      delete obj.levelUpsToday;
+      (obj.staff || []).concat(obj.staffMarket || []).forEach(function (m) {
+        delete m.level; delete m.xp; delete m.title;
+      });
+    }
     (obj.jobs.offers || []).forEach(strip);
     (obj.jobs.active || []).forEach(strip);
     if (version <= 2) {
@@ -1358,11 +1797,11 @@ function migrationScenario(era) {
     return JSON.stringify(obj);
   }
 
-  [1, 2, 3].forEach(function (ver) {
+  [1, 2, 3, 4].forEach(function (ver) {
     var imp = E.importSave(downgrade(ver));
     if (!assert(imp.ok, 'migration: v' + ver + ' fixture rejected: ' + (imp.error || ''))) return;
     var s = E.getState();
-    assert(s.version === 4, 'migration: v' + ver + ' should land on version 4');
+    assert(s.version === 5, 'migration: v' + ver + ' should land on version 5');
     assert(Array.isArray(s.staff) && Array.isArray(s.staffMarket) &&
            Array.isArray(s.levelUpsToday),
            'migration: v' + ver + ' missing staff/levelUps fields');
@@ -1376,6 +1815,13 @@ function migrationScenario(era) {
         return (st.kind === 'labor' || st.kind === 'wait') && st.running === false;
       });
     }), 'migration: v' + ver + ' steps missing kind/running/pendingSteps');
+    // §12.6: single build selections came back as per-category slot arrays
+    assert(allJobs.every(function (j) {
+      return !j.build || (j.build.parts && !Array.isArray(j.build.parts) &&
+                          Object.keys(j.build.parts).every(function (c) {
+                            return Array.isArray(j.build.parts[c]);
+                          }));
+    }), 'migration: v' + ver + ' build.parts not wrapped into slot arrays');
     var day = E.endDay();
     assert(day.ok, 'migration: v' + ver + ' endDay failed: ' + (day.error || ''));
     // Play a job end-to-end on the migrated save
@@ -1388,18 +1834,19 @@ function migrationScenario(era) {
     }
     console.log('  v' + ver + ' fixture migrated & playable');
   });
-  // Idempotence: v4 round-trips byte-identically
-  E.importSave(v4snapshot);
-  var v4b = E.exportSave();
-  E.importSave(v4b);
-  assert(E.exportSave() === v4b, 'migration: v4 re-import not byte-identical');
+  // Idempotence: v5 round-trips byte-identically
+  E.importSave(v5snapshot);
+  var v5b = E.exportSave();
+  E.importSave(v5b);
+  assert(E.exportSave() === v5b, 'migration: v5 re-import not byte-identical');
 }
 
 // ------------------------------------------------------------------
 // Main
 // ------------------------------------------------------------------
 console.log('sim-test using: ' + DATA_SOURCE + ' | engine v' + Engine.VERSION);
-assert(Engine.VERSION === '0.4', 'Engine.VERSION must be "0.4"');
+assert(Engine.VERSION === '0.4b', 'Engine.VERSION must be "0.4b"');
+assert(parseFloat(Engine.VERSION) >= 0.4, 'Engine.VERSION must stay parseFloat >= 0.4');
 var lines = [];
 try {
   DATA.ERAS.forEach(function (era, idx) {
@@ -1461,6 +1908,20 @@ assert(globals.minPerfRejected,
 if (globals.minPerfRejected)
   console.log('minPerf rejection sample: "' + globals.minPerfRejectMsg + '"');
 
+// §12.4: device offers honored the UI contract & era gates in every era run
+assert(globals.deviceOfferBad == null, 'device offer contract: ' + globals.deviceOfferBad);
+if ((DATA.APPLE_MACHINES || []).length || (DATA.MOBILE_DEVICES || []).length) {
+  assert(globals.deviceOffers >= 1,
+         'device tables present but no device_repair offer appeared in any era run');
+  if (REAL()) {
+    assert(globals.deviceRepairsDone >= 1,
+           'no device_repair job completed across the real-data era runs');
+  }
+  console.log('device offers: ' + globals.deviceOffers + ' seen, ' +
+              globals.deviceRepairsDone + ' completed in-era; multi-GPU asks: ' +
+              globals.multiGpuOffers + ', RAM-heavy asks: ' + globals.ramHeavyOffers);
+}
+
 compatScenario();
 var era1983 = DATA.ERAS.filter(function (e) { return e.startYear === 1983; })[0];
 if (era1983) unlockScenario(era1983);
@@ -1477,6 +1938,12 @@ diagMergeScenario(DATA.ERAS[0]);
 osRequestScenario(DATA.ERAS[DATA.ERAS.length - 1]);
 waitScenario(DATA.ERAS[0]);
 staffXpScenario();
+capacityScenario();
+multiGpuRulesScenario();
+sliBuildScenario();
+ramHeavyScenario();
+deviceScenario();
+deviceWikiScenario();
 migrationScenario(DATA.ERAS[DATA.ERAS.length - 1]);
 
 finish();

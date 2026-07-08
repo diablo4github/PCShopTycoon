@@ -34,7 +34,13 @@
   function workbenchTarget() { return firstJobCard() || byId('tab-workbench'); }
   function needsTarget() { return q('#tab-workbench .needs') || firstJobCard() || byId('tab-workbench'); }
   function workBtnTarget() {
-    return q('#tab-workbench [data-action="workall"]') || q('#tab-workbench [data-action="work1"]') ||
+    /* §14.8 — the graduated work controls replaced Work 1h/Work All;
+     * "Finish Job" is the closest equivalent to spotlight, then fall back
+     * to any of the four, then the card/tab itself. */
+    return q('#tab-workbench [data-action="work-job"]') ||
+      q('#tab-workbench [data-action="work-hour"]') ||
+      q('#tab-workbench [data-action="work-step"]') ||
+      q('#tab-workbench [data-action="work-tinker"]') ||
       firstJobCard() || byId('tab-workbench');
   }
 
@@ -96,9 +102,9 @@
     {
       id: 'finish', tab: 'workbench', target: workBtnTarget,
       title: 'Doing the work',
-      body: 'Spend hours with Work 1h or Work All. Standard pace is the safe default — Quick trades hours ' +
-        'for a much higher chance the customer calls back unhappy later; Meticulous costs more time but ' +
-        'polishes your reputation.',
+      body: 'Spend hours with Tinker, Finish Step, Work 1 Hour, or Finish Job — pick whatever chunk of time ' +
+        'fits. Standard pace is the safe default — Quick trades hours for a much higher chance the customer ' +
+        'calls back unhappy later; Meticulous costs more time but polishes your reputation.',
       advanceOn: 'work'
     },
     {
@@ -332,7 +338,7 @@
         var t = e.target;
         if (!t || !t.closest) return;
         if (t.closest('[data-action="accept"]')) onAction('accept');
-        else if (t.closest('[data-action="workall"], [data-action="work1"]')) onAction('work');
+        else if (t.closest('[data-action="work-tinker"], [data-action="work-step"], [data-action="work-hour"], [data-action="work-job"]')) onAction('work');
       });
     }
 

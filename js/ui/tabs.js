@@ -32,6 +32,14 @@
     try { return Engine.getState(); } catch (e) { return null; }
   }
   function emptyBox(msg) { return '<div class="empty">' + esc(msg) + '</div>'; }
+  /** §14.8 — hours now land on a 0.1h grid from the engine; format to a
+   * clean 1 decimal (never a floating-point artifact like 1.7999999999998),
+   * dropping a trailing ".0" for whole hours. Guards NaN/Infinity too. */
+  function fmtHours(h) {
+    var n = Number(h);
+    if (!isFinite(n)) return '0';
+    return n.toFixed(1).replace(/\.0$/, '');
+  }
 
   var CATEGORIES = ['cpu', 'motherboard', 'ram', 'storage', 'gpu', 'psu', 'case', 'cooling', 'os', 'peripheral'];
   var CAT_LABELS = {
@@ -281,11 +289,18 @@
         }
         break;
       }
-      case 'work1':
-        workAndReport(jobId, 1);
+      /* §14.8 — graduated work controls */
+      case 'work-tinker':
+        workGraduated(jobId, 0.1);
         break;
-      case 'workall':
-        workAndReport(jobId, null);
+      case 'work-step':
+        workGraduated(jobId, 'step');
+        break;
+      case 'work-hour':
+        workGraduated(jobId, 1);
+        break;
+      case 'work-job':
+        workGraduated(jobId, 'job');
         break;
       case 'abandon':
         UI.confirm(
@@ -556,10 +571,10 @@
    * Shared action helpers
    * ------------------------------------------------------------------ */
 
-  function workAndReport(jobId, hours) {
-    var r = UI.act(function () {
-      return (hours === null || hours === undefined) ? Engine.workJob(jobId) : Engine.workJob(jobId, hours);
-    });
+  /** Shared post-work-call reporting: the "assign a part first" nudge plus
+   * the completion/progress toast. Used by every graduated work control
+   * (§14.8 Tinker / Finish Step / Work 1 Hour / Finish Job). */
+  function reportWorkResult(jobId, r) {
     /* §10.3 — engine blocks install steps whose need is unassigned; lead
      * the player straight to the picker. */
     if (r && r.ok === false && /assign/i.test(r.error || '')) {
@@ -580,9 +595,58 @@
         UI.toast(msg, 'success', 6500);
         if (UI.audio && UI.audio.sfx && !res.payout) UI.audio.sfx('complete');
       } else if (r.hoursSpent) {
-        UI.toast('Worked ' + r.hoursSpent + 'h', 'info', 1600);
+        UI.toast('Worked ' + fmtHours(r.hoursSpent) + 'h', 'info', 1600);
       }
     }
+  }
+
+  function workAndReport(jobId, hours) {
+    var r = UI.act(function () {
+      return (hours === null || hours === undefined) ? Engine.workJob(jobId) : Engine.workJob(jobId, hours);
+    });
+    reportWorkResult(jobId, r);
+  }
+
+  /** §14.8 — graduated work controls (Tinker 6min / Finish Step / Work 1
+   * Hour / Finish Job). Numeric modes are always supported. String modes
+   * ("step"/"job") ask the engine to work exactly the current step, or the
+   * whole remaining job; an engine that does not understand them yet is
+   * feature-detected (the call comes back {ok:false}) and falls back to an
+   * equivalent numeric call computed here, so the button does the right
+   * thing either way. */
+  function workGraduated(jobId, mode) {
+    if (typeof mode === 'number') { workAndReport(jobId, mode); return; }
+
+    var before = null;
+    if (UI.engineReady()) {
+      try {
+        var st0 = Engine.getState();
+        if (st0) before = { cash: Number(st0.cash) || 0, hours: Number(st0.hoursLeft) || 0 };
+      } catch (e) { /* ignore */ }
+    }
+    var r = UI.tryCall(function () { return Engine.workJob(jobId, mode); });
+    if (!r || r.ok === false) {
+      if (mode === 'step') {
+        var remH = currentStepRemainingHours(activeJobById(jobId));
+        r = UI.tryCall(function () {
+          return (remH === null) ? Engine.workJob(jobId) : Engine.workJob(jobId, remH);
+        });
+      } else { // 'job' — old engines' "no hours arg" already means "as much as useful & available"
+        r = UI.tryCall(function () { return Engine.workJob(jobId); });
+      }
+    }
+    if (r && r.ok !== false && before) {
+      try {
+        var st1 = Engine.getState();
+        if (st1) {
+          var dc = Math.round(((Number(st1.cash) || 0) - before.cash) * 100) / 100;
+          var dh = Math.round(((Number(st1.hoursLeft) || 0) - before.hours) * 100) / 100;
+          UI.feedback(dc, dh);
+        }
+      } catch (e2) { /* ignore */ }
+    }
+    UI.api(r); // toast on {ok:false}, refresh on success — mirrors UI.act's own tail
+    reportWorkResult(jobId, r);
   }
 
   function simulateDays(n) {
@@ -788,7 +852,7 @@
     /* progress (animated across renders, §9.9) */
     h += '<div class="bar-row"><span class="muted small">Progress</span>' +
       animatedBar('job-' + j.id, j.hoursDone, j.hoursRequired, 'wide') +
-      '<span class="num small">' + esc(j.hoursDone) + ' / ' + esc(j.hoursRequired) + 'h <span class="muted">(at standard pace)</span></span></div>';
+      '<span class="num small">' + fmtHours(j.hoursDone) + ' / ' + fmtHours(j.hoursRequired) + 'h <span class="muted">(at standard pace)</span></span></div>';
 
     /* §11.6 — running wait-step status line */
     var runWait = findRunningWaitStep(j);
@@ -898,10 +962,23 @@
     if (ready && isRefurb) {
       h += '<button type="button" class="btn btn-primary btn-sm" data-action="sell-refurb" data-job="' + j.id + '">Sell machine</button>';
     } else if (!diagFallback && !buildPending) {
-      h += '<button type="button" class="btn btn-sm" data-action="work1" data-job="' + j.id + '"' +
-        hourAttr + '>Work 1h</button>' +
-        '<button type="button" class="btn btn-primary btn-sm" data-action="workall" data-job="' + j.id + '"' +
-        hourAttr + '>Work All</button>';
+      /* §14.8 — four graduated work controls, smallest to largest. "Finish
+       * Step" needs a discrete current step to aim at; grey it out (with a
+       * reason) when there isn't one. */
+      var hasCurStep = currentStepIndex(j) >= 0;
+      var tinkerAttr = hourAttr || ' title="Work just 6 minutes — the smallest useful nudge"';
+      var stepAttr = !hasCurStep
+        ? ' disabled title="No discrete step in progress right now"'
+        : (hourAttr || ' title="Work until the current step is done"');
+      var jobAttr = hourAttr || ' title="Work until the job is finished (or you run out of useful hours)"';
+      h += '<button type="button" class="btn btn-sm" data-action="work-tinker" data-job="' + j.id + '"' +
+        tinkerAttr + '>Tinker (6 min)</button>' +
+        '<button type="button" class="btn btn-sm" data-action="work-step" data-job="' + j.id + '"' +
+        stepAttr + '>Finish Step</button>' +
+        '<button type="button" class="btn btn-sm" data-action="work-hour" data-job="' + j.id + '"' +
+        hourAttr + '>Work 1 Hour</button>' +
+        '<button type="button" class="btn btn-primary btn-sm" data-action="work-job" data-job="' + j.id + '"' +
+        jobAttr + '>Finish Job</button>';
     }
     if (isRefurb) {
       h += '<button type="button" class="btn btn-sm btn-ghost" data-action="appraise" data-job="' + j.id + '">Appraise</button>';
@@ -925,12 +1002,38 @@
    * ○ pending, ⏲ wait steps, plus the post-diagnosis placeholder row. */
   var WAIT_TIP = 'Timed step: 0.1h to set it running, then it advances alongside any other ' +
     'work (or Wait 1h) and finishes free overnight. Blocks only this job.';
-  function stepsHTML(j) {
-    var steps = j.steps;
+
+  /** Index of the job's current (first not-done) step, or -1 if there is
+   * none (no steps, or all done). Shared by the checklist render and the
+   * §14.8 "Finish Step" control (which needs to know if there is one). */
+  function currentStepIndex(j) {
+    var steps = j && j.steps;
+    if (!steps || !steps.length) return -1;
     var cur = (typeof j.stepIndex === 'number') ? j.stepIndex : -1;
-    if (cur < 0) {
+    if (cur < 0 || cur >= steps.length || steps[cur].done) {
+      cur = -1;
       for (var k = 0; k < steps.length; k++) { if (!steps[k].done) { cur = k; break; } }
     }
+    return cur;
+  }
+  /** §14.8 — remaining hours on the job's current step (rounded to the
+   * engine's 0.1h grid), or null when there is no discrete current step —
+   * the numeric-fallback amount for "Finish Step" on an engine that does
+   * not understand the "step" workJob mode yet. */
+  function currentStepRemainingHours(j) {
+    var idx = currentStepIndex(j);
+    if (idx < 0) return null;
+    var s = j.steps[idx];
+    var hrs = Number(s.hours);
+    if (!isFinite(hrs) || hrs <= 0) return null;
+    var p = Math.max(0, Math.min(1, Number(s.progress) || 0));
+    var rem = Math.round(hrs * (1 - p) * 10) / 10;
+    return rem > 0 ? rem : null;
+  }
+
+  function stepsHTML(j) {
+    var steps = j.steps;
+    var cur = currentStepIndex(j);
     var h = '<div class="steps">';
     steps.forEach(function (s, i) {
       var done = !!s.done;
@@ -949,7 +1052,7 @@
             (running ? '<span class="muted small"> runs while you work on other jobs</span>' : '')
           : '') +
         (pct > 0 ? UI.barHTML(pct, 100) + '<span class="st-pct">' + pct + '%</span>' : '') +
-        (s.hours !== undefined && s.hours !== null ? '<span class="st-hours">' + esc(s.hours) + 'h</span>' : '') +
+        (s.hours !== undefined && s.hours !== null ? '<span class="st-hours">' + fmtHours(s.hours) + 'h</span>' : '') +
         '</div>';
     });
     /* §11.3 — pre-diagnosis (new flow only): the checklist knows just the
@@ -994,6 +1097,17 @@
       if (r && r.ok !== false && r.name) return r.name;
     }
     return partId;
+  }
+
+  /** Look up a live active job by id (best effort — null if the engine
+   * isn't ready or the job isn't active). Shared by the schematic slot
+   * picker and the §14.8 graduated work controls' "Finish Step" fallback. */
+  function activeJobById(jobId) {
+    var found = null;
+    try {
+      (Engine.getActiveJobs() || []).forEach(function (x) { if (x.id === jobId) found = x; });
+    } catch (e) { /* ignore */ }
+    return found;
   }
 
   /* §10.3/§10.4/§14.2 — needs picker: assign/unassign, replaces + graded
@@ -1378,10 +1492,7 @@
     if (!bc || bc.ok === false || !bc.categories) { UI.toast('Build catalog unavailable', 'error'); return; }
     var info = catInfo(bc, cat);
     if (!info) return;
-    var j = null;
-    try {
-      (Engine.getActiveJobs() || []).forEach(function (x) { if (x.id === jobId) j = x; });
-    } catch (e) { /* ignore */ }
+    var j = activeJobById(jobId);
     var sel = j ? selectedSlots(j, bc, cat) : [];
     var current = sel[slotIndex] || null;
     var infoOk = has('getPartInfo');

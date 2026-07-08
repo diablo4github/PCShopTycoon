@@ -1276,3 +1276,101 @@ loaded after simulation.js and before api.js, and tell the overseer.
   renders; a certification can be started & studied with the hour delta; the tutorial
   runs, advances, and is skippable; the Help modal opens; no console errors across a
   multi-era playthrough.
+
+---
+
+# v0.5.1 Addendum — Playtest patch (bugfixes, quality vs. speed depth, balance)
+
+Patch release (bugfixes + balance + fleshing out underbuilt systems; NOT new features).
+Save stays **version 6**; `Engine.VERSION = "0.5.1"` (parseFloat 0.5 — UI gates unchanged).
+No save-shape changes; a v6 save from 0.5 must load in 0.5.1 unchanged. Sources: external
+tester transcript + accumulated subagent-flagged gaps. Quality bar stays external-test grade.
+
+## 14.1 Upgrade jobs must be genuine upgrades (ENGINE) — BUG
+Repro: an upgrade job asked for a 40 GB drive to replace the machine's existing 80 GB
+(jobs.js ~L876 derives the target from the YEAR BASELINE, ignoring the original part).
+Fix: for every upgrade need, the required minPerf on the upgraded metric MUST exceed the
+**original part's** metric. Set `minPerf[key] = smallest purchasable part strictly greater
+than original[key]` (prefer a meaningful step — ≥ ~1.25× original or the next distinct
+tier up, whichever is available), and guarantee satisfiability (a strictly-better
+purchasable part must exist that year, else pick a different upgrade category or skip the
+offer). Label states the real ask ("Storage upgrade — bigger than the current 80 GB → at
+least 120 GB"). `assignPart` already enforces minPerf; confirm it now rejects the
+downgrade with a readable message. Sim: assert NO generated upgrade job's minPerf ≤ its
+original part's metric across a 60-day run in every era.
+
+## 14.2 Quality-of-part matters: over- AND under-spec (ENGINE + UI)
+The overspend system is underbuilt and there is no penalty for installing a **weaker**
+part than the customer had. Build the symmetric "did the shop do right by the part?" check,
+applied at job completion for repair / upgrade / device_repair per-installed-part:
+- **Downgrade penalty (new):** if an installed replacement's class-defining metric is
+  materially below the original's (repair: < original; upgrade: already hard-gated by
+  14.1, but a below-target commit is blocked) → rating −0.4 and a grumble
+  ("The replacement drive is smaller than what they had"). Waived only for labor-only
+  faults and when the customer explicitly asked budget/for-parts.
+- **Overspend (flesh out):** keep the existing >max(1.75× original value, original+labor)
+  trigger but make it graded: 1.75–2.5× = mild (−0.25, "a bit pricey"), >2.5× = −0.5.
+  WAIVED when a taste matches the part (fanboys) or job type is enthusiast. Never both a
+  downgrade and overspend penalty on the same part.
+- Expose the outcome in `result.notes` and add `result.qualityFlags: [{partId, kind:
+  "downgrade"|"overspend-mild"|"overspend-hard"|"ideal", origPerfLabel, newPerfLabel}]`.
+- Config-tunable magnitudes in `Engine.CONFIG`. Sim: a downgrade commit on a repair
+  dings rating; a taste-matched pricey part does not; an ideal part is clean.
+- **UI**: in the needs/build pickers, every option shows a compact **vs-original** cue
+  (green ▲ better / grey = match / amber ▼ worse, with the metric, e.g. "120 GB ▲ vs 80 GB")
+  and the existing ⚠ overspend chip becomes graded (mild/hard) with a tooltip explaining
+  the fanboy/enthusiast waiver. Below-original options in an upgrade stay disabled
+  ("below the current part"). Keep it readable in all skins.
+
+## 14.3 Jobs vs. flipping — make both strategies viable (ENGINE)
+Testers (playing smarter than the greedy bot) find refurb flipping strictly dominant and
+jobs "there just to waste hours." Design intent (original brief): repairs/upgrades are the
+backbone; flips are *higher-variance*, capital- and time-intensive, NOT strictly higher-EV.
+Add structural friction to flipping and confirm a job strategy competes:
+- **Used-market saturation (new):** track recent refurb sales; each sale within a rolling
+  window (e.g. 21 days) depresses the next refurb sale price (diminishing returns —
+  flooding your local used market). Recovers over time. Tunable in CONFIG. This caps a
+  pure-flip strategy without nerfing the occasional flip.
+- Keep as-is supply scarcity (v0.4b) and capital lock-up. Optionally widen refurb outcome
+  variance so some flips underperform (real risk), keeping the *best* flips lucrative.
+- Re-check job attractiveness: ensure a parts-heavy repair (25% parts surcharge + labor)
+  and mid-game custom builds clear a satisfying margin; nudge job pay/labor only if needed.
+- **New sim metric:** run a flip-focused bot AND a job-focused bot for 60 days in 1983 and
+  1996; assert neither strategy's $/day exceeds the other by more than ~1.35×, and that
+  the flip strategy has visibly higher variance. Keep the 1983 band + offer-ramp + market-
+  liveness guards green. Report both bots' numbers.
+
+## 14.4 Custom-build hardening (ENGINE + overseer QA)
+The build system was rewritten in v0.4b and is barely playtested. ENGINE: add end-to-end
+sim coverage of the FULL build lifecycle in a post-1991 era — accept a build offer →
+getBuildCatalog → fill every required slot (incl. a multi-stick RAM and, in-window, an
+SLI/CF pair) → validateBuild clean → commitBuild → work steps to completion → payout —
+asserting: feasibility (witness), a delivered build's parts-margin lands in the intended
+15–30% band on budget, contract_build multi-unit completes, and validateBuild's problem
+strings are accurate for a deliberately broken build (wrong socket, over-slot RAM, PSU
+under-watt, missing OS). The overseer drives the same flow through the graphical UI in E2E.
+
+## 14.5 Shop discoverability & clarity (UI + DATA)
+A tester couldn't find the build-unlock equipment ("scroll down"). UI: give the Shop tab
+clear in-page structure — sub-nav or sticky section headers for **Shop Upgrade /
+Equipment / Training / Staff**, and on equipment that gates job types show an
+**"Unlocks: Custom Builds / Virus Removal / Data Recovery…"** badge so the payoff is
+obvious at a glance; surface the Assembly Bench (build unlock) prominently when custom
+builds are era-available but locked. DATA: audit `DATA.EQUIPMENT` names/descs so each
+clearly states what it unlocks or speeds (the Assembly Bench desc should say it unlocks
+custom-build jobs); keep names consistent with the tutorial/UI copy.
+
+## 14.6 Onboarding reassurance (UI)
+A real former repair student worried the game needs remembered expertise. Add one calm
+line early in the tutorial (and/or Help) clarifying that the shop runs on menu decisions —
+you pick parts and allocate hours; the step list shows the real-world procedure for color,
+but you never need hands-on repair knowledge to play well.
+
+## 14.7 Testing
+validate-data: equipment desc/unlock-clarity sanity; any DATA touched stays green.
+sim-test: 14.1 no-downgrade-upgrade assertion; 14.2 downgrade/overspend/taste-waiver
+outcomes; 14.3 flip-bot vs job-bot parity + variance metric + saturation effect; 14.4
+full build lifecycle + margin band + broken-build problem strings; all prior guards green.
+Overseer E2E: an upgrade offer shows a strictly-better requirement and blocks a worse part;
+vs-original cues render; a custom build can be completed through the schematic; Shop
+sections/unlock badges render; no console errors across a multi-era playthrough.

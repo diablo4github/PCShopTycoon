@@ -160,4 +160,101 @@
     }
   ];
 
+  // Apprentice covers device_repair too (v0.4b); Technician gains it below via jobTypes edit in place.
+  DATA.STAFF_ROLES[0].jobTypes.push("device_repair");
+  DATA.STAFF_ROLES[3].jobTypes.push("device_repair");
+
+  // §12.4 / research §3.2 — Apple machines (repair/upgrade-only devices; never in the PC build catalog).
+  DATA.APPLE_MACHINES = [
+    { id: "mac-128k", name: "Macintosh 128K", family: "APPLE-68K", introYear: 1984, eolYear: 1988, ramUpgradable: false, hddUpgradable: false, cpuUpgradable: false, basePriceRange: [70, 110], faultCategories: ["logic-board", "screen", "floppy"], desc: "The original Mac: 128K of RAM soldered to the board and no expansion at all. Repair means analog-board and floppy work behind a CRT that bites." },
+    { id: "mac-plus", name: "Macintosh Plus", family: "APPLE-68K", introYear: 1986, eolYear: 1996, ramUpgradable: true, hddUpgradable: true, cpuUpgradable: false, basePriceRange: [70, 110], faultCategories: ["ram", "logic-board", "screen", "floppy"], desc: "The first serviceable Mac: SIMM slots for RAM and a SCSI port for external drives. A shop staple for a full decade of upgrades." },
+    { id: "mac-se", name: "Macintosh SE", family: "APPLE-68K", introYear: 1987, eolYear: 1995, ramUpgradable: true, hddUpgradable: true, cpuUpgradable: false, basePriceRange: [80, 120], faultCategories: ["logic-board", "screen", "storage", "floppy"], desc: "The SE added an internal drive bay and a PDS slot — third-party accelerator cards became a genuine shop service." },
+    { id: "mac-ii", name: "Macintosh II", family: "APPLE-68K", introYear: 1987, eolYear: 1994, ramUpgradable: true, hddUpgradable: true, cpuUpgradable: false, basePriceRange: [100, 160], faultCategories: ["logic-board", "storage", "psu", "ram"], desc: "Apple's first truly expandable machine: six NuBus slots, color video, and a conventional case a technician could love." },
+    { id: "mac-classic", name: "Macintosh Classic", family: "APPLE-68K", introYear: 1990, eolYear: 1996, ramUpgradable: true, hddUpgradable: true, cpuUpgradable: false, basePriceRange: [60, 90], faultCategories: ["logic-board", "screen", "storage"], desc: "The $999 compact Mac that filled classrooms — and later, repair benches, as its analog boards aged badly." },
+    { id: "quadra-700", name: "Macintosh Quadra 700", family: "APPLE-68K", introYear: 1991, eolYear: 1997, ramUpgradable: true, hddUpgradable: true, cpuUpgradable: false, basePriceRange: [110, 170], faultCategories: ["logic-board", "storage", "ram", "psu"], desc: "The 68040 workstation Mac in a minitower — easy RAM and drive service, plus the leaking-capacitor curse of its era." },
+    { id: "powermac-6100", name: "Power Macintosh 6100/60", family: "APPLE-PPC", introYear: 1994, eolYear: 1999, ramUpgradable: true, hddUpgradable: true, cpuUpgradable: false, basePriceRange: [80, 120], faultCategories: ["logic-board", "storage", "ram"], desc: "The first PowerPC Mac in a pizza-box case — RAM and drive swaps are simple; everything else is cramped." },
+    { id: "powermac-7500", name: "Power Macintosh 7500", family: "APPLE-PPC", introYear: 1995, eolYear: 2001, ramUpgradable: true, hddUpgradable: true, cpuUpgradable: false, basePriceRange: [100, 150], faultCategories: ["logic-board", "storage", "ram", "psu"], desc: "The 7500's flip-open case and CPU daughtercard made it the hot-rodder's Mac — third-party G3 upgrades kept them alive for years." },
+    { id: "powermac-g3", name: "Power Macintosh G3 (Beige)", family: "APPLE-PPC", introYear: 1997, eolYear: 2003, ramUpgradable: true, hddUpgradable: true, cpuUpgradable: false, basePriceRange: [90, 140], faultCategories: ["logic-board", "storage", "ram", "psu"], desc: "The most tech-friendly Mac era begins: tool-less panels, PCI slots, easy bays. A pleasure ticket when one rolls in." },
+    { id: "imac-g3", name: "iMac G3", family: "APPLE-PPC", introYear: 1998, eolYear: 2004, ramUpgradable: true, hddUpgradable: true, cpuUpgradable: false, basePriceRange: [80, 130], faultCategories: ["screen", "storage", "ram", "logic-board"], desc: "Bondi blue and USB-only. RAM hides behind a bottom panel; deeper work means splitting a CRT all-in-one — charge accordingly." },
+    { id: "powermac-g4", name: "Power Mac G4", family: "APPLE-PPC", introYear: 1999, eolYear: 2006, ramUpgradable: true, hddUpgradable: true, cpuUpgradable: false, basePriceRange: [100, 160], faultCategories: ["logic-board", "storage", "ram", "psu"], desc: "The side-door G4 tower opens with one latch to a flat, fully exposed board — the gold standard of Mac serviceability." },
+    { id: "powermac-g5", name: "Power Mac G5", family: "APPLE-PPC", introYear: 2003, eolYear: 2009, ramUpgradable: true, hddUpgradable: true, cpuUpgradable: false, basePriceRange: [120, 190], faultCategories: ["logic-board", "storage", "ram", "psu", "cooling"], desc: "The aluminum G5 tower is gorgeous and heavy, with liquid-cooled models that leak with age — the last PowerPC hurrah." },
+    { id: "imac-2006", name: "iMac (Core Duo)", family: "APPLE-INTEL", introYear: 2006, eolYear: 2012, ramUpgradable: true, hddUpgradable: true, cpuUpgradable: false, basePriceRange: [90, 140], faultCategories: ["screen", "storage", "ram", "psu"], desc: "Intel iMacs keep a RAM door but bury the drive behind the display glass — suction cups and patience required." },
+    { id: "macbook-white", name: "MacBook (White)", family: "APPLE-INTEL", introYear: 2006, eolYear: 2012, ramUpgradable: true, hddUpgradable: true, cpuUpgradable: false, basePriceRange: [80, 130], faultCategories: ["battery", "screen", "storage", "keyboard"], desc: "Three screws behind the battery expose RAM and drive — the friendliest Apple laptop a shop ever serviced. Top cases crack on schedule." },
+    { id: "mbp-unibody", name: "MacBook Pro (Unibody)", family: "APPLE-INTEL", introYear: 2008, eolYear: 2014, ramUpgradable: true, hddUpgradable: true, cpuUpgradable: false, basePriceRange: [100, 160], faultCategories: ["battery", "screen", "storage", "logic-board"], desc: "The unibody bottom plate comes off to a tidy layout — RAM, drive, and battery swaps in minutes. Technicians still miss it." },
+    { id: "macpro-cheese", name: "Mac Pro (Cheese Grater)", family: "APPLE-INTEL", introYear: 2009, eolYear: 2016, ramUpgradable: true, hddUpgradable: true, cpuUpgradable: false, basePriceRange: [130, 200], faultCategories: ["logic-board", "storage", "ram", "psu", "gpu"], desc: "The most repairable Mac ever built: sliding drive sleds, eight DIMM slots, real PCIe. Treat it like the workstation it is." },
+    { id: "mbp-retina", name: "MacBook Pro Retina", family: "APPLE-INTEL", introYear: 2012, eolYear: 2018, ramUpgradable: false, hddUpgradable: true, cpuUpgradable: false, basePriceRange: [110, 180], faultCategories: ["battery", "screen", "storage", "logic-board"], desc: "2012 is the hinge year: RAM soldered, battery glued, pentalobe screws. Storage stays swappable — everything else is surgery." },
+    { id: "macpro-trashcan", name: "Mac Pro (Trash Can)", family: "APPLE-INTEL", introYear: 2013, eolYear: 2019, ramUpgradable: true, hddUpgradable: false, cpuUpgradable: false, basePriceRange: [140, 210], faultCategories: ["logic-board", "gpu", "cooling", "ram"], desc: "A sealed thermal core with RAM as the only user-serviceable part — and GPU boards that cook themselves. Beautiful, cursed." },
+    { id: "macmini-2018", name: "Mac Mini (2018)", family: "APPLE-INTEL", introYear: 2018, eolYear: 2023, ramUpgradable: true, hddUpgradable: false, cpuUpgradable: false, basePriceRange: [90, 140], faultCategories: ["logic-board", "storage", "ram"], desc: "The 2018 Mini quietly restored socketed RAM behind an antenna plate — a brief, welcome throwback before the SoC era." },
+    { id: "mba-m1", name: "MacBook Air M1", family: "APPLE-SILICON", introYear: 2020, eolYear: 2027, ramUpgradable: false, hddUpgradable: false, cpuUpgradable: false, basePriceRange: [100, 160], faultCategories: ["battery", "screen", "logic-board"], desc: "Unified memory fused to the SoC: zero upgrade path, full stop. Shop work is batteries, screens, and board-level heroics." },
+    { id: "mbp-m1pro", name: "MacBook Pro 14\"/16\" (M1 Pro/Max)", family: "APPLE-SILICON", introYear: 2021, eolYear: 2027, ramUpgradable: false, hddUpgradable: false, cpuUpgradable: false, basePriceRange: [150, 230], faultCategories: ["battery", "screen", "logic-board", "speaker-mic"], desc: "Serialized, parts-paired components complicate independent repair — displays and batteries swap, but the machine argues about it." },
+    { id: "mac-studio", name: "Mac Studio", family: "APPLE-SILICON", introYear: 2022, eolYear: 2027, ramUpgradable: false, hddUpgradable: false, cpuUpgradable: false, basePriceRange: [150, 230], faultCategories: ["logic-board", "psu", "cooling"], desc: "A dense aluminum puck with fixed memory and semi-locked storage — port and fan service is realistic, upgrades are not." },
+    { id: "macpro-silicon", name: "Mac Pro (Apple Silicon)", family: "APPLE-SILICON", introYear: 2023, eolYear: 2027, ramUpgradable: false, hddUpgradable: false, cpuUpgradable: false, basePriceRange: [180, 280], faultCategories: ["logic-board", "psu", "gpu"], desc: "PCIe slots return, but the RAM is fused to the package — the first Mac Pro in history with no memory upgrade at all." }
+  ];
+
+  // §12.4 / research §4 — mobile devices (repair-only; never in the PC parts/compat pipeline).
+  DATA.MOBILE_DEVICES = [
+    { id: "iphone-2007", kind: "smartphone", name: "iPhone (Original)", brand: "Apple", introYear: 2007, eolYear: 2010, tier: "premium" },
+    { id: "bb-bold", kind: "smartphone", name: "BlackBerry Bold", brand: "BlackBerry", introYear: 2008, eolYear: 2012, tier: "mainstream" },
+    { id: "iphone-4", kind: "smartphone", name: "iPhone 4", brand: "Apple", introYear: 2010, eolYear: 2014, tier: "premium" },
+    { id: "galaxy-s3", kind: "smartphone", name: "Samsung Galaxy S III", brand: "Samsung", introYear: 2012, eolYear: 2016, tier: "mainstream" },
+    { id: "iphone-5", kind: "smartphone", name: "iPhone 5", brand: "Apple", introYear: 2012, eolYear: 2016, tier: "premium" },
+    { id: "moto-g", kind: "smartphone", name: "Moto G", brand: "Motorola", introYear: 2013, eolYear: 2017, tier: "budget" },
+    { id: "iphone-6", kind: "smartphone", name: "iPhone 6", brand: "Apple", introYear: 2014, eolYear: 2018, tier: "premium" },
+    { id: "galaxy-s7", kind: "smartphone", name: "Samsung Galaxy S7", brand: "Samsung", introYear: 2016, eolYear: 2020, tier: "mainstream" },
+    { id: "budget-android", kind: "smartphone", name: "Budget Android Handset", brand: "Shenzhen OEM", introYear: 2016, eolYear: 2024, tier: "budget" },
+    { id: "iphone-x", kind: "smartphone", name: "iPhone X", brand: "Apple", introYear: 2017, eolYear: 2021, tier: "premium" },
+    { id: "iphone-11", kind: "smartphone", name: "iPhone 11", brand: "Apple", introYear: 2019, eolYear: 2024, tier: "mainstream" },
+    { id: "galaxy-zflip", kind: "smartphone", name: "Samsung Galaxy Z Flip", brand: "Samsung", introYear: 2021, eolYear: 2026, tier: "premium" },
+    { id: "galaxy-s21", kind: "smartphone", name: "Samsung Galaxy S21", brand: "Samsung", introYear: 2021, eolYear: 2025, tier: "mainstream" },
+    { id: "iphone-14", kind: "smartphone", name: "iPhone 14", brand: "Apple", introYear: 2022, eolYear: 2027, tier: "premium" },
+    { id: "pixel-7", kind: "smartphone", name: "Google Pixel 7", brand: "Google", introYear: 2022, eolYear: 2026, tier: "mainstream" },
+    { id: "ipad-1", kind: "tablet", name: "iPad (1st gen)", brand: "Apple", introYear: 2010, eolYear: 2013, tier: "mainstream" },
+    { id: "ipad-2", kind: "tablet", name: "iPad 2", brand: "Apple", introYear: 2011, eolYear: 2015, tier: "mainstream" },
+    { id: "nexus-7", kind: "tablet", name: "Nexus 7", brand: "Google", introYear: 2012, eolYear: 2016, tier: "budget" },
+    { id: "ipad-air", kind: "tablet", name: "iPad Air", brand: "Apple", introYear: 2013, eolYear: 2018, tier: "mainstream" },
+    { id: "galaxy-tab-s", kind: "tablet", name: "Samsung Galaxy Tab S", brand: "Samsung", introYear: 2014, eolYear: 2018, tier: "mainstream" },
+    { id: "ipad-pro", kind: "tablet", name: "iPad Pro", brand: "Apple", introYear: 2015, eolYear: 2021, tier: "premium" },
+    { id: "fire-hd", kind: "tablet", name: "Amazon Fire HD", brand: "Amazon", introYear: 2018, eolYear: 2024, tier: "budget" },
+    { id: "ipad-9", kind: "tablet", name: "iPad (9th gen)", brand: "Apple", introYear: 2021, eolYear: 2027, tier: "mainstream" }
+  ];
+
+  // §12.4 — mobile fault templates (subject-first per §10.5: symptoms in complaints, diagnosis in faultDescs).
+  DATA.MOBILE_FAULTS = {
+    "screen": [
+      { desc: "Cracked or dead display assembly", laborHours: 1, partsCostFactor: 0.35,
+        complaints: ["I dropped it face-down and now it's a spiderweb.", "The screen lights up but half of it doesn't respond to touch."],
+        faultDescs: ["Shattered glass and damaged digitizer layer", "Fractured display panel — full assembly swap required"] }
+    ],
+    "battery": [
+      { desc: "Worn-out or swollen battery", laborHours: 0.75, partsCostFactor: 0.12,
+        complaints: ["It dies at 40% like clockwork.", "The back is bulging. It didn't used to bulge, right?"],
+        faultDescs: ["Battery past its cycle life, capacity collapsed", "Swollen cell pressing the case apart — replace immediately"] }
+    ],
+    "charge-port": [
+      { desc: "Worn or lint-packed charging port", laborHours: 1, partsCostFactor: 0.08,
+        complaints: ["It only charges if I hold the cable at an exact angle.", "I have to jiggle the plug for ten seconds every night."],
+        faultDescs: ["Port packed with pocket lint and corroded contacts", "Cracked charge-port flex — connector replacement needed"] }
+    ],
+    "water-damage": [
+      { desc: "Liquid ingress and corrosion", laborHours: 2, partsCostFactor: 0.2,
+        complaints: ["It went in the wash. It was only a minute. Please.", "It fell in the lake, dried in rice, and now it does... this."],
+        faultDescs: ["Corrosion across board connectors — ultrasonic clean required", "Liquid indicators tripped; shorted power rail on the board"] }
+    ],
+    "camera": [
+      { desc: "Failed or blurry camera module", laborHours: 0.75, partsCostFactor: 0.15,
+        complaints: ["Every photo looks like it was taken in fog.", "The camera app opens to a black square."],
+        faultDescs: ["Cracked lens cover scattering light", "Failed camera module flex — module swap required"] }
+    ],
+    "speaker-mic": [
+      { desc: "Dead speaker or microphone", laborHours: 0.75, partsCostFactor: 0.1,
+        complaints: ["Nobody can hear me unless I'm on speakerphone.", "Everything sounds like it's underwater."],
+        faultDescs: ["Blown speaker driver", "Mic membrane clogged or failed — assembly replacement"] }
+    ],
+    "button": [
+      { desc: "Stuck or unresponsive button", laborHours: 0.5, partsCostFactor: 0.06,
+        complaints: ["The power button needs a thumb-war to click.", "The volume rocker just... stopped rocking."],
+        faultDescs: ["Worn button dome and gunked mechanism", "Torn button flex cable — replacement needed"] }
+    ]
+  };
+
 })(typeof window !== 'undefined' ? window : globalThis);

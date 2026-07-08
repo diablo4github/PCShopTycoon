@@ -36,18 +36,52 @@
   var CATEGORIES = ['cpu', 'motherboard', 'ram', 'storage', 'gpu', 'psu', 'case', 'cooling', 'os', 'peripheral'];
   var CAT_LABELS = {
     cpu: 'CPU', motherboard: 'Motherboard', ram: 'RAM', storage: 'Storage',
-    gpu: 'GPU', psu: 'PSU', 'case': 'Case', cooling: 'Cooling', os: 'OS', peripheral: 'Peripheral'
+    gpu: 'GPU', psu: 'PSU', 'case': 'Case', cooling: 'Cooling', os: 'OS', peripheral: 'Peripheral',
+    expansion: 'Expansion'
   };
+  /** §12.3 — label helper for OPEN-ENDED categories (expansion & future). */
+  function catLabel(c) {
+    return CAT_LABELS[c] || prettySubtype(c || '');
+  }
+  /** §12.3 — categories derived from the live market so new ones (e.g.
+   * "expansion") appear in filter chips without hardcoded lists. */
+  var catCache = { day: null, list: null };
+  function knownCategories() {
+    var st = getState();
+    var day = st ? st.day : -1;
+    if (catCache.list && catCache.day === day) return catCache.list;
+    var list = null;
+    if (has('getMarket')) {
+      var rows = tryCall(function () { return Engine.getMarket({}); });
+      if (Array.isArray(rows) && rows.length) {
+        var seen = {};
+        list = [];
+        // keep the canonical order first, then anything new in encounter order
+        CATEGORIES.forEach(function (c) { seen[c] = false; });
+        rows.forEach(function (r) {
+          if (r && r.category && !(r.category in seen)) { seen[r.category] = false; }
+        });
+        CATEGORIES.forEach(function (c) { if (c in seen) { list.push(c); seen[c] = true; } });
+        rows.forEach(function (r) {
+          if (r && r.category && seen[r.category] === false) { list.push(r.category); seen[r.category] = true; }
+        });
+      }
+    }
+    catCache = { day: day, list: list || CATEGORIES.slice() };
+    return catCache.list;
+  }
   var TYPE_LABELS = {
     repair: 'Repair', upgrade: 'Upgrade', build: 'Custom Build', refurb: 'Refurb',
     data_recovery: 'Data Recovery', software: 'Software', cleaning: 'Cleaning',
-    peripheral: 'Peripheral', contract: 'Contract', enthusiast: 'Enthusiast', callback: 'Callback'
+    peripheral: 'Peripheral', contract: 'Contract', enthusiast: 'Enthusiast', callback: 'Callback',
+    device_repair: 'Device Repair'
   };
   var SUBTYPE_LABELS = {
     virus: 'Virus Removal', os_install: 'OS Install', overclock: 'Overclock',
     aesthetic: 'Aesthetic Build', thermal_paste: 'Thermal Paste', contract_build: 'Build Contract',
     contract_upgrade: 'Upgrade Contract', crt: 'CRT', printer: 'Printer',
-    lcd: 'LCD Monitor', modem: 'Modem', input: 'Input Device', scanner: 'Scanner'
+    lcd: 'LCD Monitor', modem: 'Modem', input: 'Input Device', scanner: 'Scanner',
+    apple: 'Apple', smartphone: 'Smartphone', tablet: 'Tablet'
   };
   /** §10.5 — subtypes are open-ended (peripheral kinds); prettify unknowns. */
   function prettySubtype(s) {
@@ -170,7 +204,7 @@
         if (dr && dr.ok !== false && dr.fault) {
           UI.toast('Diagnosis (' + (dr.hoursSpent != null ? dr.hoursSpent + 'h' : 'done') + '): ' +
             (dr.fault.desc || 'fault found') +
-            (dr.fault.partCategory ? ' — needs a ' + (CAT_LABELS[dr.fault.partCategory] || dr.fault.partCategory) + ' part' : ' — labor only'),
+            (dr.fault.partCategory ? ' — needs a ' + catLabel(dr.fault.partCategory) + ' part' : ' — labor only'),
             'info', 6500);
         }
         break;
@@ -244,6 +278,12 @@
         UI.act(function () { return Engine.commitBuild(jobId); },
           'Build locked in — parts sourced. Work the job to assemble it.');
         break;
+      case 'slot-pick': { /* §12.5 schematic slot → part-picker popover */
+        var pcat = el.getAttribute('data-cat');
+        var pslot = parseInt(el.getAttribute('data-slot'), 10) || 0;
+        if (pcat) openSlotPicker(jobId, pcat, pslot);
+        break;
+      }
       case 'buy-asis': {
         var mid = el.getAttribute('data-machine');
         UI.act(function () { return Engine.buyAsIsMachine(mid); },
@@ -628,6 +668,7 @@
      * engines whose workJob still demands the old diagnoseJob call. */
     var hasSteps = !!(j.steps && j.steps.length);
     var diagFallback = undiagnosed && (!hasSteps || engineV() < 0.4);
+    var isDevice = j.type === 'device_repair'; /* §12.4 */
 
     var h = '<div class="card job-card-full">';
 
@@ -693,15 +734,29 @@
     } else if (j.diagnosed && j.fault) {
       h += '<div class="meta-row"><span class="muted small">Fault:</span> ' + esc(j.fault.desc || '') +
         (j.fault.partCategory
-          ? ' <span class="chip">' + esc(CAT_LABELS[j.fault.partCategory] || j.fault.partCategory) + ' part needed</span>'
+          ? ' <span class="chip">' + esc(catLabel(j.fault.partCategory)) + ' part needed</span>'
           : ' <span class="chip">Labor only</span>') +
+        '</div>';
+    }
+
+    /* §12.4 device repairs: device line + kind chip; NO catalog parts —
+     * no picker, no component list. Parts expense is engine-side. */
+    if (isDevice) {
+      var dev = j.device || j.machine || {};
+      h += '<div class="refurb-box"><span class="muted small">Device:</span> ' +
+        esc(dev.name || j.title) +
+        (dev.kind || j.subtype
+          ? ' <span class="chip chip-type t-device_repair">' + esc(SUBTYPE_LABELS[dev.kind || j.subtype] || prettySubtype(dev.kind || j.subtype)) + '</span>'
+          : '') +
+        (dev.year ? ' <span class="muted small">(' + esc(dev.year) + ')</span>' : '') +
+        '<div class="note">Specialty parts are sourced by the bench and billed at completion.</div>' +
         '</div>';
     }
 
     /* machine info + component list (§9.5 refurbs; §10.4 customer machines
      * on repair/upgrade/peripheral too — statuses engine-driven, "?" until
      * diagnosis) */
-    if (j.machine) {
+    if (j.machine && !isDevice) {
       h += '<div class="refurb-box"><span class="muted small">' +
         (isRefurb ? 'Machine:' : 'In for service:') + '</span> ' + esc(j.machine.name) +
         (j.machine.year ? ' <span class="muted small">(' + esc(j.machine.year) + ')</span>' : '') +
@@ -716,7 +771,7 @@
             h += '<div class="mp-row">' +
               '<span class="mp-status ' + stt + '">' + (stt === 'ok' ? 'OK' : (stt === 'faulty' ? 'FAULTY' : '?')) + '</span>' +
               '<span>' + esc(p.name) + '</span>' +
-              '<span class="muted small">' + esc(CAT_LABELS[p.category] || p.category || '') + '</span>' +
+              '<span class="muted small">' + esc(p.category ? catLabel(p.category) : '') + '</span>' +
               (p.value !== null && p.value !== undefined ? '<span class="num muted small">' + esc(fm(p.value)) + '</span>' : '') +
               '</div>';
           });
@@ -726,8 +781,8 @@
       h += '</div>';
     }
 
-    /* needs part-picker */
-    if (!diagFallback && !buildPending && j.needs && j.needs.length) {
+    /* needs part-picker (§12.4: device repairs never source catalog parts) */
+    if (!isDevice && !diagFallback && !buildPending && j.needs && j.needs.length) {
       h += needsHTML(j);
     }
 
@@ -863,7 +918,7 @@
       var qty = n.qty || 1;
       var filledAll = (n.filled || 0) >= qty;
       h += '<div class="need-row' + (filledAll ? ' done' : '') + '">' +
-        '<span class="need-label">' + esc(n.label || CAT_LABELS[n.category] || n.category) +
+        '<span class="need-label">' + esc(n.label || catLabel(n.category)) +
         (qty > 1 ? ' <span class="muted">(' + (n.filled || 0) + '/' + qty + ')</span>' : '') + '</span>';
 
       /* assigned entries (engine may expose n.assigned; fall back to the
@@ -952,9 +1007,93 @@
     return false;
   }
 
-  /* ---- custom build configurator ---- */
+  /* ---- custom build configurator ----
+   * §12.5 graphical schematic when the engine ships slotCount data;
+   * the original per-category select list remains the fallback. */
 
   var BUILD_ORDER = ['motherboard', 'cpu', 'ram', 'storage', 'gpu', 'psu', 'case', 'cooling', 'os', 'peripheral'];
+
+  /** §12.2 — normalize a getBuildCatalog category across engine versions:
+   * pre-0.4b it is a plain options array; 0.4b+ {slotCount, selected,
+   * options} (arrays carrying extra props are tolerated too). */
+  function catInfo(bc, c) {
+    var raw = bc.categories[c];
+    if (!raw) return null;
+    if (Array.isArray(raw)) {
+      return {
+        options: raw,
+        slotCount: (typeof raw.slotCount === 'number') ? raw.slotCount : null,
+        selected: Array.isArray(raw.selected) ? raw.selected : null
+      };
+    }
+    return {
+      options: arr(raw.options),
+      slotCount: (typeof raw.slotCount === 'number') ? raw.slotCount : null,
+      selected: Array.isArray(raw.selected) ? raw.selected : null
+    };
+  }
+
+  /** Selected part id per slot for a category — engine's `selected` when
+   * present, else derived from job.build.parts (v5 object / legacy array). */
+  function selectedSlots(j, bc, c) {
+    var info = catInfo(bc, c);
+    if (info && info.selected) return info.selected.slice();
+    var bp = j.build && j.build.parts;
+    if (bp && !Array.isArray(bp) && typeof bp === 'object') {
+      return arr(bp[c]).slice();
+    }
+    var out = [null];
+    if (info) {
+      var flat = arr(bp);
+      info.options.forEach(function (o) {
+        if (flat.indexOf(o.partId) !== -1) out[0] = o.partId;
+      });
+    }
+    return out;
+  }
+
+  function schematicReady(bc) {
+    var probe = ['motherboard', 'cpu', 'ram', 'gpu', 'storage'];
+    for (var i = 0; i < probe.length; i++) {
+      var info = catInfo(bc, probe[i]);
+      if (info && info.slotCount !== null) return true;
+    }
+    return false;
+  }
+
+  /* §12.5 — map validateBuild problem strings onto slot categories.
+   * Ordered; first matching rule wins per problem (so "2 DIMM slots"
+   * lands on ram, not the generic slot/board rule). */
+  var PROBLEM_SLOT_RULES = [
+    [/dimm|\bram\b|memory|stick/i, 'ram'],
+    [/socket|\bcpu\b|processor/i, 'cpu'],
+    [/gpu|video|graphics|sli|crossfire|voodoo|x16|2d card/i, 'gpu'],
+    [/watt|psu|power/i, 'psu'],
+    [/form factor|case/i, 'case'],
+    [/storage|drive|disk|\bide\b|sata|nvme/i, 'storage'],
+    [/operating system|\bos\b|arch/i, 'os'],
+    [/cool/i, 'cooling'],
+    [/expansion|sound|network|modem/i, 'expansion'],
+    [/motherboard|board|slot/i, 'motherboard']
+  ];
+  function problemsByCat(problems) {
+    var out = {};
+    arr(problems).forEach(function (p) {
+      for (var i = 0; i < PROBLEM_SLOT_RULES.length; i++) {
+        if (PROBLEM_SLOT_RULES[i][0].test(p)) {
+          var c = PROBLEM_SLOT_RULES[i][1];
+          (out[c] = out[c] || []).push(p);
+          return;
+        }
+      }
+    });
+    return out;
+  }
+
+  function shortName(n) {
+    n = String(n || '');
+    return n.length > 20 ? n.slice(0, 19) + '…' : n;
+  }
 
   function buildCfgHTML(j) {
     var bc = tryCall(function () { return Engine.getBuildCatalog(j.id); });
@@ -964,25 +1103,11 @@
     var v = tryCall(function () { return Engine.validateBuild(j.id); });
     if (v && v.ok === false) v = null;
 
-    /* which part is selected in each category (job.build.parts holds ids only) */
-    var selected = {};
-    var chosenIds = (j.build && j.build.parts) || [];
-    Object.keys(bc.categories).forEach(function (c) {
-      arr(bc.categories[c]).forEach(function (o) {
-        if (chosenIds.indexOf(o.partId) !== -1) selected[c] = o.partId;
-      });
-    });
-
-    var cats = BUILD_ORDER.filter(function (c) { return bc.categories[c]; });
-    Object.keys(bc.categories).forEach(function (c) {
-      if (cats.indexOf(c) === -1) cats.push(c);
-    });
-
     var b = j.build || {};
+    var mp = b.minPerf || {};
     var h = '<div class="build-cfg"><div class="sub-title">Build configurator</div>';
 
     /* target line */
-    var mp = b.minPerf || {};
     h += '<div class="meta-row muted small">' +
       (b.useCase ? '<span class="chip">' + esc(b.useCase) + '</span>' : '') +
       '<span>Budget <b class="num">' + esc(fm(b.budget)) + '</b></span>' +
@@ -993,16 +1118,35 @@
       (b.minStyle ? '<span>Style ≥ ' + esc(b.minStyle) + '</span>' : '') +
       '</div>';
 
-    /* category selects */
-    h += '<div class="build-grid">';
+    if (schematicReady(bc)) h += schematicHTML(j, bc, v);
+    else h += selectListHTML(j, bc);
+
+    h += valPanelHTML(j, v, mp, b);
+    return h + '</div>';
+  }
+
+  /* ---- fallback: the classic per-category select list ---- */
+  function selectListHTML(j, bc) {
+    var selected = {};
+    Object.keys(bc.categories).forEach(function (c) {
+      var sel = selectedSlots(j, bc, c);
+      if (sel && sel[0]) selected[c] = sel[0];
+    });
+    var cats = BUILD_ORDER.filter(function (c) { return bc.categories[c]; });
+    Object.keys(bc.categories).forEach(function (c) {
+      if (cats.indexOf(c) === -1) cats.push(c);
+    });
+
+    var h = '<div class="build-grid">';
     var infoOk = has('getPartInfo');
     cats.forEach(function (c) {
       var selId = 'build-sel-' + j.id + '-' + c;
-      h += '<span class="build-lbl">' + esc(CAT_LABELS[c] || c) + '</span>' +
+      var info = catInfo(bc, c);
+      h += '<span class="build-lbl">' + esc(catLabel(c)) + '</span>' +
         '<span class="need-row">' +
         '<select id="' + selId + '" data-action="buildpart" data-job="' + j.id + '" data-cat="' + esc(c) + '">' +
         '<option value="">— none —</option>';
-      arr(bc.categories[c]).forEach(function (o) {
+      (info ? info.options : []).forEach(function (o) {
         var label = (o.tasteMatch ? '♥ ' : '') + o.name + ' — ' + fm(o.price) + (o.inStock ? ' (in stock)' : '');
         if (o.compatible === false) {
           label = '✕ ' + label + (o.why ? ' — ' + o.why : '');
@@ -1014,9 +1158,172 @@
         (infoOk ? '<button type="button" class="info-btn" data-action="partinfo" data-from-select="' + selId + '" title="Part details">i</button>' : '') +
         '</span>';
     });
-    h += '</div>';
+    return h + '</div>';
+  }
 
-    /* live validation panel */
+  /* ---- §12.5: the motherboard schematic ---- */
+  var SCHEMATIC_ZONES = ['motherboard', 'cpu', 'ram', 'gpu', 'storage'];
+  var BAY_ORDER = ['psu', 'case', 'cooling', 'os'];
+
+  function schematicHTML(j, bc, v) {
+    var probs = problemsByCat(v ? v.problems : []);
+    var moboSel = selectedSlots(j, bc, 'motherboard');
+    var boardChosen = !!(moboSel && moboSel[0]);
+    var moboInfo = catInfo(bc, 'motherboard');
+
+    var h = '<div class="mobo-wrap">';
+
+    /* board first — a dropdown, same handler as the fallback list */
+    var selId = 'build-sel-' + j.id + '-motherboard';
+    h += '<div class="mobo-boardpick' + (probs.motherboard ? ' has-bad' : '') + '">' +
+      '<label class="build-lbl" for="' + selId + '">Motherboard</label>' +
+      '<select id="' + selId + '" data-action="buildpart" data-job="' + j.id + '" data-cat="motherboard">' +
+      '<option value="">— choose a board first —</option>';
+    (moboInfo ? moboInfo.options : []).forEach(function (o) {
+      var label = (o.tasteMatch ? '♥ ' : '') + o.name + ' — ' + fm(o.price) + (o.inStock ? ' (in stock)' : '');
+      if (o.compatible === false) label = '✕ ' + label + (o.why ? ' — ' + o.why : '');
+      h += '<option value="' + esc(o.partId) + '"' + (moboSel[0] === o.partId ? ' selected' : '') + '>' + esc(label) + '</option>';
+    });
+    h += '</select>' +
+      (has('getPartInfo') ? '<button type="button" class="info-btn" data-action="partinfo" data-from-select="' + selId + '" title="Board details">i</button>' : '') +
+      (probs.motherboard ? '<span class="down small">' + esc(probs.motherboard.join(' • ')) + '</span>' : '') +
+      '</div>';
+
+    if (!boardChosen) {
+      return h + '<div class="note">Pick a motherboard to lay out its socket and slots.</div></div>';
+    }
+
+    h += '<div class="mobo-board" role="group" aria-label="Motherboard layout — every slot is a button">' +
+      slotZone(j, bc, probs, 'cpu', 'zone-cpu') +
+      slotZone(j, bc, probs, 'ram', 'zone-ram') +
+      slotZone(j, bc, probs, 'storage', 'zone-drives') +
+      slotZone(j, bc, probs, 'gpu', 'zone-gpu') +
+      '</div>';
+
+    /* surrounding bays: single-slot categories + anything new (expansion…) */
+    var bays = BAY_ORDER.slice();
+    Object.keys(bc.categories).forEach(function (c) {
+      if (SCHEMATIC_ZONES.indexOf(c) === -1 && bays.indexOf(c) === -1) bays.push(c);
+    });
+    var bh = '';
+    bays.forEach(function (c) { bh += slotZone(j, bc, probs, c, 'zone-bay'); });
+    if (bh) h += '<div class="mobo-bays">' + bh + '</div>';
+
+    return h + '</div>';
+  }
+
+  function slotZone(j, bc, probs, cat, zoneCls) {
+    var info = catInfo(bc, cat);
+    if (!info) return '';
+    var count = (info.slotCount === null || info.slotCount === undefined) ? 1 : info.slotCount;
+    if (count <= 0) return '';
+    if (count > 16) count = 16; // sanity guard for pre-migration defaults (99)
+    var sel = selectedSlots(j, bc, cat);
+    var probList = probs[cat] || null;
+    var redAll = !!(probList && !sel.some(function (x) { return !!x; }));
+
+    var h = '<div class="mobo-zone ' + zoneCls + '">' +
+      '<span class="zone-label">' + esc(catLabel(cat)) + (count > 1 ? ' <span class="muted">×' + count + '</span>' : '') + '</span>' +
+      '<div class="zone-slots">';
+    for (var i = 0; i < count; i++) {
+      h += slotBtnHTML(j, cat, i, sel[i] || null, info, probList, redAll, count);
+    }
+    return h + '</div></div>';
+  }
+
+  function slotBtnHTML(j, cat, idx, pid, info, probList, redAll, count) {
+    var opt = null;
+    if (pid) {
+      info.options.forEach(function (o) { if (o.partId === pid) opt = o; });
+    }
+    var state = '';
+    var tip = catLabel(cat) + (count > 1 ? ' slot ' + (idx + 1) : '') + ' — click to choose a part';
+    if (probList && (pid || redAll)) {
+      state = 'bad';
+      tip = probList.join(' • ');
+    } else if (pid) {
+      if (opt && opt.meets === false) {
+        state = 'warn';
+        tip = (opt.name || pid) + ' — below this job’s spec. Click to change.';
+      } else {
+        state = 'ok';
+        tip = (opt ? opt.name + ' — ' + fm(opt.price) : pid) + '. Click to change or empty the slot.';
+      }
+    }
+    var inner = pid
+      ? '<span class="slot-chip">' + esc(shortName(opt ? opt.name : pid)) + '</span>'
+      : '<span class="slot-plus">+</span>';
+    return '<button type="button" class="slot slot-' + esc(cat) + (state ? ' ' + state : '') +
+      '" data-action="slot-pick" data-job="' + j.id + '" data-cat="' + esc(cat) +
+      '" data-slot="' + idx + '" title="' + esc(tip) + '" aria-label="' + esc(catLabel(cat) + ' slot ' + (idx + 1)) + '">' +
+      inner + '</button>';
+  }
+
+  /** §12.5 — slot part-picker popover (modal; its listeners die with it). */
+  function openSlotPicker(jobId, cat, slotIndex) {
+    var bc = tryCall(function () { return Engine.getBuildCatalog(jobId); });
+    if (!bc || bc.ok === false || !bc.categories) { UI.toast('Build catalog unavailable', 'error'); return; }
+    var info = catInfo(bc, cat);
+    if (!info) return;
+    var j = null;
+    try {
+      (Engine.getActiveJobs() || []).forEach(function (x) { if (x.id === jobId) j = x; });
+    } catch (e) { /* ignore */ }
+    var sel = j ? selectedSlots(j, bc, cat) : [];
+    var current = sel[slotIndex] || null;
+    var infoOk = has('getPartInfo');
+
+    var body = '<div class="slot-picker">';
+    if (current) {
+      body += '<div class="picker-line"><button type="button" class="picker-row picker-remove" data-pick="">' +
+        '<span class="pr-name">— Empty this slot —</span>' +
+        '<span class="pr-meta muted small">the part goes back on the list</span></button></div>';
+    }
+    if (!info.options.length) {
+      body += '<div class="empty">Nothing compatible is on the market right now.</div>';
+    }
+    info.options.forEach(function (o) {
+      var incompat = o.compatible === false;
+      var below = o.meets === false;
+      body += '<div class="picker-line">' +
+        '<button type="button" class="picker-row' + (incompat ? ' incompat' : '') +
+          (o.partId === current ? ' current' : '') + '"' + (incompat ? ' disabled' : '') +
+          ' data-pick="' + esc(o.partId) + '">' +
+          '<span class="pr-name">' + (o.tasteMatch ? '<span class="taste-hit" title="Customer favorite — bonus pay">♥</span> ' : '') +
+            esc(o.name) + (o.partId === current ? ' <span class="muted small">(current)</span>' : '') + '</span>' +
+          '<span class="pr-meta num">' + esc(fm(o.price)) +
+            (o.inStock ? ' · in stock' : ' · order') +
+            (o.perf ? ' · ' + esc(perfStr(o.perf)) : '') + '</span>' +
+          (below ? ' <span class="badge b-warn" title="Below this job’s minimum spec">below spec</span>' : '') +
+          (incompat ? '<span class="pr-why">✕ ' + esc(o.why || 'Incompatible with this build') + '</span>' : '') +
+        '</button>' +
+        (infoOk ? '<button type="button" class="info-btn pr-info" data-pi="' + esc(o.partId) + '" title="Part details">i</button>' : '') +
+        '</div>';
+    });
+    body += '</div>';
+
+    var modal = UI.modal({
+      title: catLabel(cat) + ((info.slotCount || 1) > 1 ? ' — slot ' + (slotIndex + 1) : ''),
+      html: body,
+      buttons: [{ label: 'Cancel', cls: 'btn' }]
+    });
+    if (!modal) return;
+    modal.el.addEventListener('click', function (e) {
+      var t = e.target;
+      if (!t || !t.closest) return;
+      var pi = t.closest('[data-pi]');
+      if (pi) { showPartInfo(pi.getAttribute('data-pi')); return; }
+      var row = t.closest('[data-pick]');
+      if (!row || row.disabled) return;
+      var pid = row.getAttribute('data-pick') || null;
+      modal.close();
+      UI.act(function () { return Engine.setBuildPart(jobId, cat, pid, slotIndex); }); // §12.2 slot-indexed
+    });
+  }
+
+  /* ---- shared: problems / perf-vs-target / budget / commit ---- */
+  function valPanelHTML(j, v, mp, b) {
+    var h = '';
     if (v) {
       h += '<div class="build-val">';
       if (v.problems && v.problems.length) {
@@ -1027,7 +1334,6 @@
         h += '<div class="ok-mark">✓ No compatibility problems</div>';
       }
 
-      /* perf vs target */
       var perf = v.perf || {};
       h += '<div class="perf-grid">' +
         perfCell('CPU', perf.cpu, mp.cpu) +
@@ -1041,7 +1347,6 @@
           '<span class="muted small">Style</span><b>' + esc(v.style !== undefined ? v.style : '—') + ' / ' + esc(b.minStyle) + '</b></div>' : '') +
         '</div>';
 
-      /* budget bar */
       var over = !v.underBudget && (Number(v.partsCost) || 0) > (Number(v.budget) || 0);
       h += '<div class="bar-row"><span class="muted small">Parts cost</span>' +
         UI.barHTML(v.partsCost, v.budget, 'wide' + (over ? ' over' : '')) +
@@ -1058,8 +1363,7 @@
         '<button type="button" class="btn btn-primary btn-sm" data-action="commit-build" data-job="' + j.id + '">Commit build (buy parts)</button>' +
         '</div>';
     }
-
-    return h + '</div>';
+    return h;
   }
 
   function perfCell(label, val, target) {
@@ -1108,7 +1412,7 @@
       var qty = it.qty || 0;
       html += '<tr>' +
         '<td>' + esc(it.name) + '</td>' +
-        '<td><span class="chip">' + esc(CAT_LABELS[it.category] || it.category) + '</span></td>' +
+        '<td><span class="chip">' + esc(catLabel(it.category)) + '</span></td>' +
         '<td class="num">' + qty + '</td>' +
         '<td class="num">' + esc(fm(it.avgCost)) + '</td>' +
         '<td class="num">' + esc(fm(it.curPrice)) + '</td>' +
@@ -1141,7 +1445,7 @@
 
     /* controls */
     html += '<div class="market-controls"><div class="chips">' + catChip('all', 'All', cat);
-    CATEGORIES.forEach(function (c) { html += catChip(c, CAT_LABELS[c], cat); });
+    knownCategories().forEach(function (c) { html += catChip(c, catLabel(c), cat); });
     html += '</div>' +
       '<input type="search" id="market-search" placeholder="Search parts…" value="' + esc(q) + '" autocomplete="off">' +
       '</div>';
@@ -1172,7 +1476,7 @@
             (r.perfLabel ? ' <span class="muted small">' + esc(r.perfLabel) + '</span>' : '') +
             (r.tier ? ' <span class="muted small">• ' + esc(r.tier) + '</span>' : '') +
           '</td>' +
-          '<td><span class="chip">' + esc(CAT_LABELS[r.category] || r.category) + '</span></td>' +
+          '<td><span class="chip">' + esc(catLabel(r.category)) + '</span></td>' +
           '<td class="num"><b>' + esc(fm(r.price)) + '</b></td>' +
           '<td class="num ' + (c1 > 0.05 ? 'up' : (c1 < -0.05 ? 'down' : 'muted')) + '">' + a1 + ' ' + esc(UI.pct(c1)) + '</td>' +
           '<td class="num ' + (c30 > 0.05 ? 'up' : (c30 < -0.05 ? 'down' : 'muted')) + '">' + esc(UI.pct(c30)) + '</td>' +
@@ -1247,51 +1551,68 @@
 
     var cat = UI.state.wikiCat || 'all';
     var q = UI.state.wikiSearch || '';
+    var devicesOk = has('getDeviceWiki'); /* §12.4 */
 
     html += '<div class="market-controls"><div class="chips">' + wikiCatChip('all', 'All', cat);
-    CATEGORIES.forEach(function (c) { html += wikiCatChip(c, CAT_LABELS[c], cat); });
+    knownCategories().forEach(function (c) { html += wikiCatChip(c, catLabel(c), cat); });
+    if (devicesOk) html += wikiCatChip('devices', 'Devices', cat);
     html += '</div>' +
       '<input type="search" id="wiki-search" placeholder="Search the wiki…" value="' + esc(q) + '" autocomplete="off">' +
       '</div>';
 
-    var rows = arr(tryCall(function () {
+    var showParts = cat !== 'devices';
+    var showDevices = devicesOk && (cat === 'all' || cat === 'devices');
+
+    var rows = showParts ? arr(tryCall(function () {
       return Engine.getWiki({
         category: cat === 'all' ? undefined : cat,
         search: q || undefined
       });
-    }));
+    })) : [];
 
-    if (!rows.length) {
-      html += emptyBox('Nothing in the wiki matches — try another category or search. Hardware appears here as it hits the market.');
-      panel.innerHTML = html;
-      return;
+    if (showParts) {
+      if (!rows.length) {
+        if (!showDevices) {
+          panel.innerHTML = html + emptyBox('Nothing in the wiki matches — try another category or search. Hardware appears here as it hits the market.');
+          restoreWikiFocus();
+          return;
+        }
+        html += emptyBox('No catalog parts match.');
+      } else {
+        html += '<div class="table-wrap"><table class="data"><thead><tr>' +
+          '<th></th><th>Part</th><th>Brand</th><th>Category</th><th class="num">Years</th>' +
+          '<th>Key stats</th><th class="num">Reliability</th><th>Status</th><th class="num">Price</th>' +
+          '</tr></thead><tbody>';
+
+        rows.forEach(function (r) {
+          var open = !!UI.state.wikiOpen[r.partId];
+          var years = (r.introYear || '?') + '–' + (r.eolYear || '?');
+          html += '<tr class="wiki-row" data-action="wiki-toggle" data-part="' + esc(r.partId) + '" title="Click for details">' +
+            '<td class="muted">' + (open ? '▾' : '▸') + '</td>' +
+            '<td>' + esc(r.name) + '</td>' +
+            '<td class="muted">' + esc(r.brand || '') + '</td>' +
+            '<td><span class="chip">' + esc(catLabel(r.category)) + '</span></td>' +
+            '<td class="num muted">' + esc(years) + '</td>' +
+            '<td class="small">' + esc(perfStr(r.perf)) + '</td>' +
+            '<td class="num">' + (r.reliability !== undefined && r.reliability !== null ? esc(r.reliability) : '—') + '</td>' +
+            '<td>' + statusChip(r.status) + '</td>' +
+            '<td class="num"><b>' + esc(fm(r.price)) + '</b></td>' +
+            '</tr>';
+          if (open) {
+            html += '<tr class="wiki-detail"><td colspan="9">' + wikiDetailHTML(r) + '</td></tr>';
+          }
+        });
+        html += '</tbody></table></div>';
+      }
     }
 
-    html += '<div class="table-wrap"><table class="data"><thead><tr>' +
-      '<th></th><th>Part</th><th>Brand</th><th>Category</th><th class="num">Years</th>' +
-      '<th>Key stats</th><th class="num">Reliability</th><th>Status</th><th class="num">Price</th>' +
-      '</tr></thead><tbody>';
+    if (showDevices) html += deviceWikiHTML(q);
 
-    rows.forEach(function (r) {
-      var open = !!UI.state.wikiOpen[r.partId];
-      var years = (r.introYear || '?') + '–' + (r.eolYear || '?');
-      html += '<tr class="wiki-row" data-action="wiki-toggle" data-part="' + esc(r.partId) + '" title="Click for details">' +
-        '<td class="muted">' + (open ? '▾' : '▸') + '</td>' +
-        '<td>' + esc(r.name) + '</td>' +
-        '<td class="muted">' + esc(r.brand || '') + '</td>' +
-        '<td><span class="chip">' + esc(CAT_LABELS[r.category] || r.category) + '</span></td>' +
-        '<td class="num muted">' + esc(years) + '</td>' +
-        '<td class="small">' + esc(perfStr(r.perf)) + '</td>' +
-        '<td class="num">' + (r.reliability !== undefined && r.reliability !== null ? esc(r.reliability) : '—') + '</td>' +
-        '<td>' + statusChip(r.status) + '</td>' +
-        '<td class="num"><b>' + esc(fm(r.price)) + '</b></td>' +
-        '</tr>';
-      if (open) {
-        html += '<tr class="wiki-detail"><td colspan="9">' + wikiDetailHTML(r) + '</td></tr>';
-      }
-    });
-    html += '</tbody></table></div>';
     panel.innerHTML = html;
+    restoreWikiFocus();
+  }
+
+  function restoreWikiFocus() {
 
     if (refocusWikiSearch) {
       refocusWikiSearch = false;
@@ -1302,6 +1623,42 @@
         try { inp.setSelectionRange(len, len); } catch (e) { /* ignore */ }
       }
     }
+  }
+
+  /* §12.4 — the Devices group: Apple machines + mobile devices, read-only
+   * repairability lore. Search-filtered client-side. */
+  function deviceWikiHTML(q) {
+    var devices = arr(tryCall(function () { return Engine.getDeviceWiki(); }));
+    if (q) {
+      var needle = String(q).toLowerCase();
+      devices = devices.filter(function (d) {
+        return ((d.name || '') + ' ' + (d.kind || d.family || '') + ' ' + (d.desc || ''))
+          .toLowerCase().indexOf(needle) !== -1;
+      });
+    }
+    var h = '<h3 class="section-title">Devices <span class="muted small">Apple machines &amp; mobile — repaired whole, never parted out</span></h3>';
+    if (!devices.length) {
+      return h + emptyBox(q ? 'No devices match the search.' : 'No devices known yet — they arrive with the years.');
+    }
+    h += '<div class="cards device-cards">';
+    devices.forEach(function (d) {
+      var kind = d.kind || d.family || d.type || '';
+      var years = (d.introYear || '?') + '–' + (d.eolYear || 'today');
+      h += '<div class="card device-card">' +
+        '<div class="card-title">' + esc(d.name) +
+          (kind ? ' <span class="chip chip-type t-device_repair">' + esc(SUBTYPE_LABELS[kind] || prettySubtype(kind)) + '</span>' : '') +
+        '</div>' +
+        '<div class="meta-row muted small"><span class="num">' + esc(years) + '</span>' +
+          (d.tier ? '<span class="chip">' + esc(d.tier) + '</span>' : '') +
+          (d.ramUpgradable !== undefined
+            ? '<span class="chip" title="Can the bench upgrade its RAM?">RAM ' + (d.ramUpgradable ? 'upgradable' : 'sealed') + '</span>' : '') +
+          (d.hddUpgradable !== undefined
+            ? '<span class="chip" title="Can the bench swap its drive?">Drive ' + (d.hddUpgradable ? 'upgradable' : 'sealed') + '</span>' : '') +
+        '</div>' +
+        (d.desc ? '<div class="wiki-desc">' + esc(d.desc) + '</div>' : '') +
+        '</div>';
+    });
+    return h + '</div>';
   }
 
   function wikiDetailHTML(r) {

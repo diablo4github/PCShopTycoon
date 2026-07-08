@@ -1167,3 +1167,159 @@ body.debug [data-debug] { display: inline-block !important; }
   border: 1px solid rgba(93, 63, 168, 0.4);
   color: #5d3fa8;
 }
+
+/* ==========================================================================
+   v0.4b additions (SPEC §12) — the graphical build UI & devices
+   ========================================================================== */
+
+/* era-tinted PCB colors (accent-level; slot buttons stay light & readable) */
+body { --pcb-bg: #245c33; --pcb-line: rgba(255, 255, 255, 0.14); --pcb-ink: #e8f3e6; }
+body.era-early { --pcb-bg: #4a3417; --pcb-line: rgba(255, 176, 0, 0.22); --pcb-ink: #ffd98a; }
+body.era-90s { --pcb-bg: #1e5c38; --pcb-line: rgba(240, 255, 240, 0.16); --pcb-ink: #dff0da; }
+body.era-00s { --pcb-bg: #1d3f66; --pcb-line: rgba(210, 230, 255, 0.16); --pcb-ink: #d8e6f6; }
+body.era-modern { --pcb-bg: #23252b; --pcb-line: rgba(255, 255, 255, 0.12); --pcb-ink: #d8dae0; }
+
+/* ---------- §12.5 schematic layout ---------- */
+.mobo-wrap { margin: 8px 0; }
+.mobo-boardpick {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.mobo-boardpick .build-lbl { text-align: left; }
+.mobo-boardpick select { max-width: 460px; }
+.mobo-boardpick.has-bad select { outline: 2px solid var(--bad); }
+
+.mobo-board {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) minmax(160px, 1.2fr) minmax(140px, 1fr);
+  grid-template-areas:
+    "cpu    ram    drives"
+    "gpu    gpu    drives";
+  gap: 14px;
+  padding: 16px;
+  border-radius: 10px;
+  background:
+    linear-gradient(var(--pcb-line) 1px, transparent 1px) 0 0 / 100% 22px,
+    linear-gradient(90deg, var(--pcb-line) 1px, transparent 1px) 0 0 / 22px 100%,
+    var(--pcb-bg);
+  border: 2px solid var(--border-strong);
+  box-shadow: inset 0 0 22px rgba(0, 0, 0, 0.28);
+  max-width: 720px;
+}
+.mobo-zone { min-width: 0; }
+.mobo-zone .zone-label {
+  display: block;
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--pcb-ink);
+  margin-bottom: 5px;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+}
+.zone-cpu { grid-area: cpu; }
+.zone-ram { grid-area: ram; }
+.zone-drives { grid-area: drives; }
+.zone-gpu { grid-area: gpu; }
+.zone-slots { display: flex; gap: 6px; flex-wrap: wrap; }
+
+/* the slots themselves — real buttons, keyboard reachable */
+.slot {
+  border: 2px dashed var(--border-strong);
+  border-radius: 6px;
+  background: var(--panel-bg);
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1.25;
+  padding: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  transition: border-color 0.1s ease, box-shadow 0.1s ease;
+}
+.slot:hover, .slot:focus-visible { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+.slot .slot-plus { font-size: 16px; font-weight: 700; color: var(--muted); }
+.slot .slot-chip {
+  font-weight: 600;
+  font-size: 10.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+  padding: 0 2px;
+}
+/* per-zone slot shapes */
+.slot-cpu { width: 92px; height: 92px; }
+.slot-ram { width: 30px; height: 110px; }
+.slot-ram .slot-chip { writing-mode: vertical-rl; max-height: 100%; }
+.slot-gpu { width: 100%; min-width: 220px; height: 30px; }
+.zone-gpu .zone-slots { flex-direction: column; flex-wrap: nowrap; }
+.slot-storage { width: 100%; height: 26px; }
+.zone-drives .zone-slots { flex-direction: column; flex-wrap: nowrap; }
+
+/* filled / state styling */
+.slot.ok { border-style: solid; border-color: var(--good); background: rgba(28, 124, 60, 0.08); }
+.slot.warn { border-style: solid; border-color: #c9a227; background: rgba(201, 162, 39, 0.12); }
+.slot.bad { border-style: solid; border-color: var(--bad); background: rgba(179, 53, 44, 0.1); box-shadow: 0 0 0 2px rgba(179, 53, 44, 0.25); }
+
+/* surrounding bays (psu/case/cooling/os/expansion…) */
+.mobo-bays {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+  padding: 10px 12px;
+  background: var(--panel-bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  max-width: 720px;
+}
+.zone-bay .zone-label { color: var(--muted); text-shadow: none; }
+.zone-bay .slot { min-width: 96px; height: 40px; }
+
+/* ---------- §12.5 slot part-picker popover ---------- */
+.slot-picker { display: flex; flex-direction: column; gap: 4px; }
+.picker-line { display: flex; align-items: center; gap: 6px; }
+.picker-row {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  text-align: left;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-bg);
+  color: var(--ink);
+  padding: 7px 11px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.picker-row:hover:not(:disabled), .picker-row:focus-visible { border-color: var(--accent); background: var(--accent-soft); }
+.picker-row.current { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.picker-row.incompat { opacity: 0.55; cursor: not-allowed; }
+.picker-row .pr-name { font-weight: 600; }
+.picker-row .pr-meta { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.picker-row .pr-why { flex-basis: 100%; color: var(--bad); font-size: 12px; }
+.picker-row.picker-remove { border-style: dashed; color: var(--muted); }
+
+/* ---------- §12.4 device cards ---------- */
+.device-cards .device-card .wiki-desc { margin-top: 6px; }
+.chip-type.t-device_repair { background: rgba(163, 36, 95, 0.1); border: 1px solid rgba(163, 36, 95, 0.35); }
+
+@media (max-width: 900px) {
+  .mobo-board {
+    grid-template-columns: 1fr 1fr;
+    grid-template-areas:
+      "cpu    ram"
+      "gpu    gpu"
+      "drives drives";
+  }
+  .slot-gpu { min-width: 0; }
+}

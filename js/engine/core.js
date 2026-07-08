@@ -87,7 +87,7 @@
     // §10.2 derived difficulty: base by type + category bonus + premium/legacy
     DIFF_BASE: { repair: 2, upgrade: 1, software: 1, cleaning: 1, peripheral: 2,
                  data_recovery: 3, build: 2, enthusiast: 3, contract: 3,
-                 refurb: 2, callback: 2 },
+                 refurb: 2, callback: 2, device_repair: 2 },
     DIFF_CAT_BONUS: { motherboard: 1, cpu: 1 },
     LEGACY_MACHINE_YEARS: 8,     // machine older than this => +1 difficulty
     // §10.5 peripheral kinds set difficulty (CRT rebuild > mouse fix)
@@ -134,7 +134,7 @@
     TYPE_MULT: {
       repair: 0.8, upgrade: 0.7, software: 0.85, cleaning: 0.6, peripheral: 0.6,
       data_recovery: 1.4, enthusiast: 1.25, contract: 0.65, build: 0, refurb: 0,
-      callback: 0
+      callback: 0, device_repair: 1.0
     },
     BENCH_FEE_LABOR_MULT: 0.5,   // §9.6: repairs add ~0.5x laborRate bench fee to payout
     // §9.2 — which customer types can receive which job type. Key is "type",
@@ -209,13 +209,32 @@
     },
     AESTHETIC_MIN_STYLE: 8,      // combined case+cooling style for aesthetic builds
 
+    // §12.1/§12.2 motherboard slots & multi-GPU
+    SLOT_DEFAULTS: { ram: 99, gpu: 99, storage: 99 },  // boards without slots data
+    MULTI_GPU_SECOND: 0.65,         // 2nd matched card adds 65% of its score
+    MULTI_GPU_SECOND_VOODOO: 0.90,  // Voodoo2 scan-line interleave: near-ideal
+    MULTI_GPU_CHANCE: 0.35,         // gaming build asks for a pair (when feasible)
+    RAM_HEAVY_CHANCE: 0.30,         // office/ws/server build goes RAM-maxed (2003+)
+    RAM_HEAVY_STICK_MULT: 2.5,      // target = 2.5x biggest stick => needs 3+ sticks
+    VOODOO2_WINDOW: [1998, 2000],   // §12.2 accurate multi-GPU request windows
+    SLI_WINDOW: [2005, 2016],
+    // §12.4 device repair (Apple + mobile)
+    DEVICE_REPAIR_TAIL_YEARS: 6,    // devices repairable this long past EOL
+    DEVICE_APPLE_WEIGHT: 1.2,       // offer-pool weight (repairs are 10)
+    DEVICE_MOBILE_RAMP: { 2009: 1.5, 2013: 4, 2016: 6 },  // boom-era volume ramp
+    DEVICE_TIER_FACTOR: { budget: 2, mainstream: 4, premium: 7, flagship: 10 },
+    TABLET_VALUE_MULT: 1.5,         // bigger panels cost more (research §4.1)
+    APPLE_VALUE_MULT: 2.0,          // device value = mid(basePriceRange) x this
+    APPLE_MODERN_YEAR: 2012,        // the soldered-RAM/glued-battery hinge year
+    APPLE_MODERN_PARTS_MULT: 1.5,   // post-2012 Apple parts cost more
+
     NEW_BADGE_DAYS: 90           // market "isNew" window
   };
 
   // ------------------------------------------------------------------
   // Live state reference (set by api.js newGame/importSave)
   // ------------------------------------------------------------------
-  Engine.VERSION = '0.4';        // shown in the System tab (§10/§11)
+  Engine.VERSION = '0.4b';       // §12: parseFloat-compatible with the UI's >=0.4 gate
   Engine._state = null;
   Engine.getData = function () { return root.DATA || {}; };
 
@@ -529,7 +548,8 @@
   var FALLBACK_STAFF_ROLES = [
     { id: 'technician', name: 'Technician',
       desc: 'Bench work: repairs, upgrades, refurbs, peripherals, cleaning.',
-      jobTypes: ['repair', 'upgrade', 'refurb', 'peripheral', 'cleaning', 'callback'],
+      jobTypes: ['repair', 'upgrade', 'refurb', 'peripheral', 'cleaning', 'callback',
+                 'device_repair'],
       wageFactor: 1 },
     { id: 'software', name: 'Software Specialist',
       desc: 'OS installs, virus cleanup, data recovery.',
@@ -554,6 +574,15 @@
     return role && (role.id === 'apprentice' || !(role.jobTypes || []).length);
   }
   Engine.isApprenticeRole = isApprenticeRole;
+  /* §12.4: device repair is Technician work. Role data that predates v0.4b
+   * won't list 'device_repair', so any role covering 'repair' covers it —
+   * the software specialist (software/data_recovery only) never does. */
+  function roleCoversType(role, jobType) {
+    var types = (role && role.jobTypes) || [];
+    if (types.indexOf(jobType) !== -1) return true;
+    return jobType === 'device_repair' && types.indexOf('repair') !== -1;
+  }
+  Engine.roleCoversType = roleCoversType;
 
   /* §10.7: time multiplier for an action on job type T = 1 / (1 + S),
    * S = sum over applicable staff (by contribution desc) of skill x 0.75^(k-1);
@@ -567,7 +596,7 @@
       var role = Engine.staffRoleById(st.role);
       if (!role) continue;
       if (isApprenticeRole(role)) contribs.push(st.skill * C.APPRENTICE_EFFECT);
-      else if ((role.jobTypes || []).indexOf(jobType) !== -1) contribs.push(st.skill);
+      else if (roleCoversType(role, jobType)) contribs.push(st.skill);
     }
     if (!contribs.length) return 1;
     contribs.sort(function (a, b) { return b - a; });
@@ -613,8 +642,7 @@
       var m = state.staff[i];
       var role = Engine.staffRoleById(m.role);
       if (!role) continue;
-      var applicable = isApprenticeRole(role) ||
-                       (role.jobTypes || []).indexOf(jobType) !== -1;
+      var applicable = isApprenticeRole(role) || roleCoversType(role, jobType);
       if (!applicable) continue;
       m.xp = Engine.round2((m.xp || 0) + hours);
       while ((m.level || 1) < C.STAFF_LEVEL_THRESHOLDS.length &&

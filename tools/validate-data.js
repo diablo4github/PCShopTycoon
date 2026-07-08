@@ -21,12 +21,12 @@ var warnings = [];
 function err(msg) { errors.push(msg); }
 function warn(msg) { warnings.push(msg); }
 
-var CATEGORIES = ['cpu', 'motherboard', 'ram', 'storage', 'gpu', 'psu', 'case', 'cooling', 'os', 'peripheral'];
+var CATEGORIES = ['cpu', 'motherboard', 'ram', 'storage', 'gpu', 'psu', 'case', 'cooling', 'os', 'peripheral', 'expansion'];
 var TIERS = ['budget', 'mainstream', 'premium'];
 var NAMESPACES = ['SKT', 'MEM', 'BUS', 'STOR', 'FF', 'ARCH'];
 var NS_RE = /^(SKT|MEM|BUS|STOR|FF|ARCH)-[A-Z0-9]+$/;
-// namespace a non-motherboard category is matched on (§5.1)
-var CAT_NS = { cpu: 'SKT', ram: 'MEM', gpu: 'BUS', storage: 'STOR', psu: 'FF', case: 'FF', os: 'ARCH' };
+// namespace a non-motherboard category is matched on (§5.1; expansion per v0.4b §12.3 = BUS overlap)
+var CAT_NS = { cpu: 'SKT', ram: 'MEM', gpu: 'BUS', storage: 'STOR', psu: 'FF', case: 'FF', os: 'ARCH', expansion: 'BUS' };
 
 function isInt(x) { return typeof x === 'number' && isFinite(x) && Math.floor(x) === x; }
 function isNum(x) { return typeof x === 'number' && isFinite(x); }
@@ -118,7 +118,40 @@ PARTS.forEach(function (p, i) {
       err(label + ': ' + p.category + ' needs at least one ' + CAT_NS[p.category] + '-* tag');
     }
   }
+
+  // v0.4b §12.1: slots required on every motherboard, sane ranges (research §1.2 exceptions:
+  // gpu 0 allowed on integrated-only boards like i810; up to 8 on pre-PCI ISA/VLB boards).
+  if (p.category === 'motherboard') {
+    var sl = p.slots;
+    if (!sl || !isInt(sl.ram) || !isInt(sl.gpu) || !isInt(sl.storage)) {
+      err(label + ': motherboard needs slots { ram, gpu, storage } (v0.4b §12.1)');
+    } else {
+      if (sl.ram < 1 || sl.ram > 16) err(label + ': slots.ram ' + sl.ram + ' outside 1-16');
+      if (sl.storage < 1 || sl.storage > 12) err(label + ': slots.storage ' + sl.storage + ' outside 1-12');
+      var busTags = tagsIn(p, 'BUS');
+      var isaEra = busTags.length > 0 && busTags.every(function (t) { return t === 'BUS-ISA8' || t === 'BUS-ISA16' || t === 'BUS-VLB'; });
+      var gpuMin = p.integratedVideo ? 0 : 1;
+      var gpuMax = isaEra ? 8 : 4;
+      if (sl.gpu < gpuMin || sl.gpu > gpuMax) err(label + ': slots.gpu ' + sl.gpu + ' outside sane range [' + gpuMin + ', ' + gpuMax + ']');
+    }
+  } else if (p.slots !== undefined) err(label + ': slots is motherboard-only');
+
+  // v0.4b §12.2: sliTag year windows; addonOnly reserved for Voodoo2-class add-on GPUs
+  if (p.sliTag !== undefined) {
+    if (p.category !== 'gpu') err(label + ': sliTag is gpu-only');
+    else if (!isStr(p.sliTag)) err(label + ': sliTag must be a non-empty string');
+    else if (p.sliTag === 'VOODOO2') {
+      if (p.introYear < 1998 || p.introYear > 2000) err(label + ': VOODOO2 sliTag outside the 1998-2000 window');
+    } else if (p.introYear < 2004 || p.introYear > 2020) {
+      err(label + ': sliTag GPU intro ' + p.introYear + ' outside the 2004-2020 SLI/CrossFire window');
+    }
+  }
+  if (p.addonOnly !== undefined && (p.addonOnly !== true || p.sliTag !== 'VOODOO2')) {
+    err(label + ': addonOnly is reserved for Voodoo2-class 3D add-on GPUs');
+  }
 });
+var v2Cards = PARTS.filter(function (p) { return p.sliTag === 'VOODOO2'; });
+if (v2Cards.length < 2) err('v0.4b §12.2: need >= 2 Voodoo2 GPUs sharing sliTag "VOODOO2", have ' + v2Cards.length);
 if (PARTS.length < 600 || PARTS.length > 700) {
   err('PARTS total ' + PARTS.length + ' outside v2 target 600-700 (§9.1)');
 }
@@ -145,6 +178,7 @@ var cov = BUCKETS.map(function (b) {
     if (row._brands[c] < MIN_BRANDS) err('coverage: bucket ' + row.bucket + ' has only ' + row._brands[c] + ' distinct ' + c + ' brand(s) (need ' + MIN_BRANDS + ', v2 §9.1)');
   });
   MINOR.forEach(function (c) { if (row[c] < MIN_MINOR) err('coverage: bucket ' + row.bucket + ' has only ' + row[c] + ' ' + c + ' (need ' + MIN_MINOR + ')'); });
+  if (b[0] >= 1985 && row.expansion < 2) err('coverage: bucket ' + row.bucket + ' has only ' + row.expansion + ' expansion (need 2, v0.4b §12.3)');
   return row;
 });
 
@@ -186,6 +220,9 @@ function findBuild(y) {
     var mb = mobos[m];
     var mbTags = mb.platformTags;
     var mbFF = tagsIn(mb, 'FF');
+    // v0.4b §12.6: witness respects slot capacity (1 ram + 1 storage + optional 1 gpu)
+    var caps = mb.slots || { ram: 99, gpu: 99, storage: 99 };
+    if (caps.ram < 1 || caps.storage < 1) continue;
 
     function fits(part) { // non-mobo part against mobo (§5.1)
       var ns = CAT_NS[part.category];
@@ -211,6 +248,7 @@ function findBuild(y) {
 
     for (var v = 0; v < variants.length; v++) {
       var gpu = variants[v];
+      if (gpu && caps.gpu < 1) continue; // no GPU slot — integrated-only boards
       var draw = mb.powerDraw + cpu.powerDraw + ram.powerDraw + stor.powerDraw + (gpu ? gpu.powerDraw : 0);
       var need = 1.15 * draw;
       var psus = pool.psu.filter(function (ps) { return fits(ps) && ps.watts >= need; });
@@ -414,7 +452,58 @@ var PERIPH_KINDS = ['printer', 'crt', 'lcd', 'modem', 'input', 'scanner', 'other
 needLen(FL.staffNames, 25, 'staffNames');
 
 // ---------------------------------------------------------------- v0.3 (§10.7) staff roles
-var JOB_TYPES = ['repair', 'upgrade', 'build', 'refurb', 'data_recovery', 'software', 'cleaning', 'peripheral', 'contract', 'enthusiast', 'callback'];
+var JOB_TYPES = ['repair', 'upgrade', 'build', 'refurb', 'data_recovery', 'software', 'cleaning', 'peripheral', 'contract', 'enthusiast', 'callback', 'device_repair'];
+
+// ---------------------------------------------------------------- v0.4b (§12.4) device tables
+var APPLE_FAMILIES = ['APPLE-68K', 'APPLE-PPC', 'APPLE-INTEL', 'APPLE-SILICON'];
+var AM = DATA.APPLE_MACHINES || [];
+if (AM.length < 22) err('APPLE_MACHINES: need >= 22 machines (research §3.2), have ' + AM.length);
+var amIds = {};
+AM.forEach(function (d) {
+  var l = 'APPLE_MACHINES.' + d.id;
+  if (!isStr(d.id) || amIds[d.id]) err(l + ': missing/duplicate id'); amIds[d.id] = true;
+  if (!isStr(d.name)) err(l + ': name required');
+  if (APPLE_FAMILIES.indexOf(d.family) === -1) err(l + ': family must be one of ' + APPLE_FAMILIES.join('|'));
+  if (!isInt(d.introYear) || !isInt(d.eolYear) || d.eolYear < d.introYear) err(l + ': intro/eol invalid');
+  if (typeof d.ramUpgradable !== 'boolean' || typeof d.hddUpgradable !== 'boolean') err(l + ': ramUpgradable/hddUpgradable must be booleans');
+  if (d.cpuUpgradable !== false) err(l + ': cpuUpgradable must be false (no CPU upgrades ever)');
+  if (!Array.isArray(d.basePriceRange) || d.basePriceRange.length !== 2 || !isNum(d.basePriceRange[0]) ||
+      !isNum(d.basePriceRange[1]) || d.basePriceRange[0] >= d.basePriceRange[1]) err(l + ': basePriceRange must be [lo, hi]');
+  if (!Array.isArray(d.faultCategories) || !d.faultCategories.length || !d.faultCategories.every(isStr)) err(l + ': faultCategories required');
+  if (!isStr(d.desc) || d.desc.length < 40) err(l + ': desc must tell the repairability story (>= 40 chars)');
+});
+
+var MD = DATA.MOBILE_DEVICES || [];
+if (MD.length < 10) err('MOBILE_DEVICES: need >= 10 devices, have ' + MD.length);
+var mdIds = {};
+MD.forEach(function (d) {
+  var l = 'MOBILE_DEVICES.' + d.id;
+  if (!isStr(d.id) || mdIds[d.id]) err(l + ': missing/duplicate id'); mdIds[d.id] = true;
+  if (['smartphone', 'tablet'].indexOf(d.kind) === -1) err(l + ': kind must be smartphone|tablet');
+  if (!isStr(d.name) || !isStr(d.brand)) err(l + ': name/brand required');
+  if (!isInt(d.introYear) || !isInt(d.eolYear) || d.eolYear < d.introYear) err(l + ': intro/eol invalid');
+  if (d.kind === 'smartphone' && d.introYear < 2007) err(l + ': smartphones start 2007');
+  if (d.kind === 'tablet' && d.introYear < 2010) err(l + ': tablets start 2010');
+  if (TIERS.indexOf(d.tier) === -1) err(l + ': tier invalid');
+});
+if (!MD.some(function (d) { return d.kind === 'smartphone'; })) err('MOBILE_DEVICES: no smartphones');
+if (!MD.some(function (d) { return d.kind === 'tablet'; })) err('MOBILE_DEVICES: no tablets');
+
+var MOBILE_FAULT_KINDS = ['screen', 'battery', 'charge-port', 'water-damage', 'camera', 'speaker-mic', 'button'];
+var MF = DATA.MOBILE_FAULTS || {};
+MOBILE_FAULT_KINDS.forEach(function (k) {
+  var arr = MF[k];
+  if (!Array.isArray(arr) || !arr.length) { err('MOBILE_FAULTS.' + k + ': missing/empty'); return; }
+  arr.forEach(function (f, i) {
+    var l = 'MOBILE_FAULTS.' + k + '[' + i + ']';
+    if (!isStr(f.desc)) err(l + ': desc required');
+    if (!Array.isArray(f.complaints) || f.complaints.length < 2 || !f.complaints.every(isStr)) err(l + ': complaints >= 2 required');
+    if (!Array.isArray(f.faultDescs) || f.faultDescs.length < 2 || !f.faultDescs.every(isStr)) err(l + ': faultDescs >= 2 required');
+    if (!isNum(f.laborHours) || f.laborHours <= 0) err(l + ': laborHours > 0 required');
+    if (!isNum(f.partsCostFactor) || f.partsCostFactor <= 0) err(l + ': partsCostFactor > 0 required');
+  });
+});
+Object.keys(MF).forEach(function (k) { if (MOBILE_FAULT_KINDS.indexOf(k) === -1) err('MOBILE_FAULTS: unknown kind "' + k + '"'); });
 var ROLES = DATA.STAFF_ROLES || [];
 if (ROLES.length !== 4) err('STAFF_ROLES must have exactly 4 roles, has ' + ROLES.length);
 var roleNames = ROLES.map(function (r) { return r.name; });
@@ -511,6 +600,10 @@ PERIPH_KINDS.forEach(function (k) {
   if (!ys.length) err('TASK_STEPS matrix: peripheral kind "' + k + '" has no item available in any sample year');
   COMBOS.push({ type: 'peripheral', cat: null, sub: k, years: ys });
 });
+// v0.4b §12.6: device_repair coverage at 1986/1996/2010/2015/2023 where era-valid
+COMBOS.push({ type: 'device_repair', cat: null, sub: 'apple', years: [1986, 1996, 2010, 2015, 2023] });
+COMBOS.push({ type: 'device_repair', cat: null, sub: 'smartphone', years: [2010, 2015, 2023] });
+COMBOS.push({ type: 'device_repair', cat: null, sub: 'tablet', years: [2010, 2015, 2023] });
 
 var matrixCells = 0, matrixFails = 0;
 COMBOS.forEach(function (c) {
@@ -558,6 +651,14 @@ console.log('\n=== Summary ===');
 console.log('Parts: ' + PARTS.length + ' | Eras: ' + (DATA.ERAS || []).length + ' | Tiers: ' + TIERS_ARR.length +
   ' | Equipment: ' + EQ.length + ' | Historical events: ' + HIST.length + ' | Random templates: ' + TMPL.length +
   ' | Staff roles: ' + ROLES.length + ' | Staff names: ' + ((FL.staffNames || []).length));
+console.log('Devices: Apple ' + AM.length + ' | Mobile ' + MD.length + ' (' +
+  MD.filter(function (d) { return d.kind === 'smartphone'; }).length + ' phones, ' +
+  MD.filter(function (d) { return d.kind === 'tablet'; }).length + ' tablets) | Mobile fault kinds: ' +
+  MOBILE_FAULT_KINDS.length + ' | Boards with slots: ' +
+  PARTS.filter(function (p) { return p.category === 'motherboard' && p.slots; }).length + '/' +
+  PARTS.filter(function (p) { return p.category === 'motherboard'; }).length +
+  ' | sliTag GPUs: ' + PARTS.filter(function (p) { return p.sliTag; }).length +
+  ' (Voodoo2: ' + v2Cards.length + ')');
 console.log('Baseline years: ' + ybYears.join(', '));
 
 if (warnings.length) {

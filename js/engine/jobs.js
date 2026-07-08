@@ -1318,6 +1318,7 @@
   // ------------------------------------------------------------------
   var BUILD_CATS = ['cpu', 'motherboard', 'ram', 'storage', 'gpu', 'psu', 'case',
                     'cooling', 'os'];
+  var MULTI_SLOT_CATS = ['ram', 'gpu', 'storage'];   // §12.2 board-driven counts
 
   function buildJobOrErr(state, jobId) {
     var job = Jobs.findActive(state, jobId);
@@ -1325,20 +1326,72 @@
     if (!isBuildJob(job) || !job.build) return { error: 'Not a custom-build job' };
     return { job: job };
   }
-  function selectedMobo(job) {
-    for (var i = 0; i < job.build.parts.length; i++) {
-      var p = Engine.partById(job.build.parts[i]);
-      if (p && p.category === 'motherboard') return p;
+  // §12.2: build.parts is a per-category map of slot arrays. Saves from v4 and
+  // earlier stored a flat id array — normalize lazily so un-migrated callers
+  // (and mid-migration states) never break.
+  function emptyBuildParts() {
+    var m = {};
+    for (var i = 0; i < BUILD_CATS.length; i++) m[BUILD_CATS[i]] = [];
+    return m;
+  }
+  Jobs.emptyBuildParts = emptyBuildParts;
+  function wrapBuildParts(build) {
+    if (!build) return;
+    if (Array.isArray(build.parts)) {
+      var flat = build.parts, map = emptyBuildParts();
+      for (var i = 0; i < flat.length; i++) {
+        var p = Engine.partById(flat[i]);
+        if (p && map[p.category]) map[p.category].push(flat[i]);
+      }
+      build.parts = map;
+    } else if (!build.parts || typeof build.parts !== 'object') {
+      build.parts = emptyBuildParts();
     }
-    return null;
+  }
+  Jobs.wrapBuildParts = wrapBuildParts;
+  function selArray(build, cat) {
+    wrapBuildParts(build);
+    if (!Array.isArray(build.parts[cat])) build.parts[cat] = [];
+    return build.parts[cat];
+  }
+  // Flat non-null id list across every category (validation/commit/perf).
+  function flattenBuildIds(build) {
+    wrapBuildParts(build);
+    var out = [];
+    for (var c = 0; c < BUILD_CATS.length; c++) {
+      var arr = build.parts[BUILD_CATS[c]];
+      if (!Array.isArray(arr)) continue;
+      for (var i = 0; i < arr.length; i++) if (arr[i] != null) out.push(arr[i]);
+    }
+    return out;
+  }
+  Jobs.flattenBuildIds = flattenBuildIds;
+  function selectedMobo(job) {
+    var arr = selArray(job.build, 'motherboard');
+    return arr[0] != null ? Engine.partById(arr[0]) : null;
+  }
+  /* §12.2 slot count for a category: 1 for single-slot categories; the selected
+   * board's slots.* otherwise (0 until a board is chosen; null when the board
+   * carries no slots data — the UI feature-detects null and falls back to the
+   * old select list). */
+  function slotCountFor(cat, mobo) {
+    if (MULTI_SLOT_CATS.indexOf(cat) === -1) return 1;
+    if (!mobo) return 0;
+    if (!mobo.slots) return null;
+    var n = mobo.slots[cat];
+    return (typeof n === 'number' && isFinite(n) && n >= 1) ? Math.floor(n) : null;
+  }
+  Jobs.slotCountFor = slotCountFor;
+  function trimTrailingNulls(arr) {
+    while (arr.length && arr[arr.length - 1] == null) arr.pop();
   }
 
   Jobs.getBuildCatalog = function (state, jobId) {
     var g = buildJobOrErr(state, jobId);
-    if (g.error) return { categories: {} };
+    if (g.error) return { categories: {}, slots: {} };
     var job = g.job;
     var mobo = selectedMobo(job);
-    var categories = {};
+    var categories = {}, slotsView = {};
     for (var c = 0; c < BUILD_CATS.length; c++) {
       var cat = BUILD_CATS[c];
       var list = [];
@@ -1360,26 +1413,60 @@
       }
       list.sort(function (a, b) { return a.price - b.price; });
       categories[cat] = list;
+      // §12.2: per-category slotCount + current selections padded to length.
+      // slotCount 0 = no board chosen yet (ram/gpu/storage); null = the board
+      // has no slots data (UI feature-detects and falls back to select lists).
+      var slotCount = slotCountFor(cat, mobo);
+      var sel = selArray(job.build, cat).slice();
+      var padTo = (slotCount == null) ? Math.max(sel.length, 1) : slotCount;
+      while (sel.length < padTo) sel.push(null);
+      if (slotCount != null && sel.length > slotCount) sel.length = slotCount;
+      slotsView[cat] = { slotCount: slotCount, selected: sel };
     }
-    return { categories: categories };
+    return { categories: categories, slots: slotsView };
   };
 
-  Jobs.setBuildPart = function (state, jobId, category, partId) {
+  Jobs.setBuildPart = function (state, jobId, category, partId, slotIndex) {
     var g = buildJobOrErr(state, jobId);
     if (g.error) return err(g.error);
     var job = g.job;
     if (job.build.committed) return err('Build already committed');
     if (BUILD_CATS.indexOf(category) === -1) return err('Unknown category: ' + category);
-    // Clear existing selection in this category
-    job.build.parts = job.build.parts.filter(function (pid) {
-      var p = Engine.partById(pid);
-      return p && p.category !== category;
-    });
+    var si = (slotIndex == null) ? 0 : Math.floor(Number(slotIndex));
+    if (!isFinite(si) || si < 0) return err('Bad slot index');
+    var mobo = selectedMobo(job);
+    var cap = slotCountFor(category, mobo);
+    if (si > 0) {   // slot 0 always works (backward compat: parts before board)
+      if (MULTI_SLOT_CATS.indexOf(category) === -1)
+        return err('Only one ' + category + ' slot');
+      if (!mobo) return err('Choose a motherboard first');
+      var lim = (cap == null) ? Engine.CONFIG.SLOT_DEFAULTS[category] : cap;
+      if (si >= lim)
+        return err('Board has only ' + lim + ' ' +
+                   ({ ram: 'RAM slot', gpu: 'GPU slot', storage: 'storage connector' }[category]) +
+                   (lim === 1 ? '' : 's'));
+    }
+    var arr = selArray(job.build, category);
     if (partId != null && partId !== '') {
       var part = Engine.partById(partId);
       if (!part || part.category !== category) return err('That part is not a ' + category);
       if (!purchasable(part, state)) return err(part.name + ' is not on the market');
-      job.build.parts.push(part.id);
+      while (arr.length <= si) arr.push(null);
+      arr[si] = part.id;
+    } else {
+      if (si < arr.length) arr[si] = null;
+      trimTrailingNulls(arr);
+    }
+    // Board change: selections past the new board's capacity fall out.
+    if (category === 'motherboard') {
+      var newMobo = selectedMobo(job);
+      for (var m = 0; m < MULTI_SLOT_CATS.length; m++) {
+        var mc = MULTI_SLOT_CATS[m];
+        var mcCap = slotCountFor(mc, newMobo);
+        var mcArr = selArray(job.build, mc);
+        if (mcCap != null && mcCap >= 1 && mcArr.length > mcCap) mcArr.length = mcCap;
+        trimTrailingNulls(mcArr);
+      }
     }
     job.build.validated = false;
     return { ok: true };
@@ -1391,13 +1478,14 @@
                           style: 0, partsCost: 0, budget: 0, underBudget: false };
     var job = g.job;
     var b = job.build;
-    var res = Engine.Compat.validatePartList(b.parts, {
+    var flatIds = flattenBuildIds(b);   // §12.2 slot arrays -> flat id list
+    var res = Engine.Compat.validatePartList(flatIds, {
       requireFull: true, minPerfGpu: b.minPerf ? b.minPerf.gpu : null,
       year: Engine.currentYear(state)
     });
     var partsCost = 0;
-    for (var i = 0; i < b.parts.length; i++) {
-      partsCost = Engine.round2(partsCost + P().priceOf(b.parts[i], state, { buy: true }));
+    for (var i = 0; i < flatIds.length; i++) {
+      partsCost = Engine.round2(partsCost + P().priceOf(flatIds[i], state, { buy: true }));
     }
     var perf = { cpu: res.perf.cpu, gpu: res.perf.gpu, ramMB: res.perf.ramMB,
                  storageGB: res.perf.storageGB, composite: res.composite };

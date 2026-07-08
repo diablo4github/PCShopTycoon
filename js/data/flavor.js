@@ -580,6 +580,48 @@
       { label: "Service & clean mechanism", hours: 0.5 },
       { label: "Replace worn parts", hours: 0.5 },
       { label: "Full function test", hours: 0.5 }
+    ] },
+    // ---------------- device repair (v0.4b §12.4: Apple & mobile) ----------------
+    { type: "device_repair", partCategory: null, subtype: "apple", minYear: null, maxYear: 1997, steps: [
+      { label: "Intake & symptom interview", hours: 0.25 },
+      { label: "Crack the case (long Torx & case spreader)", hours: 0.5 },
+      { label: "Discharge the built-in CRT", hours: 0.25, cond: "crt-kit" },
+      { label: "Swap SIMMs / drive via SCSI chain", hours: 0.5 },
+      { label: "Repair analog or logic board fault", hours: 0.75 },
+      { label: "Reassemble & boot from System disks", hours: 0.5 }
+    ] },
+    { type: "device_repair", partCategory: null, subtype: "apple", minYear: 1998, maxYear: 2011, steps: [
+      { label: "Intake & symptom interview", hours: 0.25 },
+      { label: "Open case via panel or side door", hours: 0.25 },
+      { label: "Swap RAM/drive through access bay", hours: 0.5 },
+      { label: "Repair board, PSU or optical fault", hours: 0.75 },
+      { label: "Reinstall Mac OS & updates", hours: 0.5 },
+      { label: "Burn-in & handoff", hours: 0.25 }
+    ] },
+    { type: "device_repair", partCategory: null, subtype: "apple", minYear: 2012, maxYear: null, steps: [
+      { label: "Intake & run Apple diagnostics", hours: 0.25 },
+      { label: "Remove pentalobe screws & release lid", hours: 0.25 },
+      { label: "Heat-gun the adhesive & free the battery", hours: 0.5 },
+      { label: "Swap display/battery/board module", hours: 0.75 },
+      { label: "Calibrate battery & verify sensors", hours: 0.5 },
+      { label: "Reseal, torque check & handoff", hours: 0.25 }
+    ] },
+    { type: "device_repair", partCategory: null, subtype: "smartphone", minYear: null, maxYear: null, steps: [
+      { label: "Intake & full-function test grid", hours: 0.25 },
+      { label: "Heat & pry the screen assembly", hours: 0.5 },
+      { label: "Pentalobe/tri-point teardown", hours: 0.25, minYear: 2011 },
+      { label: "Ultrasonic-bath board clean", hours: 0.5, minYear: 2012 },
+      { label: "Transfer components to the new part", hours: 0.5 },
+      { label: "Reassemble & seal", hours: 0.25 },
+      { label: "Battery calibration & final test grid", hours: 0.5 }
+    ] },
+    { type: "device_repair", partCategory: null, subtype: "tablet", minYear: null, maxYear: null, steps: [
+      { label: "Intake & full-function test grid", hours: 0.25 },
+      { label: "Heat-gun the adhesive frame", hours: 0.5 },
+      { label: "Lift the glass with picks & suction", hours: 0.5 },
+      { label: "Swap panel, battery or port flex", hours: 0.5 },
+      { label: "Rebond, clamp & cure", hours: 0.5 },
+      { label: "Battery calibration & final test", hours: 0.5 }
     ] }
   ];
 

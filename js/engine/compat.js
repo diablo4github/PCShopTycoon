@@ -9,7 +9,8 @@
 
   // Category -> tag namespace prefix checked against the motherboard's tags.
   var NAMESPACE = {
-    cpu: 'SKT-', ram: 'MEM-', gpu: 'BUS-', storage: 'STOR-', psu: 'FF-', os: 'ARCH-'
+    cpu: 'SKT-', ram: 'MEM-', gpu: 'BUS-', storage: 'STOR-', psu: 'FF-', os: 'ARCH-',
+    expansion: 'BUS-'   // §12.3: bus tag overlap, never required, no slot cap
     // case: reversed check (mobo FF tag must appear in the case's accepted list)
     // cooling/peripheral: always compatible
   };
@@ -48,26 +49,60 @@
     for (var j = 0; j < need.length; j++)
       if (mTags.indexOf(need[j]) !== -1) return { fits: true, why: '' };
     var label = { cpu: 'CPU socket', ram: 'Memory type', gpu: 'Bus',
-                  storage: 'Storage interface', psu: 'PSU form factor', os: 'OS architecture' }[part.category];
+                  storage: 'Storage interface', psu: 'PSU form factor',
+                  os: 'OS architecture', expansion: 'Bus' }[part.category];
     return { fits: false, why: label + ' ' + need.join('/') + ' not on motherboard' };
   };
 
+  /* §12.2 multi-GPU pairing factor: 2nd matched card adds 65% of its score
+   * (Voodoo2 scan-line interleave: 90%). */
+  function pairFactor(sliTag) {
+    return /voodoo/i.test(String(sliTag || '')) ?
+      Engine.CONFIG.MULTI_GPU_SECOND_VOODOO : Engine.CONFIG.MULTI_GPU_SECOND;
+  }
+  Compat.pairFactor = pairFactor;
+
+  /* §12.2 effective gpu score for a set of gpu parts: the best of (any single
+   * card; any same-sliTag pair = first + factor x second). Order-independent —
+   * a mismatched extra card contributes nothing but can still be the best
+   * single (the historically-correct 2D-card + Voodoo2-pair config just works). */
+  function gpuEffective(gpus) {
+    var best = 0, groups = {}, i;
+    for (i = 0; i < gpus.length; i++) {
+      var g = gpus[i], score = (g.perf || {}).gpu || 0;
+      if (score > best) best = score;
+      if (g.sliTag) (groups[g.sliTag] = groups[g.sliTag] || []).push(score);
+    }
+    for (var tag in groups) {
+      if (!Object.prototype.hasOwnProperty.call(groups, tag)) continue;
+      var list = groups[tag];
+      if (list.length < 2) continue;
+      list.sort(function (a, b) { return b - a; });
+      var eff = list[0] + pairFactor(tag) * list[1];   // 3rd+ cards add nothing
+      if (eff > best) best = eff;
+    }
+    return Engine.round2(best);
+  }
+  Compat.gpuEffective = gpuEffective;
+
   /* Machine perf from a part list: { cpu, gpu, ramMB, storageGB }.
+   * ram/storage sum across sticks/drives; gpu uses the §12.2 pairing rule;
    * gpu falls back to integrated (~2) when the board has integratedVideo. */
   Compat.machinePerf = function (parts) {
     var perf = { cpu: 0, gpu: 0, ramMB: 0, storageGB: 0 };
-    var mobo = null, hasGpu = false;
+    var mobo = null, gpus = [];
     for (var i = 0; i < parts.length; i++) {
       var p = parts[i];
       if (!p) continue;
       var pp = p.perf || {};
       if (p.category === 'cpu') perf.cpu = Math.max(perf.cpu, pp.cpu || 0);
-      else if (p.category === 'gpu') { perf.gpu = Math.max(perf.gpu, pp.gpu || 0); hasGpu = true; }
+      else if (p.category === 'gpu') gpus.push(p);
       else if (p.category === 'ram') perf.ramMB += pp.ramMB || 0;
       else if (p.category === 'storage') perf.storageGB += pp.storageGB || 0;
       else if (p.category === 'motherboard') mobo = p;
     }
-    if (!hasGpu && mobo && mobo.integratedVideo)
+    if (gpus.length) perf.gpu = gpuEffective(gpus);
+    else if (mobo && mobo.integratedVideo)
       perf.gpu = Engine.CONFIG.INTEGRATED_GPU_PERF;
     return perf;
   };
@@ -117,6 +152,55 @@
         if (!res.fits) problems.push(parts[i].name + ': ' + res.why);
       }
     }
+    // §12.1 capacity: ram/gpu/storage part counts vs the board's slots.
+    // Boards without slots data default to {99,99,99} — old saves never regress.
+    if (mobo) {
+      var slots = mobo.slots || Engine.CONFIG.SLOT_DEFAULTS;
+      var slotLabel = { ram: 'RAM slots', gpu: 'GPU slots',
+                        storage: 'storage connectors' };
+      var slotCats = ['ram', 'gpu', 'storage'];
+      for (i = 0; i < slotCats.length; i++) {
+        var sc = slotCats[i];
+        var cap = (slots[sc] != null && isFinite(slots[sc])) ?
+          Math.floor(slots[sc]) : Engine.CONFIG.SLOT_DEFAULTS[sc];
+        if ((counts[sc] || 0) > cap) {
+          problems.push('Board has ' + cap + ' ' + slotLabel[sc] +
+                        ' — build uses ' + counts[sc]);
+        }
+      }
+    }
+    // §12.2 multi-GPU sanity: 3D add-on cards (Voodoo2) need a 2D source, and
+    // stacked standard cards must be a matched (same-sliTag) pair.
+    var gpus = [], standardGpus = [], addonGpus = [];
+    for (i = 0; i < parts.length; i++) {
+      if (parts[i].category !== 'gpu') continue;
+      gpus.push(parts[i]);
+      if (parts[i].addonOnly) addonGpus.push(parts[i]); else standardGpus.push(parts[i]);
+    }
+    var addonUncovered = addonGpus.length > 0 && standardGpus.length === 0 &&
+                         !(mobo && mobo.integratedVideo);
+    if (addonUncovered) {
+      problems.push(addonGpus[0].name + ' is a 3D add-on — it needs a 2D card beside it');
+    }
+    if (standardGpus.length >= 2) {
+      var lead = standardGpus[0];
+      for (i = 1; i < standardGpus.length; i++) {
+        var sg = standardGpus[i];
+        if (!lead.sliTag || !sg.sliTag || sg.sliTag !== lead.sliTag) {
+          problems.push(sg.name + " isn't SLI/CrossFire-compatible with " + lead.name);
+        }
+      }
+    }
+    if (addonGpus.length >= 2) {
+      var alead = addonGpus[0];
+      for (i = 1; i < addonGpus.length; i++) {
+        if (!alead.sliTag || !addonGpus[i].sliTag ||
+            addonGpus[i].sliTag !== alead.sliTag) {
+          problems.push(addonGpus[i].name + ' must be an identical pair with ' +
+                        alead.name + ' to interleave');
+        }
+      }
+    }
     // Completeness (full build): cpu, motherboard, ram, storage, case, psu, os
     // + gpu OR integrated video (gpu required anyway if minPerf gpu > integrated)
     if (requireFull) {
@@ -124,8 +208,11 @@
       for (i = 0; i < needCats.length; i++) {
         if (!counts[needCats[i]]) problems.push('Missing ' + needCats[i].toUpperCase());
       }
-      var hasVideo = (counts.gpu || 0) > 0 || (mobo && mobo.integratedVideo);
-      if (!hasVideo) problems.push('Missing GPU (board has no integrated video)');
+      // §12.2: an addon-only 3D card is not a video source by itself (that case
+      // already raised the clearer "needs a 2D card" problem above).
+      var hasVideo = standardGpus.length > 0 || (mobo && mobo.integratedVideo) ||
+                     addonUncovered;
+      if (!hasVideo && !gpus.length) problems.push('Missing GPU (board has no integrated video)');
       if ((counts.gpu || 0) === 0 && mobo && mobo.integratedVideo &&
           opts.minPerfGpu != null && opts.minPerfGpu > Engine.CONFIG.INTEGRATED_GPU_PERF) {
         problems.push('Integrated video too weak — a graphics card is required');

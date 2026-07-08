@@ -25,6 +25,7 @@
         <span id="hdr-rating" class="hdr-rating" title="Shop rating"></span>
         <span id="hdr-prestige" class="hdr-chip" title="Prestige"></span>
         <span id="hdr-tier" class="hdr-chip" title="Shop tier"></span>
+        <button id="btn-help" class="hdr-audio-btn" type="button" title="Help &amp; guided tour" aria-label="Help and guided tour">?</button>
         <button id="btn-music" class="hdr-audio-btn" type="button" title="Toggle music" aria-label="Toggle music">🎵</button>
         <button id="btn-sfx" class="hdr-audio-btn" type="button" title="Toggle sound effects" aria-label="Toggle sound effects">🔊</button>
         <button id="btn-wait" class="btn hdr-wait-btn" type="button" hidden title="Burn 1 hour to advance running timed steps (burn-ins, scans…)">Wait 1h ⏲</button>
@@ -62,6 +63,9 @@
 
   <!-- ============ Overlays ============ -->
   <div id="modal-root"></div>
+  <!-- §13.5 guided-tour overlay: its own layer, deliberately separate from
+       modal-root — it must never trap focus and always yields to modals. -->
+  <div id="tutorial-root"></div>
   <div id="toast-root" aria-live="polite"></div>
 
   <!-- ============ Scripts (SPEC §0 load order) ============ -->
@@ -78,6 +82,7 @@
   <script src="js/ui/ui.js"></script>
   <script src="js/ui/audio.js"></script>
   <script src="js/ui/tabs.js"></script>
+  <script src="js/ui/tutorial.js"></script>
   <script src="js/ui/screens.js"></script>
   <script>
     document.addEventListener('DOMContentLoaded', function () { UI.init(); });

@@ -37,7 +37,7 @@
     if (!isFinite(seed)) seed = 42;
     var startDi = null;
     var state = {
-      version: 5,
+      version: 6,
       seed: seed, rngState: seed | 0,
       shopName: String(opts.shopName ||
         ((DATA.FLAVOR && DATA.FLAVOR.shopNameSuggestions) ?
@@ -70,7 +70,10 @@
       workedToday: [], declinesToday: 0, lastContractDay: null, injuryDaysLeft: 0,
       // §10.7 staff (+§11.5 level-up queue for morning summaries)
       staff: [], staffMarket: [], staffNextRefreshDay: Engine.CONFIG.STAFF_REFRESH_DAYS,
-      staffNextId: 1, levelUpsToday: []
+      staffNextId: 1, levelUpsToday: [],
+      // §13.4 certifications; §13.2 one-time article-unlock news dedup
+      training: { certsEarned: [], studying: null }, certsEarnedToday: [],
+      articlesSeen: []
     };
     Engine._state = state;
     startDi = Engine.dateInfo(0, state);
@@ -86,6 +89,11 @@
     Engine.Jobs.seedAsIsMarket(state);
     Engine.Sim.refreshStaffMarket(state);
     Engine.Jobs.generateOffers(state, null);
+    // §13.2: pre-mark articles already unlocked on day 0 as "seen" — those are
+    // already-lived history for this start year, not a fresh news event.
+    (DATA.ARTICLES || []).forEach(function (a) {
+      if (a && a.id && Engine.Sim.articleUnlocked(a, state)) state.articlesSeen.push(a.id);
+    });
     Engine.pushNews(state, 'system', 'Grand opening: ' + state.shopName,
       (era.name || era.id) + ' — ' + startDi.label + '. ' + (era.blurb || ''));
     return { ok: true };
@@ -276,11 +284,32 @@
     (obj.jobs.active || []).forEach(fixJob);
     return obj;
   }
+  // v5 -> v6 migration (§13): training/certifications + article-unlock news
+  // dedup default in. Never rejects a valid v5 save — a save with no training
+  // simply starts with nothing earned and nothing in progress.
+  function migrateV5toV6(obj) {
+    obj.version = 6;
+    if (!obj.training || typeof obj.training !== 'object')
+      obj.training = { certsEarned: [], studying: null };
+    if (!Array.isArray(obj.training.certsEarned)) obj.training.certsEarned = [];
+    if (obj.training.studying === undefined) obj.training.studying = null;
+    if (!Array.isArray(obj.certsEarnedToday)) obj.certsEarnedToday = [];
+    // §13.2: don't retroactively spam "New Wiki article" news for a save that
+    // predates the feature — silently mark everything unlocked as of right now
+    // as already-seen, same as a fresh newGame does for day-0 unlocks.
+    if (!Array.isArray(obj.articlesSeen)) {
+      obj.articlesSeen = [];
+      (Engine.getData().ARTICLES || []).forEach(function (a) {
+        if (a && a.id && Engine.Sim.articleUnlocked(a, obj)) obj.articlesSeen.push(a.id);
+      });
+    }
+    return obj;
+  }
   Engine.importSave = function (str) {
     var obj;
     try { obj = JSON.parse(String(str)); }
     catch (e) { return err('Not valid save JSON'); }
-    if (!obj || [1, 2, 3, 4, 5].indexOf(obj.version) === -1)
+    if (!obj || [1, 2, 3, 4, 5, 6].indexOf(obj.version) === -1)
       return err('Unsupported save version');
     var required = ['seed', 'rngState', 'eraId', 'startDate', 'day', 'cash',
                     'hoursLeft', 'flags', 'reputation', 'shop', 'inventory',
@@ -292,6 +321,7 @@
     if (obj.version === 2) migrateV2toV3(obj);
     if (obj.version === 3) migrateV3toV4(obj);
     if (obj.version === 4) migrateV4toV5(obj);
+    if (obj.version === 5) migrateV5toV6(obj);
     Engine._state = obj;
     return { ok: true };
   };
@@ -529,6 +559,196 @@
       });
     });
     return out;
+  };
+
+  // ------------------------------------------------------------------
+  // §13.1 Tech Chronicle — a dated almanac of real computing history, wholly
+  // separate from the §2.7 market-event system (zero price/market effect).
+  // ------------------------------------------------------------------
+  Engine.getChronicle = function () {
+    var state = S();
+    if (!state) return [];
+    var entries = Engine.getData().CHRONICLE;
+    if (!Array.isArray(entries)) return [];
+    var out = [];
+    for (var i = 0; i < entries.length; i++) {
+      var e = entries[i];
+      if (!e || !e.id || !e.date) continue;
+      var d = Engine.dayIndexOfISO(e.date, state);
+      if (d > state.day) continue;   // never surfaced before its date
+      out.push({ id: e.id, date: e.date, dateLabel: Engine.dateInfo(d, state).label,
+                 headline: e.headline || '', body: e.body || '', tag: e.tag || null });
+    }
+    out.sort(function (a, b) { return a.date < b.date ? 1 : (a.date > b.date ? -1 : 0); });
+    return out;   // newest first
+  };
+
+  // ------------------------------------------------------------------
+  // §13.2 Milestone Wiki articles — unlock as the calendar crosses each
+  // transition. getArticles/getArticle compute unlock state live from the
+  // date; Sim.articleUnlockCheck (simulation.js) separately fires the
+  // one-time "New Wiki article" news the first time a given id crosses.
+  // ------------------------------------------------------------------
+  function articleUnlockLabel(a, state) {
+    if (a.unlockDate) return Engine.dateInfo(Engine.dayIndexOfISO(a.unlockDate, state), state).label;
+    return 'Unlocked ' + (a.unlockYear != null ? a.unlockYear : '');
+  }
+  Engine.getArticles = function () {
+    var state = S();
+    if (!state) return [];
+    var arts = Engine.getData().ARTICLES;
+    if (!Array.isArray(arts)) return [];
+    var out = [];
+    for (var i = 0; i < arts.length; i++) {
+      var a = arts[i];
+      if (!a || !a.id || !Engine.Sim.articleUnlocked(a, state)) continue;
+      out.push({ id: a.id, title: a.title || a.id, category: a.category || 'culture',
+                 summary: a.summary || '', unlockLabel: articleUnlockLabel(a, state) });
+    }
+    return out;
+  };
+  Engine.getArticle = function (id) {
+    var state = S();
+    if (!state) return err('No game in progress');
+    var arts = Engine.getData().ARTICLES || [];
+    var a = null;
+    for (var i = 0; i < arts.length; i++) if (arts[i] && arts[i].id === id) { a = arts[i]; break; }
+    if (!a) return err('Unknown article: ' + id);
+    if (!Engine.Sim.articleUnlocked(a, state))
+      return err('Locked until ' + articleUnlockLabel(a, state));
+    return { id: a.id, title: a.title || a.id, category: a.category || 'culture',
+             summary: a.summary || '', body: a.body || '', related: a.related || [],
+             unlockLabel: articleUnlockLabel(a, state) };
+  };
+
+  // ------------------------------------------------------------------
+  // §13.4 Certifications — study to unlock/boost work. Effects are read live
+  // from state.training.certsEarned everywhere they apply (core.js
+  // Engine.certEffects & friends); this section only manages the state.
+  // ------------------------------------------------------------------
+  function certEffectsNote(cert) {
+    if (!cert || !cert.effects) return '';
+    var ef = cert.effects, bits = [];
+    if (ef.jobTimeMult) {
+      for (var k in ef.jobTimeMult) if (Object.prototype.hasOwnProperty.call(ef.jobTimeMult, k)) {
+        var pct = Math.round((1 - ef.jobTimeMult[k]) * 100);
+        if (pct) bits.push((k === 'all' ? 'All work' : k) + ' ' + pct + '% faster');
+      }
+    }
+    if (ef.payMult) {
+      for (var k2 in ef.payMult) if (Object.prototype.hasOwnProperty.call(ef.payMult, k2)) {
+        var ppct = Math.round((ef.payMult[k2] - 1) * 100);
+        if (ppct) bits.push(k2 + ' pay +' + ppct + '%');
+      }
+    }
+    if (ef.callbackMult != null && ef.callbackMult !== 1)
+      bits.push('callbacks ' + Math.round((1 - ef.callbackMult) * 100) + '% less likely');
+    if (ef.reliabilityBonus) bits.push('+' + ef.reliabilityBonus + ' effective reliability');
+    if (ef.prestigeBonus) bits.push('+' + ef.prestigeBonus + ' prestige tier');
+    if (Array.isArray(ef.unlocks) && ef.unlocks.length) bits.push('unlocks ' + ef.unlocks.join(', '));
+    return bits.join(', ');
+  }
+  Engine.getCertifications = function () {
+    var state = S();
+    if (!state) return { earned: [], available: [], studying: null };
+    var training = state.training || { certsEarned: [], studying: null };
+    var earnedIds = training.certsEarned || [];
+    var year = Engine.currentYear(state);
+    var certs = Engine.certifications();
+    var earned = [];
+    var available = [];
+    for (var i = 0; i < certs.length; i++) {
+      var c = certs[i];
+      if (earnedIds.indexOf(c.id) !== -1) {
+        earned.push({ id: c.id, name: c.name, abbr: c.abbr || c.name,
+                      effectsNote: certEffectsNote(c) });
+        continue;
+      }
+      var reason = null;
+      if (year < (c.minYear || 0)) reason = 'Not available until ' + c.minYear;
+      else if (c.prereq && earnedIds.indexOf(c.prereq) === -1) {
+        var preq = Engine.certById(c.prereq);
+        reason = 'Requires ' + (preq ? preq.name : c.prereq) + ' first';
+      } else if (training.studying) {
+        reason = 'Already studying ' +
+          ((Engine.certById(training.studying.certId) || {}).name || training.studying.certId);
+      }
+      var cost = Engine.round2((c.costBase || 0) * Engine.yearScale(year));
+      if (!reason && state.cash < cost) reason = 'Not enough cash (' + Engine.fmtMoney(cost) + ' needed)';
+      available.push({ id: c.id, name: c.name, abbr: c.abbr || c.name, cost: cost,
+                        studyHours: c.studyHours || 0, desc: c.desc || '',
+                        canStart: !reason, reason: reason });
+    }
+    var studyingView = null;
+    if (training.studying) {
+      var sc = Engine.certById(training.studying.certId);
+      var total = sc ? (sc.studyHours || 1) : 1;
+      studyingView = { id: training.studying.certId, name: sc ? sc.name : training.studying.certId,
+                       hoursDone: training.studying.hoursDone || 0, hoursTotal: total,
+                       pct: Engine.clamp(Engine.round2(((training.studying.hoursDone || 0) / total) * 100), 0, 100) };
+    }
+    return { earned: earned, available: available, studying: studyingView };
+  };
+  Engine.startCertification = function (id) {
+    var bad = needLive(); if (bad) return bad;
+    var state = S();
+    if (!state.training) state.training = { certsEarned: [], studying: null };
+    var cert = Engine.certById(id);
+    if (!cert) return err('Unknown certification: ' + id);
+    if (state.training.certsEarned.indexOf(id) !== -1) return err('Already earned');
+    if (state.training.studying)
+      return err('Already studying another certification — finish it first');
+    var year = Engine.currentYear(state);
+    if (year < (cert.minYear || 0)) return err(cert.name + ' is not available until ' + cert.minYear);
+    if (cert.prereq && state.training.certsEarned.indexOf(cert.prereq) === -1) {
+      var preq = Engine.certById(cert.prereq);
+      return err('Requires ' + (preq ? preq.name : cert.prereq) + ' first');
+    }
+    var cost = Engine.round2((cert.costBase || 0) * Engine.yearScale(year));
+    if (state.cash < cost) return err('Not enough cash (' + Engine.fmtMoney(cost) + ' needed)');
+    Engine.addCash(state, -cost);
+    if (cost > 0) Engine.ledgerAdd(state, 'other', cost);
+    state.training.studying = { certId: cert.id, hoursDone: 0 };
+    Engine.pushNews(state, 'system', 'Studying: ' + cert.name,
+      'Enrolled for ' + Engine.fmtMoney(cost) + '. ' + (cert.studyHours || 0) +
+      ' hours of study ahead.');
+    return { ok: true, cost: cost };
+  };
+  // §13.4: spends OWNER work hours (overtime rules apply); staff do NOT speed
+  // studying — it's the owner's own time at the books, not bench work.
+  Engine.studyCert = function (hours) {
+    var bad = needLive(); if (bad) return bad;
+    var state = S();
+    var studying = state.training && state.training.studying;
+    if (!studying) return err('Not currently studying anything');
+    var cert = Engine.certById(studying.certId);
+    if (!cert) { state.training.studying = null; return err('That certification no longer exists'); }
+    var avail = Engine.hoursAvailable(state);
+    function finish() {
+      state.training.certsEarned.push(cert.id);
+      state.training.studying = null;
+      var msg = cert.name + ' (' + (cert.abbr || cert.name) + ') certification earned';
+      Engine.pushNews(state, 'system', 'Certified: ' + cert.name,
+        'Studies complete — ' + (certEffectsNote(cert) || 'a new credential for the shop') + '.');
+      state.certsEarnedToday = state.certsEarnedToday || [];
+      state.certsEarnedToday.push(msg);
+    }
+    var totalHours = Math.max(0, cert.studyHours || 0);
+    var remaining = Math.max(0, Engine.round2(totalHours - (studying.hoursDone || 0)));
+    if (remaining <= 1e-9) {   // degenerate zero-hour cert — nothing left to spend
+      finish();
+      return { ok: true, hoursSpent: 0, completed: true };
+    }
+    if (avail <= 1e-9) return err('Too exhausted — call it a day');
+    var want = hours == null ? remaining : Math.max(0, Number(hours) || 0);
+    var spend = Math.min(avail, want, remaining);
+    if (spend <= 1e-9) return err('Nothing left to study');
+    var sp = Engine.spendHours(state, spend);
+    if (!sp.ok) return sp;
+    studying.hoursDone = Engine.round2((studying.hoursDone || 0) + spend);
+    var completed = studying.hoursDone >= totalHours - 1e-9;
+    if (completed) finish();
+    return { ok: true, hoursSpent: spend, completed: completed };
   };
 
   // ------------------------------------------------------------------

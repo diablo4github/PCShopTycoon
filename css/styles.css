@@ -1323,3 +1323,115 @@ body.era-modern { --pcb-bg: #23252b; --pcb-line: rgba(255, 255, 255, 0.12); --pc
   }
   .slot-gpu { min-width: 0; }
 }
+
+/* ==========================================================================
+   v0.5 additions (SPEC §13) — The Education Update
+   ========================================================================== */
+
+/* ---------- §13.1 Chronicle — a distinct, calm (non-alarming) style ---------- */
+.news-item.k-chronicle {
+  border-left-color: #6b7a99;
+  background: var(--panel-bg-alt);
+}
+.news-item.k-chronicle .news-head { color: var(--ink); font-weight: 600; }
+
+.chronicle-timeline {
+  max-width: 760px;
+  margin: 10px 0;
+  border-left: 2px solid var(--border-strong);
+  padding-left: 18px;
+}
+.chronicle-item { position: relative; margin: 0 0 16px; }
+.chronicle-item::before {
+  content: "";
+  position: absolute;
+  left: -22.5px;
+  top: 4px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #6b7a99;
+  border: 2px solid var(--panel-bg);
+  box-shadow: 0 0 0 1px var(--border-strong);
+}
+.chronicle-item .ci-date { font-size: 11.5px; color: var(--muted); font-weight: 700; }
+.chronicle-item .ci-head { font-weight: 700; margin: 2px 0; }
+.chronicle-item .ci-desc { font-size: 13px; color: var(--muted); margin-top: 3px; max-width: 640px; }
+
+/* ---------- §13.2 Milestone Wiki articles ---------- */
+.article-groups { display: flex; flex-direction: column; gap: 8px; }
+.article-group .sub-title { margin-top: 12px; }
+.article-card {
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  display: block;
+  width: 100%;
+  cursor: pointer;
+}
+.article-card:hover { border-color: var(--accent); }
+.article-meta { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+.article p { margin: 0 0 0.75em; }
+.article ul { margin: 0 0 0.75em; padding-left: 1.2em; }
+.article li { margin: 2px 0; }
+
+/* ---------- §13.4 Training & Certifications ---------- */
+.cert-chips { display: flex; gap: 6px; flex-wrap: wrap; margin: 8px 0 4px; }
+.chip-cert { background: rgba(184, 134, 11, 0.16); border-color: transparent; color: var(--ink); font-weight: 700; cursor: help; }
+.cert-effects { font-size: 12.5px; color: var(--muted); margin: 2px 0 12px; }
+.cert-study { max-width: 480px; margin: 8px 0 14px; }
+.cert-card .pay { font-size: 13px; }
+
+/* ---------- §13.5 New Game screen: guided-tour toggle ---------- */
+.ng-tutorial-toggle {
+  margin: 12px 0 4px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border);
+}
+.ng-tutorial-toggle label { display: flex; align-items: center; gap: 8px; font-weight: 600; cursor: pointer; }
+.ng-tutorial-toggle input[type="checkbox"] { width: 16px; height: 16px; }
+.ng-tutorial-toggle p { margin: 4px 0 0 24px; }
+
+/* ---------- §13.5 guided-tour overlay — own layer, never traps focus ----------
+   Sits above the header/tab-bar (z 40-50) so the dim reads correctly, but
+   below real modals (z 200) so a modal (e.g. the morning summary) always
+   wins, and below toasts (z 300). Pointer-events are off everywhere except
+   the callout's own buttons, so the whole game stays clickable underneath. */
+#tutorial-root { position: fixed; inset: 0; z-index: 150; pointer-events: none; }
+.tut-scrim { position: absolute; inset: 0; background: rgba(10, 9, 4, 0.55); }
+.tut-hole {
+  position: absolute;
+  border-radius: 8px;
+  background: transparent;
+  box-shadow: 0 0 0 2000px rgba(10, 9, 4, 0.55), 0 0 0 3px var(--accent), 0 0 18px 2px rgba(255, 176, 0, 0.45);
+  transition: left 0.15s ease, top 0.15s ease, width 0.15s ease, height 0.15s ease;
+}
+.tut-callout {
+  position: absolute;
+  pointer-events: auto;
+  width: 320px;
+  max-width: calc(100vw - 24px);
+  background: var(--panel-bg);
+  color: var(--ink);
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  box-shadow: 0 12px 34px rgba(10, 8, 2, 0.4);
+  padding: 14px 16px;
+}
+.tut-callout.tut-center { left: 50%; top: 50%; transform: translate(-50%, -50%); }
+.tut-progress { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); font-weight: 700; margin-bottom: 4px; }
+.tut-title { margin: 0 0 6px; font-size: 15.5px; }
+.tut-body { margin: 0 0 12px; font-size: 13px; color: var(--ink); line-height: 1.45; }
+.tut-actions { display: flex; align-items: center; gap: 8px; }
+.tut-spacer { flex: 1 1 auto; }
+
+/* ---------- §13.5 Help modal reference guide ---------- */
+.help-guide h3 { font-size: 13px; margin: 14px 0 4px; }
+.help-guide h3:first-child { margin-top: 0; }
+.help-guide p, .help-guide ul { font-size: 13px; }
+.help-guide ul { padding-left: 1.3em; }
+.help-guide li { margin: 3px 0; }
+
+@media (max-width: 480px) {
+  .tut-callout { width: calc(100vw - 24px); }
+}

@@ -15,7 +15,8 @@
              callbacks: [], priceMovers: [], news: [], charges: [], payouts: [],
              graceWarning: null, gameOver: false,
              overtimeNote: null,
-             levelUps: [] };            // §11.5 staff level-ups since last morning
+             levelUps: [],               // §11.5 staff level-ups since last morning
+             certsEarned: [] };          // §13.4 certifications completed since last morning
   };
 
   /* Run ONE calendar night. Steps numbered per SPEC §5.3. */
@@ -53,9 +54,21 @@
       summary.levelUps = summary.levelUps.concat(state.levelUpsToday);
     }
     state.levelUpsToday = [];
+    // §13.4: a cert finished mid-day (via studyCert) surfaces in this morning's
+    // summary, same pattern as staff level-ups above.
+    if (summary && state.certsEarnedToday && state.certsEarnedToday.length) {
+      summary.certsEarned = summary.certsEarned.concat(state.certsEarnedToday);
+    }
+    state.certsEarnedToday = [];
 
     // 2. Historical events start/stop + random event firing
     Sim.updateEvents(state);
+    // 2b. §13.1 Tech Chronicle: fire dated almanac entries whose date == today.
+    // Fully separate from the market-event system above — zero price effect.
+    Sim.fireChronicle(state);
+    // 2c. §13.2 Milestone Wiki articles: one-time news the first time the
+    // calendar crosses an article's unlock point.
+    Sim.articleUnlockCheck(state);
 
     // 3. Nightly price noise + history
     Engine.Pricing.nightlyUpdate(state);
@@ -259,6 +272,51 @@
   };
 
   // ------------------------------------------------------------------
+  // §13.1 Tech Chronicle — a dated almanac of real computing history, distinct
+  // from the §2.7 market-event system: never touches prices/demand. Entries
+  // fire as news exactly on their date; getChronicle() (api.js) separately
+  // exposes the full history up to today regardless of whether the game was
+  // even running on the entry's exact date.
+  // ------------------------------------------------------------------
+  Sim.fireChronicle = function (state) {
+    var entries = Engine.getData().CHRONICLE;
+    if (!Array.isArray(entries) || !entries.length) return;
+    for (var i = 0; i < entries.length; i++) {
+      var e = entries[i];
+      if (!e || !e.date) continue;
+      if (Engine.dayIndexOfISO(e.date, state) === state.day) {
+        Engine.pushNews(state, 'chronicle', e.headline || '', e.body || '');
+      }
+    }
+  };
+
+  // ------------------------------------------------------------------
+  // §13.2 Milestone Wiki articles — fire a one-time news note the first time
+  // the calendar crosses an article's unlock point. getArticles()/getArticle()
+  // (api.js) compute unlock state live from the date, independent of this
+  // bookkeeping flag; state.articlesSeen only dedups the news firing.
+  // ------------------------------------------------------------------
+  Sim.articleUnlocked = function (a, state) {
+    if (!a) return false;
+    if (a.unlockDate) return state.day >= Engine.dayIndexOfISO(a.unlockDate, state);
+    return Engine.currentYear(state) >= (a.unlockYear || 0);
+  };
+  Sim.articleUnlockCheck = function (state) {
+    var arts = Engine.getData().ARTICLES;
+    if (!Array.isArray(arts) || !arts.length) return;
+    state.articlesSeen = state.articlesSeen || [];
+    for (var i = 0; i < arts.length; i++) {
+      var a = arts[i];
+      if (!a || !a.id || state.articlesSeen.indexOf(a.id) !== -1) continue;
+      if (Sim.articleUnlocked(a, state)) {
+        state.articlesSeen.push(a.id);
+        Engine.pushNews(state, 'chronicle', 'New Wiki article: ' + (a.title || a.id),
+          a.summary || '');
+      }
+    }
+  };
+
+  // ------------------------------------------------------------------
   // Custom-build unlock (§5.3 step 9)
   // ------------------------------------------------------------------
   Sim.unlockCheck = function (state) {
@@ -313,6 +371,9 @@
       if (rep.jobsCompleted >= C.PRESTIGE_TIERS[t].jobs &&
           rep.rating >= C.PRESTIGE_TIERS[t].rating) eligible = t;
     }
+    // §13.4: certification prestigeBonus nudges the eligible tier, capped.
+    eligible = Math.min(C.PRESTIGE_TIERS.length - 1,
+                        eligible + Engine.certPrestigeBonus(state));
     if (eligible > rep.prestige) {          // never demotes
       rep.prestige = eligible;
       var label = C.PRESTIGE_TIERS[eligible].label;

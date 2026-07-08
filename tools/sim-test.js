@@ -108,7 +108,8 @@ var globals = {
   ramHeavyOffers: 0,         // §12.2: RAM-maxed contract builds generated
   deviceOffers: 0,           // §12.4: device_repair offers seen in era runs
   deviceOfferBad: null,      //   …first one violating the UI contract/era gate
-  deviceRepairsDone: 0       // §12.4: device jobs completed by the bot
+  deviceRepairsDone: 0,      // §12.4: device jobs completed by the bot
+  badCopyToken: null         // §13.3: first unresolved {SW}/{GAME}/... token seen, if any
 };
 
 // ------------------------------------------------------------------
@@ -287,6 +288,11 @@ function botDay(E, mem) {
       globals.badPayOffer = o.title + ' pay=' + o.pay;
     if (totalSteps < 3 && !globals.badStepsOffer)
       globals.badStepsOffer = o.title + ' steps=' + totalSteps;
+    // §13.3: fillCopyTokens must leave no literal {SW}/{GAME}/{OFFICE}/{CREATIVE}
+    if (!globals.badCopyToken) {
+      if (o.title && o.title.indexOf('{') !== -1) globals.badCopyToken = 'title: ' + o.title;
+      else if (o.blurb && o.blurb.indexOf('{') !== -1) globals.badCopyToken = 'blurb: ' + o.blurb;
+    }
     // §11.1 sweep: every offered build must be witness-satisfiable in budget
     if (o.build) {
       globals.buildsSeen++;
@@ -1016,7 +1022,7 @@ function sundayScenario(era) {
   var r = E.newGame({ eraId: era.id, shopName: 'Sunday Test', seed: 46464 });
   if (!assert(r.ok, 'sunday: newGame failed')) return;
   E.getState().cash = 1000000;   // idle observer
-  var offerOnSunday = null, deadlineOnSunday = null;
+  var offerOnSunday = null, deadlineOnSunday = null, badToken = null;
   for (var d = 0; d < 60; d++) {
     var res = E.endDay();
     if (!assert(res.ok, 'sunday: endDay failed')) return;
@@ -1028,11 +1034,17 @@ function sundayScenario(era) {
         offerOnSunday = j.title + ' offered ' + Engine.dateInfo(j.offeredDay).iso;
       if (j.deadlineDay != null && Engine.dateInfo(j.deadlineDay).isSunday && !deadlineOnSunday)
         deadlineOnSunday = j.title + ' due ' + Engine.dateInfo(j.deadlineDay).iso;
+      // §13.3 sweep, over a genuine 60-day window
+      if (!badToken) {
+        if (j.title && j.title.indexOf('{') !== -1) badToken = 'title: ' + j.title;
+        else if (j.blurb && j.blurb.indexOf('{') !== -1) badToken = 'blurb: ' + j.blurb;
+      }
     }
   }
   assert(offerOnSunday == null, 'sunday: offer generated on a Sunday: ' + offerOnSunday);
   assert(deadlineOnSunday == null, 'sunday: deadline landed on a Sunday: ' + deadlineOnSunday);
-  console.log('  60 days clean: no Sunday offers, no Sunday deadlines');
+  assert(badToken == null, 'sunday: unresolved copy token over 60 days: ' + badToken);
+  console.log('  60 days clean: no Sunday offers, no Sunday deadlines, no stray copy tokens');
 }
 
 // ------------------------------------------------------------------
@@ -1728,10 +1740,10 @@ function deviceWikiScenario() {
 }
 
 // ------------------------------------------------------------------
-// Scenario (§10.8/§11.7/§12.6): v1-v4 fixtures migrate to v5 and play
+// Scenario (§10.8/§11.7/§12.6/§13.8): v1-v5 fixtures migrate to v6 and play
 // ------------------------------------------------------------------
 function migrationScenario(era) {
-  console.log('--- Save migration (v1/v2/v3/v4 -> v5) ---');
+  console.log('--- Save migration (v1/v2/v3/v4/v5 -> v6) ---');
   var E = Engine;
   var r = E.newGame({ eraId: era.id, shopName: 'Migrate Test', seed: 73737 });
   if (!assert(r.ok, 'migration: newGame failed')) return;
@@ -1740,11 +1752,15 @@ function migrationScenario(era) {
   E.getState().cash = 50000;
   var listing = E.getAsIsMarket()[0];
   if (listing) E.buyAsIsMachine(listing.id);
-  var v5snapshot = E.exportSave();
+  var v6snapshot = E.exportSave();
 
   function downgrade(version) {
-    var obj = JSON.parse(v5snapshot);
+    var obj = JSON.parse(v6snapshot);
     obj.version = version;
+    // §13: a genuine pre-v6 save never carried training/certs/article-seen bookkeeping
+    if (version < 6) {
+      delete obj.training; delete obj.certsEarnedToday; delete obj.articlesSeen;
+    }
     function stripV5(job) {   // v4 fixtures: flat build parts, no device fields
       if (!job) return;
       delete job.device; delete job.deviceModern;
@@ -1858,7 +1874,7 @@ function migrationScenario(era) {
 // Main
 // ------------------------------------------------------------------
 console.log('sim-test using: ' + DATA_SOURCE + ' | engine v' + Engine.VERSION);
-assert(Engine.VERSION === '0.4b', 'Engine.VERSION must be "0.4b"');
+assert(Engine.VERSION === '0.5', 'Engine.VERSION must be "0.5"');
 assert(parseFloat(Engine.VERSION) >= 0.4, 'Engine.VERSION must stay parseFloat >= 0.4');
 var lines = [];
 try {
@@ -1888,6 +1904,8 @@ assert(totalCallbacks >= 1,
 // §10.2: whole-dollar offers; §10.1: checklists everywhere
 assert(globals.badPayOffer == null, 'non-integer offer pay: ' + globals.badPayOffer);
 assert(globals.badStepsOffer == null, 'offer without a step checklist: ' + globals.badStepsOffer);
+// §13.3: no unresolved copy tokens survived across any era's 40-day run
+assert(globals.badCopyToken == null, 'unresolved copy token: ' + globals.badCopyToken);
 
 // §11.1: builds only ever offered when witness-satisfiable within budget
 assert(globals.buildWitnessFails.length === 0,

@@ -228,13 +228,21 @@
     APPLE_MODERN_YEAR: 2012,        // the soldered-RAM/glued-battery hinge year
     APPLE_MODERN_PARTS_MULT: 1.5,   // post-2012 Apple parts cost more
 
-    NEW_BADGE_DAYS: 90           // market "isNew" window
+    NEW_BADGE_DAYS: 90,          // market "isNew" window
+
+    // §13.4 certifications — effects fold multiplicatively/additively alongside
+    // equipment & staff, sensibly capped so no single track dominates the game.
+    CERT_TIME_MULT_FLOOR: 0.5,      // combined cert job-time mult never drops below this
+    CERT_PAY_MULT_CEIL: 1.6,        // combined cert pay mult never exceeds this
+    CERT_CALLBACK_MULT_FLOOR: 0.4,  // combined cert callback mult never drops below this
+    CERT_PRESTIGE_BONUS_CAP: 2,     // extra prestige tiers a full cert roster can grant
+    CERT_RELIABILITY_BONUS_CAP: 15  // extra "avg reliability" points certs can add
   };
 
   // ------------------------------------------------------------------
   // Live state reference (set by api.js newGame/importSave)
   // ------------------------------------------------------------------
-  Engine.VERSION = '0.4b';       // §12: parseFloat-compatible with the UI's >=0.4 gate
+  Engine.VERSION = '0.5';        // §13: parseFloat-compatible with the UI's >=0.4 gate
   Engine._state = null;
   Engine.getData = function () { return root.DATA || {}; };
 
@@ -658,6 +666,163 @@
         state.levelUpsToday.push(msg);
       }
     }
+  };
+
+  // ------------------------------------------------------------------
+  // §13.4 Certifications — an era-authentic owner-progression track. Fallback
+  // table (so the engine works before/without DATA.CERTIFICATIONS lands),
+  // same shape the DATA table must use: {id,name,abbr,minYear,costBase,
+  // studyHours,desc,prereq?,effects}. effects vocabulary (exact keys the
+  // engine consumes): jobTimeMult:{type|"all":mult}, payMult:{type|category:
+  // mult}, callbackMult:mult, prestigeBonus:n, reliabilityBonus:n,
+  // unlocks:["jobtype",...].
+  // ------------------------------------------------------------------
+  var FALLBACK_CERTIFICATIONS = [
+    { id: 'comptia-aplus', name: 'CompTIA A+', abbr: 'A+', minYear: 1993,
+      costBase: 220, studyHours: 20,
+      desc: 'The entry-level bench cert — broad hardware/software troubleshooting.',
+      effects: { jobTimeMult: { repair: 0.92, upgrade: 0.92 }, reliabilityBonus: 3 } },
+    { id: 'novell-cne', name: 'Novell CNE', abbr: 'CNE', minYear: 1990,
+      costBase: 260, studyHours: 24,
+      desc: 'NetWare administration — the credential office IT ran on in the 90s.',
+      effects: { payMult: { contract: 1.08 }, unlocks: ['contract'] } },
+    { id: 'microsoft-mcse', name: 'Microsoft MCSE', abbr: 'MCSE', minYear: 1994,
+      costBase: 340, studyHours: 36,
+      desc: 'Systems Engineer track — Windows NT domains, deep OS expertise.',
+      effects: { jobTimeMult: { software: 0.85 }, payMult: { software: 1.05 } } },
+    { id: 'microsoft-mcsa', name: 'Microsoft MCSA', abbr: 'MCSA', minYear: 1998,
+      costBase: 220, studyHours: 22,
+      desc: 'Systems Administrator — the lighter-weight companion to the MCSE.',
+      effects: { payMult: { software: 1.08 } } },
+    { id: 'cisco-ccna', name: 'Cisco CCNA', abbr: 'CCNA', minYear: 1998,
+      costBase: 300, studyHours: 30,
+      desc: 'Networking fundamentals — routers, switches, and small-office LANs.',
+      effects: { unlocks: ['contract'], payMult: { contract: 1.1 } } },
+    { id: 'comptia-network-plus', name: 'CompTIA Network+', abbr: 'Network+',
+      minYear: 1999, costBase: 220, studyHours: 20, prereq: 'comptia-aplus',
+      desc: 'Vendor-neutral networking — cabling, protocols, small-business LANs.',
+      effects: { jobTimeMult: { contract: 0.9 }, unlocks: ['contract'] } },
+    { id: 'comptia-security-plus', name: 'CompTIA Security+', abbr: 'Security+',
+      minYear: 2002, costBase: 260, studyHours: 24, prereq: 'comptia-network-plus',
+      desc: 'Baseline security practice — safer builds, fewer comebacks.',
+      effects: { callbackMult: 0.9 } },
+    { id: 'data-recovery-cert', name: 'Certified Data Recovery Professional',
+      abbr: 'CDRP', minYear: 1996, costBase: 300, studyHours: 26,
+      desc: 'Platter-level recovery technique for failing and dead drives.',
+      effects: { jobTimeMult: { data_recovery: 0.85 }, payMult: { data_recovery: 1.12 } } },
+    { id: 'apple-acmt', name: 'Apple Certified Mac Technician', abbr: 'ACMT',
+      minYear: 2005, costBase: 280, studyHours: 22,
+      desc: 'Factory-authorized Apple service procedures and diagnostics.',
+      effects: { jobTimeMult: { device_repair: 0.88 }, reliabilityBonus: 3 } },
+    { id: 'cloud-plus', name: 'CompTIA Cloud+', abbr: 'Cloud+', minYear: 2015,
+      costBase: 320, studyHours: 28, prereq: 'comptia-security-plus',
+      desc: 'Modern cloud/managed-services fundamentals — the shop goes hybrid.',
+      effects: { unlocks: ['enthusiast'], prestigeBonus: 1 } }
+  ];
+  Engine.certifications = function () {
+    var certs = Engine.getData().CERTIFICATIONS;
+    return (Array.isArray(certs) && certs.length) ? certs : FALLBACK_CERTIFICATIONS;
+  };
+  Engine.certById = function (id) {
+    var certs = Engine.certifications();
+    for (var i = 0; i < certs.length; i++) if (certs[i].id === id) return certs[i];
+    return null;
+  };
+  // Merge every earned cert's effects into one object. Defensive against
+  // missing/old-save state (no training field yet, unknown cert ids, etc).
+  Engine.certEffects = function (state) {
+    var C = Engine.CONFIG;
+    var out = { jobTimeMult: {}, payMult: {}, callbackMult: 1, prestigeBonus: 0,
+                reliabilityBonus: 0, unlocks: [] };
+    var earned = (state && state.training && state.training.certsEarned) || [];
+    for (var i = 0; i < earned.length; i++) {
+      var cert = Engine.certById(earned[i]);
+      if (!cert || !cert.effects) continue;
+      var ef = cert.effects;
+      var k;
+      if (ef.jobTimeMult) {
+        for (k in ef.jobTimeMult) if (Object.prototype.hasOwnProperty.call(ef.jobTimeMult, k))
+          out.jobTimeMult[k] = (out.jobTimeMult[k] != null ? out.jobTimeMult[k] : 1) * ef.jobTimeMult[k];
+      }
+      if (ef.payMult) {
+        for (k in ef.payMult) if (Object.prototype.hasOwnProperty.call(ef.payMult, k))
+          out.payMult[k] = (out.payMult[k] != null ? out.payMult[k] : 1) * ef.payMult[k];
+      }
+      if (ef.callbackMult != null) out.callbackMult *= ef.callbackMult;
+      if (ef.prestigeBonus) out.prestigeBonus += ef.prestigeBonus;
+      if (ef.reliabilityBonus) out.reliabilityBonus += ef.reliabilityBonus;
+      if (Array.isArray(ef.unlocks)) {
+        for (var u = 0; u < ef.unlocks.length; u++)
+          if (out.unlocks.indexOf(ef.unlocks[u]) === -1) out.unlocks.push(ef.unlocks[u]);
+      }
+    }
+    out.callbackMult = Engine.clamp(out.callbackMult, C.CERT_CALLBACK_MULT_FLOOR, 1);
+    out.prestigeBonus = Engine.clamp(out.prestigeBonus, 0, C.CERT_PRESTIGE_BONUS_CAP);
+    out.reliabilityBonus = Engine.clamp(out.reliabilityBonus, 0, C.CERT_RELIABILITY_BONUS_CAP);
+    return out;
+  };
+  Engine.certTimeMult = function (state, jobType) {
+    var ce = Engine.certEffects(state);
+    var m = 1;
+    if (ce.jobTimeMult.all != null) m *= ce.jobTimeMult.all;
+    if (jobType && ce.jobTimeMult[jobType] != null) m *= ce.jobTimeMult[jobType];
+    return Engine.clamp(m, Engine.CONFIG.CERT_TIME_MULT_FLOOR, 1.2);
+  };
+  Engine.certPayMult = function (state, jobType, category) {
+    var ce = Engine.certEffects(state);
+    var m = 1;
+    if (jobType && ce.payMult[jobType] != null) m *= ce.payMult[jobType];
+    if (category && ce.payMult[category] != null) m *= ce.payMult[category];
+    return Engine.clamp(m, 1, Engine.CONFIG.CERT_PAY_MULT_CEIL);
+  };
+  Engine.certCallbackMult = function (state) { return Engine.certEffects(state).callbackMult; };
+  Engine.certPrestigeBonus = function (state) { return Engine.certEffects(state).prestigeBonus; };
+  Engine.certReliabilityBonus = function (state) { return Engine.certEffects(state).reliabilityBonus; };
+  Engine.certUnlocksJobType = function (state, jobType) {
+    return Engine.certEffects(state).unlocks.indexOf(jobType) !== -1;
+  };
+
+  // ------------------------------------------------------------------
+  // §13.3 Period software in job copy — fillCopyTokens replaces {SW}/{GAME}/
+  // {OFFICE}/{CREATIVE} tokens with an era-valid, customer-appropriate title
+  // drawn from DATA.PERIOD_SOFTWARE via the seeded RNG (deterministic). No
+  // match => the token is dropped cleanly (no literal braces, no double
+  // spaces). Gracefully handles DATA.PERIOD_SOFTWARE being absent (old data).
+  // ------------------------------------------------------------------
+  var COPY_TOKEN_RE = /\{(SW|GAME|OFFICE|CREATIVE)\}/g;
+  var COPY_TOKEN_KIND = { SW: null, GAME: 'game', OFFICE: 'office', CREATIVE: 'creative' };
+  function periodSoftwareCandidates(year, customerType, kind) {
+    var list = Engine.getData().PERIOD_SOFTWARE;
+    if (!Array.isArray(list) || !list.length) return [];
+    function fits(s, honorCustomer) {
+      if (!s || !s.name) return false;
+      if (kind && s.kind !== kind) return false;
+      if (s.minYear != null && year < s.minYear) return false;
+      if (s.maxYear != null && year > s.maxYear) return false;
+      if (honorCustomer && Array.isArray(s.customers) && s.customers.length && customerType &&
+          s.customers.indexOf(customerType) === -1) return false;
+      return true;
+    }
+    var cands = list.filter(function (s) { return fits(s, true); });
+    if (!cands.length) cands = list.filter(function (s) { return fits(s, false); });
+    return cands;
+  }
+  Engine.fillCopyTokens = function (str, ctx) {
+    if (typeof str !== 'string' || str.indexOf('{') === -1) return str || '';
+    ctx = ctx || {};
+    var year = ctx.year != null ? ctx.year :
+      (Engine._state ? Engine.currentYear(Engine._state) : 2000);
+    var customerType = ctx.customerType || null;
+    var out = str.replace(COPY_TOKEN_RE, function (m, key) {
+      var cands = periodSoftwareCandidates(year, customerType, COPY_TOKEN_KIND[key]);
+      var pick = cands.length ? Engine.pick(cands) : null;
+      return pick ? pick.name : '';
+    });
+    // Clean up: collapse stray whitespace/space-before-punctuation left by a
+    // dropped token so no double spaces or orphaned braces survive.
+    out = out.replace(/[ \t]{2,}/g, ' ');
+    out = out.replace(/[ \t]+([.,!?;:])/g, '$1');
+    return out.trim();
   };
 
   // Rating = mean of last 25 scores.

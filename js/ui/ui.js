@@ -26,6 +26,8 @@
     wikiCat: 'all',           // Wiki category filter (§9.7)
     wikiSearch: '',           // Wiki search text
     wikiOpen: {},             // partId -> true for expanded wiki rows
+    chronicleTag: 'all',      // §13.1 Chronicle tag filter
+    tutorialToggle: undefined,// §13.5 New Game screen tour checkbox (undefined = not yet decided this session)
     saveUrl: null             // objectURL of the last exported save blob
   };
 
@@ -580,6 +582,7 @@
     if (st.flags && st.flags.gameOver) {
       if (UI.screens && UI.screens.renderGameOver) UI.screens.renderGameOver();
       UI.showScreen('gameover');
+      if (UI.tutorial && UI.tutorial.skip) UI.tutorial.skip(); // don't coach-mark a screen that's gone
       return;
     }
 
@@ -592,6 +595,9 @@
 
     if (UI.state.screen !== 'main') UI.showScreen('main');
     if (UI.tabs && UI.tabs.render) UI.tabs.render(UI.state.activeTab);
+
+    /* §13.5 — let a running guided tour reposition against the fresh DOM. */
+    if (UI.tutorial && UI.tutorial.onRefresh) UI.tutorial.onRefresh();
   };
 
   /* ------------------------------------------------------------------ *
@@ -670,6 +676,13 @@
       UI.act(function () { return Engine.waitHour(); }); // hour delta floats via UI.act
     });
 
+    // §13.5 — persistent Help (?) button: reference guide + Replay tutorial.
+    var helpBtn = document.getElementById('btn-help');
+    if (helpBtn) helpBtn.addEventListener('click', function () {
+      if (UI.audio && UI.audio.sfx) UI.audio.sfx('click');
+      if (UI.tutorial && UI.tutorial.openHelp) UI.tutorial.openHelp();
+    });
+
     document.addEventListener('keydown', function (e) {
       if (e.key === 'Escape') {
         var root = document.getElementById('modal-root');
@@ -679,6 +692,7 @@
     });
 
     if (UI.tabs && UI.tabs.bind) UI.tabs.bind();
+    if (UI.tutorial && UI.tutorial.bind) UI.tutorial.bind();
     if (UI.screens && UI.screens.bind) UI.screens.bind();
 
     // Land on the New Game screen (it offers Continue when an autosave exists).

@@ -764,10 +764,14 @@
     add('peripheral', null, 3);   // §10.5: item picked first, subtype = its kind
     if (equip.drTier >= 1) add('data_recovery', null, 2);
     if (state.customBuildsUnlocked && equip.enablesBuilds) add('build', null, 3);
-    if (year >= 1997 && rep.prestige >= 1 && purchasableByCategory(state, 'cooling').length)
+    // §13.4: a relevant certification can unlock a job type before the prestige
+    // gate would otherwise allow it (trained expertise substitutes for reputation).
+    var enthusiastUnlocked = rep.prestige >= 1 || Engine.certUnlocksJobType(state, 'enthusiast');
+    var contractUnlocked = rep.prestige >= 2 || Engine.certUnlocksJobType(state, 'contract');
+    if (year >= 1997 && enthusiastUnlocked && purchasableByCategory(state, 'cooling').length)
       add('enthusiast', 'overclock', 1);
-    if (year >= 2010 && rep.prestige >= 1) add('enthusiast', 'aesthetic', 1);
-    if (rep.prestige >= 2 &&
+    if (year >= 2010 && enthusiastUnlocked) add('enthusiast', 'aesthetic', 1);
+    if (contractUnlocked &&
         (state.lastContractDay == null ||
          state.day - state.lastContractDay >= C.CONTRACT_MIN_DAYS_BETWEEN))
       add('contract', null, 0.8);
@@ -1172,6 +1176,14 @@
     job.blurb = job.blurbOverride || blurbFor(job.type, job.customer.type);
     delete job.blurbOverride;
     job.taste = maybeTaste(state, job);
+
+    // §13.3: replace {SW}/{GAME}/{OFFICE}/{CREATIVE} tokens with an era-valid,
+    // customer-appropriate period-software title (seeded RNG, deterministic).
+    // Runs on every generated title/blurb regardless of where the token came
+    // from (fault desc, item complaint, generic blurb...).
+    var copyCtx = { year: year, customerType: job.customer.type };
+    job.title = Engine.fillCopyTokens(job.title, copyCtx);
+    job.blurb = Engine.fillCopyTokens(job.blurb, copyCtx);
 
     // Rush jobs: repair/software/upgrade, 8%: due today, pay x1.8 (§5.4)
     if ((job.type === 'repair' || job.type === 'software' || job.type === 'upgrade') &&
@@ -2011,6 +2023,7 @@
     if (job.type === 'software')
       m *= Engine.equipEffects(state).softwareHoursMult;
     m *= Engine.staffTimeMult(state, job.type);   // §10.7
+    m *= Engine.certTimeMult(state, job.type);    // §13.4: trained procedures speed the bench
     // Soft workstation cap: beyond slots on the same day => +50% hours (§2.5)
     var slots = Engine.tierInfo(state).workstationSlots;
     var worked = state.workedToday || [];
@@ -2227,7 +2240,7 @@
     return { ok: true, hoursSpent: spend, completed: completed, result: result };
   };
 
-  function avgReliabilityFactor(job) {
+  function avgReliabilityFactor(state, job) {
     var used = job.partsUsed || [];
     if (!used.length) return 1;
     var sum = 0, n = 0;
@@ -2236,7 +2249,8 @@
       if (p && p.reliability) { sum += p.reliability; n++; }
     }
     if (!n) return 1;
-    var avg = sum / n;
+    // §13.4: certification training nudges effective reliability up (fewer comebacks)
+    var avg = Math.min(100, sum / n + Engine.certReliabilityBonus(state));
     var f = Math.pow(100 / Math.max(1, avg), 2);
     return Math.min(CFG().CALLBACK_RELIABILITY_CAP, f);
   }
@@ -2282,6 +2296,13 @@
     var tasteMatched = false;
     if (!drFailed) {
       payout = job.pay || 0;
+      // §13.4: certification pay bonus (trained expertise commands better rates)
+      var certPM = Engine.certPayMult(state, job.type, tasteCategoryFor(job));
+      if (certPM !== 1 && payout > 0) {
+        var beforeCertPay = payout;
+        payout = Engine.round2(payout * certPM);
+        notes.push('Certified expertise: +' + Engine.fmtMoney(payout - beforeCertPay));
+      }
       // §9.6: repairs bill a diagnostic/bench fee on top of labor + parts markup
       if (job.type === 'repair') {
         var benchFee = Engine.round2(Engine.laborRate(year) * C.BENCH_FEE_LABOR_MULT);
@@ -2388,8 +2409,9 @@
       var mtx = C.CALLBACK_MATRIX[job.speed] || C.CALLBACK_MATRIX.standard;
       var esdTerm = Engine.equipmentOwned(state, 'esd-setup') ? C.ESD_DIFF_TERM_MULT : 1;
       var cb = (mtx.base + mtx.perDiff * (job.difficulty || 2) * esdTerm) *
-               avgReliabilityFactor(job) *
-               Engine.equipEffects(state).callbackMult;
+               avgReliabilityFactor(state, job) *
+               Engine.equipEffects(state).callbackMult *
+               Engine.certCallbackMult(state);   // §13.4
       cb = Engine.clamp(cb, C.CALLBACK_MIN, C.CALLBACK_MAX);
       var fired = Engine.chance(cb);
       state.jobs.completedRecent.push({

@@ -29,6 +29,9 @@
       ng.addEventListener('input', function (e) {
         if (e.target && e.target.id === 'ng-shopname') UI.state.shopName = e.target.value;
       });
+      ng.addEventListener('change', function (e) { /* §13.5 tutorial toggle */
+        if (e.target && e.target.id === 'ng-tutorial') UI.state.tutorialToggle = !!e.target.checked;
+      });
       ng.addEventListener('keydown', function (e) {
         if (e.key === 'Enter' && e.target && e.target.id === 'ng-shopname') startGame();
       });
@@ -88,6 +91,13 @@
     var hasAuto = false;
     try { hasAuto = !!(ready && Engine.hasAutosave && Engine.hasAutosave()); } catch (e2) { /* ignore */ }
 
+    /* §13.5 — tutorial toggle default: ON on a browser that has never
+     * finished/skipped the tour, OFF afterward. The player's explicit choice
+     * this session (once made) sticks until they reload. */
+    if (UI.state.tutorialToggle === undefined || UI.state.tutorialToggle === null) {
+      UI.state.tutorialToggle = (UI.tutorial && UI.tutorial.defaultOn) ? UI.tutorial.defaultOn() : true;
+    }
+
     var h = '<div class="ng-wrap">' +
       '<header class="ng-head">' +
         '<h1>Circuit &amp; Solder</h1>' +
@@ -141,6 +151,12 @@
       });
       h += '</div>';
     }
+    /* §13.5 — guided tour toggle (default ON the first time this browser
+     * ever plays; OFF once a tour has been completed or skipped). */
+    h += '<div class="ng-tutorial-toggle">' +
+      '<label for="ng-tutorial"><input type="checkbox" id="ng-tutorial"' + (UI.state.tutorialToggle ? ' checked' : '') + '> Guided tour</label>' +
+      '<p class="muted small">New to the shop? Keep the guided tour on — it walks through the basics on your first day.</p>' +
+    '</div>';
     h += '<div class="ng-start">' +
         '<button type="button" class="btn btn-primary btn-lg" data-action="start"' + (ready && eras.length ? '' : ' disabled') + '>Open for Business</button>' +
       '</div>' +
@@ -173,7 +189,13 @@
     UI.showScreen('main');
     UI.switchTab('offers');
     UI.refresh();
-    UI.toast('Welcome to ' + name + ' — doors are open. Check your offers.', 'success', 5000);
+    /* §13.5 — start the guided tour instead of the plain welcome toast when
+     * the tour toggle is on (its own first step already says welcome). */
+    if (UI.state.tutorialToggle && UI.tutorial && UI.tutorial.start) {
+      UI.tutorial.start();
+    } else {
+      UI.toast('Welcome to ' + name + ' — doors are open. Check your offers.', 'success', 5000);
+    }
   }
 
   function continueGame() {

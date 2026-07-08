@@ -112,6 +112,17 @@
     try { return parseFloat(window.Engine && Engine.VERSION) || 0; } catch (e) { return 0; }
   }
 
+  /** §9.4 overtime floor (Engine.CONFIG.overtimeCap, default 3) — shared by
+   * every hour-spending action's disabled/hint state, incl. §13.4 studying. */
+  function otCapValue() {
+    var otCap = 3;
+    try {
+      var cfg = Engine.getConfig && Engine.getConfig();
+      if (cfg && typeof cfg.overtimeCap === 'number') otCap = cfg.overtimeCap;
+    } catch (e) { /* ignore */ }
+    return otCap;
+  }
+
   /* ------------------------------------------------------------------ *
    * Render dispatch
    * ------------------------------------------------------------------ */
@@ -340,6 +351,13 @@
         }
         break;
       }
+      case 'ctag': /* §13.1 Chronicle tag filter */
+        UI.state.chronicleTag = el.getAttribute('data-tag') || 'all';
+        T.render('wiki');
+        break;
+      case 'open-article': /* §13.2 */
+        openArticle(el.getAttribute('data-id'));
+        break;
 
       /* ---- Shop ---- */
       case 'upgrade': {
@@ -360,6 +378,18 @@
       case 'hire': { /* §10.7 */
         var cid = el.getAttribute('data-id');
         UI.act(function () { return Engine.hireStaff(cid); }, 'Welcome aboard — they start right away');
+        break;
+      }
+      case 'study-cert': { /* §13.4 */
+        var scr = UI.act(function () { return Engine.studyCert(); });
+        if (scr && scr.ok !== false) {
+          UI.toast(scr.completed ? 'Certification complete!' : ('Studied ' + (scr.hoursSpent != null ? scr.hoursSpent + 'h' : '')), 'success');
+        }
+        break;
+      }
+      case 'start-cert': { /* §13.4 */
+        var certId = el.getAttribute('data-id');
+        UI.act(function () { return Engine.startCertification(certId); }, 'Enrolled — study hours in the Shop tab to complete it');
         break;
       }
       case 'fire': { /* §10.7 + §11.5 (veterans hurt twice as much) */
@@ -654,11 +684,7 @@
     var ready = j.status === 'done';
     /* §9.4 overtime: actions may proceed while hoursLeft > -overtimeCap;
      * only disable at the exhaustion floor (engine enforces the real rule). */
-    var otCap = 3;
-    try {
-      var cfg = Engine.getConfig && Engine.getConfig();
-      if (cfg && typeof cfg.overtimeCap === 'number') otCap = cfg.overtimeCap;
-    } catch (ecfg) { /* ignore */ }
+    var otCap = otCapValue();
     var hoursNow = Number(st.hoursLeft) || 0;
     var noHours = hoursNow <= -otCap;
     var otWarn = hoursNow <= 0 && !noHours;
@@ -1552,16 +1578,22 @@
     var cat = UI.state.wikiCat || 'all';
     var q = UI.state.wikiSearch || '';
     var devicesOk = has('getDeviceWiki'); /* §12.4 */
+    var chronicleOk = has('getChronicle'); /* §13.1 */
+    var articlesOk = has('getArticles'); /* §13.2 */
 
     html += '<div class="market-controls"><div class="chips">' + wikiCatChip('all', 'All', cat);
     knownCategories().forEach(function (c) { html += wikiCatChip(c, catLabel(c), cat); });
+    if (chronicleOk) html += wikiCatChip('chronicle', 'Chronicle', cat);
+    if (articlesOk) html += wikiCatChip('articles', 'Articles', cat);
     if (devicesOk) html += wikiCatChip('devices', 'Devices', cat);
     html += '</div>' +
       '<input type="search" id="wiki-search" placeholder="Search the wiki…" value="' + esc(q) + '" autocomplete="off">' +
       '</div>';
 
-    var showParts = cat !== 'devices';
+    var showParts = cat !== 'devices' && cat !== 'chronicle' && cat !== 'articles';
     var showDevices = devicesOk && (cat === 'all' || cat === 'devices');
+    var showChronicle = chronicleOk && (cat === 'all' || cat === 'chronicle');
+    var showArticles = articlesOk && (cat === 'all' || cat === 'articles');
 
     var rows = showParts ? arr(tryCall(function () {
       return Engine.getWiki({
@@ -1572,7 +1604,7 @@
 
     if (showParts) {
       if (!rows.length) {
-        if (!showDevices) {
+        if (!showDevices && !showChronicle && !showArticles) {
           panel.innerHTML = html + emptyBox('Nothing in the wiki matches — try another category or search. Hardware appears here as it hits the market.');
           restoreWikiFocus();
           return;
@@ -1606,10 +1638,153 @@
       }
     }
 
+    if (showChronicle) html += chronicleHTML(q, UI.state.chronicleTag || 'all');
+    if (showArticles) html += articlesHTML(q);
     if (showDevices) html += deviceWikiHTML(q);
 
     panel.innerHTML = html;
     restoreWikiFocus();
+  }
+
+  /* §13.1 — Chronicle: a dated, tag-filterable timeline of real computing
+   * history. Non-market news (never touches prices); zero economy effect. */
+  var CHRONICLE_TAGS = [
+    { id: 'hardware', label: 'Hardware' }, { id: 'software', label: 'Software' },
+    { id: 'gaming', label: 'Gaming' }, { id: 'internet', label: 'Internet' },
+    { id: 'business', label: 'Business' }, { id: 'culture', label: 'Culture' }
+  ];
+  function chronicleTagLabel(id) {
+    for (var i = 0; i < CHRONICLE_TAGS.length; i++) { if (CHRONICLE_TAGS[i].id === id) return CHRONICLE_TAGS[i].label; }
+    return id ? prettySubtype(id) : '';
+  }
+  function chronoTagChip(id, label, current) {
+    return '<button type="button" class="chip-btn' + (current === id ? ' active' : '') +
+      '" data-action="ctag" data-tag="' + esc(id) + '">' + esc(label) + '</button>';
+  }
+  function chronicleHTML(q, tag) {
+    var items = arr(tryCall(function () { return Engine.getChronicle(); }));
+    if (tag && tag !== 'all') items = items.filter(function (c) { return c.tag === tag; });
+    if (q) {
+      var needle = q.toLowerCase();
+      items = items.filter(function (c) {
+        return ((c.headline || '') + ' ' + (c.body || '') + ' ' + (c.tag || '')).toLowerCase().indexOf(needle) !== -1;
+      });
+    }
+    var h = '<h3 class="section-title">Chronicle <span class="muted small">real computing history, as it happened along your shop’s timeline</span></h3>' +
+      '<div class="chips">' + chronoTagChip('all', 'All', tag);
+    CHRONICLE_TAGS.forEach(function (t) { h += chronoTagChip(t.id, t.label, tag); });
+    h += '</div>';
+
+    /* newest-first from the engine; a timeline reads naturally oldest-first */
+    items = items.slice().reverse();
+    if (!items.length) {
+      return h + emptyBox((q || (tag && tag !== 'all'))
+        ? 'No chronicle entries match.'
+        : 'History has not caught up yet — entries appear here as the calendar turns.');
+    }
+    h += '<div class="chronicle-timeline">';
+    items.forEach(function (c) {
+      h += '<div class="chronicle-item ct-' + esc(c.tag || '') + '">' +
+        '<div class="ci-date">' + esc(c.dateLabel || c.date || '') + '</div>' +
+        '<div class="ci-head">📅 ' + esc(c.headline) + '</div>' +
+        '<span class="chip">' + esc(chronicleTagLabel(c.tag)) + '</span>' +
+        (c.body ? '<div class="ci-desc">' + esc(c.body) + '</div>' : '') +
+        '</div>';
+    });
+    return h + '</div>';
+  }
+
+  /* §13.2 — Articles: long-form milestone retrospectives, safe Markdown-lite
+   * (paragraphs, **bold**, "- " bullets only). Escape FIRST, then format —
+   * never trust or inject raw HTML from data. */
+  var ARTICLE_CAT_LABELS = {
+    buses: 'Expansion Buses', storage: 'Storage', cpu: 'CPU', gpu: 'GPU', memory: 'Memory',
+    os: 'Operating Systems', 'form-factor': 'Form Factor', culture: 'Culture', business: 'Business'
+  };
+  function articleCatLabel(c) { return ARTICLE_CAT_LABELS[c] || prettySubtype(c || ''); }
+
+  var ARTICLES_SEEN_KEY = 'cst-articles-seen';
+  function loadSeenArticles() {
+    try {
+      if (typeof localStorage === 'undefined') return {};
+      var raw = localStorage.getItem(ARTICLES_SEEN_KEY);
+      var o = raw ? JSON.parse(raw) : {};
+      return (o && typeof o === 'object') ? o : {};
+    } catch (e) { return {}; }
+  }
+  function markArticleSeen(id) {
+    try {
+      if (typeof localStorage === 'undefined') return;
+      var seen = loadSeenArticles();
+      seen[id] = 1;
+      localStorage.setItem(ARTICLES_SEEN_KEY, JSON.stringify(seen));
+    } catch (e) { /* ignore */ }
+  }
+
+  /** Safe Markdown-lite renderer: input MUST already be HTML-escaped. */
+  function renderArticleBody(escapedText) {
+    var paras = String(escapedText || '').split(/\n\s*\n/);
+    return paras.map(function (p) {
+      var lines = p.split(/\n/).filter(function (l) { return l.length; });
+      var bulletLines = lines.filter(function (l) { return /^- /.test(l); });
+      if (lines.length && bulletLines.length === lines.length) {
+        return '<ul>' + bulletLines.map(function (l) {
+          return '<li>' + boldify(l.replace(/^- /, '')) + '</li>';
+        }).join('') + '</ul>';
+      }
+      return '<p>' + boldify(p.replace(/\n/g, '<br>')) + '</p>';
+    }).join('');
+  }
+  function boldify(escapedStr) {
+    return escapedStr.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+  }
+
+  function articlesHTML(q) {
+    var items = arr(tryCall(function () { return Engine.getArticles(); }));
+    if (q) {
+      var needle = q.toLowerCase();
+      items = items.filter(function (a) { return ((a.title || '') + ' ' + (a.summary || '')).toLowerCase().indexOf(needle) !== -1; });
+    }
+    var h = '<h3 class="section-title">Articles <span class="muted small">long-form retrospectives — unlocked as your shop lives through each transition</span></h3>';
+    if (!items.length) {
+      return h + emptyBox(q ? 'No articles match.' : 'No articles unlocked yet — keep playing. They arrive as the calendar turns past each transition.');
+    }
+    var seen = loadSeenArticles();
+    var groups = {}, order = [];
+    items.forEach(function (a) {
+      if (!groups[a.category]) { groups[a.category] = []; order.push(a.category); }
+      groups[a.category].push(a);
+    });
+    h += '<div class="article-groups">';
+    order.forEach(function (cat) {
+      h += '<div class="article-group"><h4 class="sub-title">' + esc(articleCatLabel(cat)) + '</h4><div class="cards">';
+      groups[cat].forEach(function (a) {
+        var isNew = !seen[a.id];
+        h += '<button type="button" class="card article-card" data-action="open-article" data-id="' + esc(a.id) + '">' +
+          '<div class="card-title">' + esc(a.title) + (isNew ? ' <span class="badge b-new">NEW</span>' : '') + '</div>' +
+          (a.unlockLabel ? '<div class="muted small">' + esc(a.unlockLabel) + '</div>' : '') +
+          (a.summary ? '<p class="muted small">' + esc(a.summary) + '</p>' : '') +
+          '</button>';
+      });
+      h += '</div></div>';
+    });
+    return h + '</div>';
+  }
+
+  function openArticle(id) {
+    if (!has('getArticle')) { UI.toast('Articles are not available yet', 'info'); return; }
+    var a = tryCall(function () { return Engine.getArticle(id); });
+    if (!a || a.ok === false) { UI.toast((a && a.error) || 'That article is still locked', 'error'); return; }
+    markArticleSeen(id);
+    var html = '<div class="article">' +
+      '<div class="article-meta">' +
+        '<span class="chip">' + esc(articleCatLabel(a.category)) + '</span>' +
+        (a.unlockLabel ? '<span class="muted small">' + esc(a.unlockLabel) + '</span>' : '') +
+      '</div>' +
+      renderArticleBody(esc(a.body)) +
+      '</div>';
+    UI.modal({ title: a.title, html: html, buttons: [{ label: 'Close', cls: 'btn btn-primary' }] });
+    T.render('wiki'); // clears the NEW badge in the background
   }
 
   function restoreWikiFocus() {
@@ -1767,6 +1942,12 @@
       if (stv && stv.ok !== false) html += staffSectionHTML(stv, st);
     }
 
+    /* §13.4 training & certifications */
+    if (has('getCertifications')) {
+      var tv = tryCall(function () { return Engine.getCertifications(); });
+      if (tv && tv.ok !== false) html += trainingSectionHTML(tv, st);
+    }
+
     /* equipment */
     html += '<h2 class="section-title">Equipment</h2><div class="shop-grid">';
     var equipment = arr(sv.equipment);
@@ -1906,6 +2087,73 @@
     return h;
   }
 
+  /* ---- §13.4 Training & Certifications section (Shop tab) ---- */
+
+  function trainingSectionHTML(tv, st) {
+    var h = '<h2 class="section-title">Training &amp; Certifications</h2>';
+
+    var earned = arr(tv.earned);
+    if (!earned.length) {
+      h += emptyBox('No certifications earned yet — study one below to unlock its bonus.');
+    } else {
+      h += '<div class="cert-chips">';
+      earned.forEach(function (c) {
+        h += '<span class="chip chip-cert" title="' + esc(c.effectsNote || '') + '">🎓 ' + esc(c.abbr || c.name) + '</span>';
+      });
+      h += '</div><ul class="cert-effects">';
+      earned.forEach(function (c) {
+        if (c.effectsNote) h += '<li><b>' + esc(c.abbr || c.name) + '</b> — ' + esc(c.effectsNote) + '</li>';
+      });
+      h += '</ul>';
+    }
+
+    var studying = tv.studying;
+    if (studying) {
+      var otCap = otCapValue();
+      var hoursNow = Number(st.hoursLeft) || 0;
+      var noHours = hoursNow <= -otCap;
+      var pctDone = studying.pct !== undefined && studying.pct !== null
+        ? studying.pct : (studying.hoursTotal ? (studying.hoursDone / studying.hoursTotal) * 100 : 0);
+      h += '<div class="card cert-study">' +
+        '<div class="card-title">Studying: ' + esc(studying.name) + '</div>' +
+        '<div class="bar-row">' + animatedBar('cert-study-' + (studying.id || ''), studying.hoursDone, studying.hoursTotal, 'wide good') +
+          '<span class="num small">' + esc(studying.hoursDone) + ' / ' + esc(studying.hoursTotal) + 'h' +
+          (isFinite(pctDone) ? ' (' + Math.round(pctDone) + '%)' : '') + '</span></div>' +
+        '<div class="job-actions">' +
+          '<button type="button" class="btn btn-primary btn-sm" data-action="study-cert"' +
+            (noHours ? ' disabled title="Too exhausted — call it a day"' : '') + '>Study (spend hours)</button>' +
+        '</div></div>';
+    }
+
+    h += '<h3 class="sub-title">Available</h3>';
+    var avail = arr(tv.available);
+    if (!avail.length) {
+      h += emptyBox(studying
+        ? 'Finish your current course before starting another.'
+        : 'Nothing to study yet — certifications unlock as the years (and any prerequisites) allow.');
+    } else {
+      h += '<div class="shop-grid">';
+      avail.forEach(function (c) {
+        var canStart = c.canStart !== false && !studying;
+        var reason = !canStart ? (studying ? 'Finish your current course first' : (c.reason || 'Not available yet')) : '';
+        h += '<div class="card cert-card">' +
+          '<div class="card-title">' + esc(c.name) + (c.abbr ? ' <span class="chip">' + esc(c.abbr) + '</span>' : '') + '</div>' +
+          (c.desc ? '<p class="muted small">' + esc(c.desc) + '</p>' : '') +
+          '<div class="meta-row small">' +
+            '<span class="pay num">' + esc(fm(c.cost)) + '</span>' +
+            '<span class="chip">' + esc(c.studyHours) + 'h study</span>' +
+          '</div>' +
+          '<div class="job-actions">' +
+            '<button type="button" class="btn btn-primary btn-sm" data-action="start-cert" data-id="' + esc(c.id) + '"' +
+              (canStart ? '' : ' disabled title="' + esc(reason) + '"') + '>Start</button>' +
+            (reason ? ' <span class="muted small">' + esc(reason) + '</span>' : '') +
+          '</div></div>';
+      });
+      h += '</div>';
+    }
+    return h;
+  }
+
   /* ================================================================== *
    * TAB: Ledger
    * ================================================================== */
@@ -1999,9 +2247,10 @@
     }
     html += '<div class="news-feed">';
     items.forEach(function (n) {
+      var isChronicle = n.kind === 'chronicle'; /* §13.1 — calm, non-alarming style */
       html += '<article class="news-item k-' + esc(n.kind || 'info') + '">' +
         '<div class="news-date">' + esc(n.dateStr || '') + '</div>' +
-        '<div class="news-head">' + esc(n.headline || '') + '</div>' +
+        '<div class="news-head">' + (isChronicle ? '📅 ' : '') + esc(n.headline || '') + '</div>' +
         (n.body ? '<div class="news-body">' + esc(n.body) + '</div>' : '') +
         '</article>';
     });

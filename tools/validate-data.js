@@ -310,6 +310,16 @@ var REQ_EQUIP = {
   'test-bench': { callbackMult: 0.6 }
 };
 var ALLOWED_FX = ['diagHoursMult', 'enablesBuilds', 'softwareHoursMult', 'drTier', 'crtSafe', 'mishapMult', 'callbackMult'];
+// v0.5.1 §14.5/§14.7: effect keys whose presence gates or materially unlocks a job
+// type/tier (per §2.6 "required for X" notes and the §14.7 effect vocabulary). mishapMult/
+// callbackMult/diagHoursMult only speed existing work or trim mishap odds, so they're exempt.
+var GATING_FX = ['enablesBuilds', 'softwareHoursMult', 'drTier', 'crtSafe'];
+var GATE_KEYWORDS = {
+  enablesBuilds: /\bbuild/i,
+  softwareHoursMult: /\bsoftware|\bvirus|\bos install/i,
+  drTier: /\bdata recovery|\brecovery\b/i,
+  crtSafe: /\bcrt\b|\bdischarge\b|\bshock\b|\bmonitor/i
+};
 var EQ = DATA.EQUIPMENT || [];
 var eqById = {};
 EQ.forEach(function (q) {
@@ -320,6 +330,21 @@ EQ.forEach(function (q) {
   Object.keys(q.effects || {}).forEach(function (k) {
     if (ALLOWED_FX.indexOf(k) === -1) err('EQUIPMENT ' + q.id + ': unknown effect key ' + k);
   });
+  // §14.7: every item needs a real, readable desc...
+  if (!isStr(q.desc) || q.desc.length < 20) err('EQUIPMENT ' + q.id + ': desc must be >= 20 chars (§14.7)');
+  // ...and any item whose effects gate a job type must say so in desc, or carry unlocksLabel
+  // (the UI's "Unlocks: ..." badge source, §14.5).
+  if (q.unlocksLabel !== undefined && !isStr(q.unlocksLabel)) err('EQUIPMENT ' + q.id + ': unlocksLabel must be a non-empty string when present');
+  var fx = q.effects || {};
+  var gateKeys = GATING_FX.filter(function (k) { return fx[k] !== undefined && fx[k] !== false && fx[k] !== 0; });
+  if (gateKeys.length) {
+    var hasLabel = isStr(q.unlocksLabel);
+    var mentionsPurpose = gateKeys.some(function (k) { return GATE_KEYWORDS[k].test(q.desc || ''); });
+    if (!hasLabel && !mentionsPurpose) {
+      err('EQUIPMENT ' + q.id + ': gates job type via ' + gateKeys.join('/') +
+        ' but desc doesn\'t explain the unlock and no unlocksLabel is set (§14.5/§14.7)');
+    }
+  }
 });
 Object.keys(REQ_EQUIP).forEach(function (id) {
   var q = eqById[id];
@@ -829,8 +854,11 @@ console.log('Templates: ' + TS.length + ' | Combos: ' + COMBOS.length + ' | Cell
 if (matrixFails === 0) console.log('OK: every generatable (type x category/subtype/kind) resolves at 1984/1993/1999/2007/2015/2023 with >= 3 steps and 0.5-6.5h.');
 
 console.log('\n=== Summary ===');
+var eqGating = EQ.filter(function (q) { return GATING_FX.some(function (k) { var v = (q.effects || {})[k]; return v !== undefined && v !== false && v !== 0; }); });
+var eqLabeled = eqGating.filter(function (q) { return isStr(q.unlocksLabel); });
 console.log('Parts: ' + PARTS.length + ' | Eras: ' + (DATA.ERAS || []).length + ' | Tiers: ' + TIERS_ARR.length +
-  ' | Equipment: ' + EQ.length + ' | Historical events: ' + HIST.length + ' | Random templates: ' + TMPL.length +
+  ' | Equipment: ' + EQ.length + ' (' + eqLabeled.length + '/' + eqGating.length + ' gating items carry unlocksLabel, §14.5/§14.7)' +
+  ' | Historical events: ' + HIST.length + ' | Random templates: ' + TMPL.length +
   ' | Staff roles: ' + ROLES.length + ' | Staff names: ' + ((FL.staffNames || []).length));
 console.log('Devices: Apple ' + AM.length + ' | Mobile ' + MD.length + ' (' +
   MD.filter(function (d) { return d.kind === 'smartphone'; }).length + ' phones, ' +

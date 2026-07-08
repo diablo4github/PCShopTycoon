@@ -196,6 +196,14 @@
     return Engine.round2(v) + ' ' + key;
   }
   Jobs.fmtPerfReq = fmtPerfReq;
+  // §14.2: the single "bigger is better" numeric metric for a category, if it
+  // has one (matches the axes compat.js's machinePerf already tracks). Parts
+  // with no such axis (psu/case/motherboard/cooling/os/peripheral/expansion)
+  // only ever get a price-based overspend verdict, never a downgrade/ideal one.
+  function perfKeyForCategory(cat) {
+    return { cpu: 'cpu', ram: 'ramMB', storage: 'storageGB', gpu: 'gpu' }[cat] || null;
+  }
+  Jobs.perfKeyForCategory = perfKeyForCategory;
   function minPerfText(minPerf) {
     var parts = [];
     for (var k in minPerf) {
@@ -284,7 +292,9 @@
         if (s.maxYear != null && year > s.maxYear) continue;
         if (!stepCondOk(s.cond, state, job, year)) continue;
         steps.push({ id: 's' + (steps.length + 1), label: String(s.label || 'Bench work'),
-                     hours: Math.max(0.25, Engine.round2(s.hours || 0.25)),
+                     // §14.8: quantize to the 0.1h grid (DATA.TASK_STEPS stays
+                     // unchanged — the engine snaps it, e.g. 0.25 -> 0.3).
+                     hours: Engine.round1(Math.max(0.25, s.hours || 0.25)),
                      done: false, progress: 0, needIndex: null,
                      kind: classifyStepKind(s, s.label), running: false,   // §11.6
                      install: !!s.install });
@@ -315,9 +325,9 @@
     if (job.units > 1) {
       var perUnit = 0;
       steps.forEach(function (s) { perUnit += s.hours; });
-      job.perUnitHours = Engine.round2(perUnit);
+      job.perUnitHours = Engine.round1(perUnit);
       steps.forEach(function (s) {
-        s.hours = Engine.round2(s.hours * job.units);
+        s.hours = Engine.round1(s.hours * job.units);
         s.label += ' (x' + job.units + ' units)';
       });
     }
@@ -336,9 +346,10 @@
       }
       job.pendingSteps = pending;
       var equip = Engine.equipEffects(state);
-      var benchH = Math.max(0.25, Engine.round2(1 * equip.diagHoursMult));
+      var benchH = Engine.round1(Math.max(0.25, 1 * equip.diagHoursMult));
       job.steps = [
-        { id: 'd1', label: 'Intake & symptom interview', hours: 0.25,
+        // §14.8: 0.25h quantizes to 0.3 on the 0.1h grid.
+        { id: 'd1', label: 'Intake & symptom interview', hours: 0.3,
           done: false, progress: 0, needIndex: null, kind: 'labor', running: false },
         { id: 'd2', label: 'Bench diagnosis', hours: benchH,
           done: false, progress: 0, needIndex: null, kind: 'labor', running: false,
@@ -364,15 +375,15 @@
     // the job's total (pricing & the progress-bar denominator stay honest).
     var pending = job.pendingSteps || [];
     for (i = 0; i < pending.length; i++) total += pending[i].hours;
-    job.hoursRequired = Engine.round2(total);
-    job.hoursDone = Engine.round2(done);
+    job.hoursRequired = Engine.round1(total);   // §14.8: 0.1h grid
+    job.hoursDone = Engine.round1(done);
   }
-  // Generic fallback checklist: prep 25% / main 50% / test 25%, quarter-rounded.
+  // Generic fallback checklist: prep 25% / main 50% / test 25%, 0.1h-quantized.
   function synthesizeSteps(totalHours, job) {
     var h = Math.max(0.75, totalHours || 2);
-    function q(x) { return Math.max(0.25, Math.round(x * 4) / 4); }
+    function q(x) { return Engine.round1(Math.max(0.25, x)); }
     var a = q(h * 0.25), b = q(h * 0.5);
-    var c = Math.max(0.25, Engine.round2(h - a - b));
+    var c = q(h - a - b);
     var installs = !!((job && job.needs && job.needs.length) ||
                       (job && job.fault && job.fault.partCategory));
     return [
@@ -412,7 +423,7 @@
       if (job.steps[i].needIndex === needIndex) { st = job.steps[i]; break; }
     if (!st) st = job.steps[job.steps.length - 1];
     if (st.done) return;
-    st.hours = Math.max(0.25, Engine.round2(st.hours + delta));
+    st.hours = Engine.round1(Math.max(0.25, st.hours + delta));   // §14.8
     recomputeHours(job);
   }
 
@@ -816,6 +827,7 @@
       deviceModern: false, devicePartsCost: 0, devicePayBase: null,
       drTier: 0,
       crt: false,
+      budgetAsk: false,           // §14.2: customer explicitly wants the cheapest fix
       result: null
     };
     var bl = Engine.baselineFor(year);
@@ -833,6 +845,9 @@
         job.hoursRequired = job.fault.laborHours;   // fallback-step sizing only
         job.needsDiagnosis = true; job.diagnosed = false;
         job.machine = customerMachineFor(state, job.fault.partCategory);   // §10.4
+        // §14.2: a slice of repairs are explicit budget/for-parts asks —
+        // waives the downgrade penalty (they WANT the cheapest working part).
+        job.budgetAsk = Engine.chance(C.BUDGET_REPAIR_CHANCE);
         var repairBox = (job.machine && job.machine.name) || machineFlavor(state, year);
         job.title = 'Repair: ' + repairBox + ' — ' + tmpl.desc;
         if (Array.isArray(tmpl.complaints) && tmpl.complaints.length)
@@ -840,60 +855,89 @@
         break;
       }
       case 'upgrade': {
-        // §9.3: upgrades carry a minimum spec chosen vs the year baseline,
-        // snapped to a real purchasable part so the job is always satisfiable.
+        // §14.1 BUG FIX: the target spec must exceed the ORIGINAL part being
+        // replaced — the old code derived it purely from the year baseline
+        // (ignoring the machine's actual part), so it could demand a
+        // downgrade (e.g. an 80GB drive "upgraded" to a required 40GB).
         // §10.4: the customer's machine rides along; replacements must fit it.
-        var uc = Engine.pick(upgCats);
-        var upgKey = { ram: 'ramMB', storage: 'storageGB', gpu: 'gpu' }[uc];
-        var upgName = { ram: 'RAM upgrade', storage: 'Storage upgrade',
-                        gpu: 'Graphics upgrade' }[uc];
-        job.machine = customerMachineFor(state, uc);
-        var fitTags = null;
-        if (job.machine) {
-          var umobo = null;
-          for (var um = 0; um < job.machine.partIds.length; um++) {
-            var ump = Engine.partById(job.machine.partIds[um]);
-            if (ump && ump.category === 'motherboard') umobo = ump;
+        var upgKeyMap = { ram: 'ramMB', storage: 'storageGB', gpu: 'gpu' };
+        var upgNameMap = { ram: 'RAM upgrade', storage: 'Storage upgrade',
+                           gpu: 'Graphics upgrade' };
+        // Try upgrade categories in a shuffled (seeded-RNG) order until one
+        // guarantees a strictly-better purchasable part; else skip the offer.
+        var tryCats = upgCats.slice();
+        for (var sc = tryCats.length - 1; sc > 0; sc--) {
+          var sj = Engine.randInt(0, sc);
+          var tmpCat = tryCats[sc]; tryCats[sc] = tryCats[sj]; tryCats[sj] = tmpCat;
+        }
+        var picked = null;
+        for (var tci = 0; tci < tryCats.length && !picked; tci++) {
+          var tryUc = tryCats[tci];
+          var tryUpgKey = upgKeyMap[tryUc];
+          var tryMachine = customerMachineFor(state, tryUc);
+          if (!tryMachine) continue;
+          var tryOrigPart = tryMachine.faultPartIdx != null ?
+            Engine.partById(tryMachine.partIds[tryMachine.faultPartIdx]) : null;
+          var tryOrigVal = tryOrigPart ? ((tryOrigPart.perf || {})[tryUpgKey] || 0) : 0;
+
+          var tryFitTags = null, tryMobo = null;
+          for (var tm = 0; tm < tryMachine.partIds.length; tm++) {
+            var tmp2 = Engine.partById(tryMachine.partIds[tm]);
+            if (tmp2 && tmp2.category === 'motherboard') tryMobo = tmp2;
           }
-          var uprefix = Engine.Compat.namespaceForCategory(uc);
-          if (umobo && uprefix) {
-            var utags = Engine.Compat.tagsInNamespace(umobo, uprefix);
-            if (utags.length) fitTags = utags;
+          var tryPrefix = Engine.Compat.namespaceForCategory(tryUc);
+          if (tryMobo && tryPrefix) {
+            var tryTags = Engine.Compat.tagsInNamespace(tryMobo, tryPrefix);
+            if (tryTags.length) tryFitTags = tryTags;
           }
+          var tryFits = (function (fitTagsClosure) {
+            return function (p) {
+              if (!fitTagsClosure) return true;
+              var tags = p.platformTags || [];
+              for (var t = 0; t < fitTagsClosure.length; t++)
+                if (tags.indexOf(fitTagsClosure[t]) !== -1) return true;
+              return false;
+            };
+          })(tryFitTags);
+          var tryCands = purchasableByCategory(state, tryUc).filter(tryFits);
+          if (!tryCands.length) {   // machine too exotic — drop the fit constraint
+            tryFitTags = null;
+            tryCands = purchasableByCategory(state, tryUc);
+          }
+          // Distinct achievable perf values strictly greater than the
+          // original, ascending — the smallest meaningful step wins.
+          var seen = {}, distinct = [];
+          for (var pc = 0; pc < tryCands.length; pc++) {
+            var v = (tryCands[pc].perf || {})[tryUpgKey] || 0;
+            if (v > tryOrigVal && !seen[v]) { seen[v] = true; distinct.push(v); }
+          }
+          distinct.sort(function (a, b) { return a - b; });
+          if (!distinct.length) continue;   // no strictly-better part exists this year
+          var target125 = tryOrigVal * 1.25;
+          var tryMinVal = null;
+          for (var dv = 0; dv < distinct.length; dv++) {
+            if (distinct[dv] >= target125) { tryMinVal = distinct[dv]; break; }
+          }
+          if (tryMinVal == null) tryMinVal = distinct[0];   // next distinct tier up
+
+          picked = { uc: tryUc, upgKey: tryUpgKey, upgName: upgNameMap[tryUc],
+                     machine: tryMachine, fitTags: tryFitTags, minVal: tryMinVal,
+                     origPart: tryOrigPart, origVal: tryOrigVal };
         }
-        var upgFits = function (p) {
-          if (!fitTags) return true;
-          var tags = p.platformTags || [];
-          for (var t = 0; t < fitTags.length; t++)
-            if (tags.indexOf(fitTags[t]) !== -1) return true;
-          return false;
-        };
-        var upgCands = purchasableByCategory(state, uc).filter(upgFits);
-        if (!upgCands.length) {   // machine too exotic — drop the fit constraint
-          fitTags = null;
-          upgCands = purchasableByCategory(state, uc);
-        }
-        var wanted = (bl[upgKey] || 0) * Engine.pick([0.5, 0.75, 1.0]);
-        var perfs = upgCands.map(function (p) {
-          return (p.perf || {})[upgKey] || 0;
-        }).filter(function (v) { return v > 0; }).sort(function (a, b) { return a - b; });
-        var minVal = null;
-        for (var pi = perfs.length - 1; pi >= 0; pi--) {
-          if (perfs[pi] <= wanted) { minVal = perfs[pi]; break; }
-        }
-        if (minVal == null && perfs.length) minVal = perfs[0];
-        var minPerf = null, label = upgName;
-        if (minVal != null) {
-          minPerf = {};
-          minPerf[upgKey] = minVal;
-          label = upgName + ' — at least ' + fmtPerfReq(upgKey, minVal);
-        }
-        job.needs = [{ category: uc, anyOfTags: fitTags, minPerf: minPerf, qty: 1,
-                       filledPartIds: [], label: label,
-                       originalPartId: (job.machine && job.machine.faultPartIdx != null) ?
-                         job.machine.partIds[job.machine.faultPartIdx] : null }];
+        if (!picked) return null;   // every category would require a downgrade — skip
+
+        job.machine = picked.machine;
+        var minPerf = {};
+        minPerf[picked.upgKey] = picked.minVal;
+        var origLabel = picked.origPart ?
+          fmtPerfReq(picked.upgKey, picked.origVal) : 'nothing installed';
+        var label = picked.upgName + ' — bigger than the current ' + origLabel +
+                    ' → at least ' + fmtPerfReq(picked.upgKey, picked.minVal);
+        job.needs = [{ category: picked.uc, anyOfTags: picked.fitTags, minPerf: minPerf,
+                       qty: 1, filledPartIds: [], label: label,
+                       originalPartId: picked.origPart ? picked.origPart.id : null }];
         job.hoursRequired = 1;   // fallback-step sizing only
-        job.title = 'Upgrade: ' + upgName.toLowerCase() + ' for a ' +
+        job.title = 'Upgrade: ' + picked.upgName.toLowerCase() + ' for a ' +
           ((job.machine && job.machine.name) || machineFlavor(state, year));
         break;
       }
@@ -1156,7 +1200,7 @@
     if (job.needsDiagnosis && !job.diagnosed) {
       for (var dp = 0; dp < job.steps.length; dp++) diagPhaseHours += job.steps[dp].hours;
     }
-    var payHours = Math.max(0.5, Engine.round2(job.hoursRequired - diagPhaseHours));
+    var payHours = Math.max(0.5, Engine.round1(job.hoursRequired - diagPhaseHours));
     if (job.type === 'device_repair') {
       // §12.4: Apple pay from the machine's basePriceRange; mobile from fault
       // labor x laborRate. Parts money is a completion cost line, so the quote
@@ -1484,7 +1528,9 @@
       needStd += st.hours * (1 - (st.progress || 0));
       if (st.diag) break;
     }
-    var effNeeded = Math.max(0.5, Math.ceil(needStd * m * 2 - 1e-9) / 2);
+    // §14.8: round UP to the 0.1h grid so the session covers the whole
+    // (possibly two-step) diagnose phase in one explicit-hours workJob call.
+    var effNeeded = Engine.round1(Math.max(0.5, Math.ceil(needStd * m * 10 - 1e-9) / 10));
     var r = Jobs.workJob(state, jobId, effNeeded);
     if (!r.ok) return r;
     if (!job.diagnosed)
@@ -1561,12 +1607,17 @@
     var out = [];
     for (var i = 0; i < job.needs.length; i++) {
       var need = job.needs[i];
-      // §10.4: the original part being replaced, and its overspend threshold
+      // §10.4/§14.2: the original part being replaced, and its graded
+      // overspend thresholds + class-defining metric (for the vs-original cue).
       var orig = need.originalPartId ? Engine.partById(need.originalPartId) : null;
       var origVal = orig ? P().priceOf(orig, state) : 0;
       var threshold = orig ?
         Math.max(C.OVERSPEND_MULT * origVal, origVal + Engine.laborRate(year)) : Infinity;
+      var hardThreshold = orig ?
+        Math.max(C.OVERSPEND_HARD_MULT * origVal, origVal + Engine.laborRate(year)) : Infinity;
       var replaces = orig ? { name: orig.name, value: origVal } : null;
+      var perfKey = perfKeyForCategory(need.category);
+      var origMetric = (orig && perfKey != null) ? ((orig.perf || {})[perfKey] || 0) : null;
       var options = [];
       var cands = purchasableByCategory(state, need.category);
       for (var c = 0; c < cands.length; c++) {
@@ -1574,6 +1625,20 @@
         if (!candidateListed(part, need, state)) continue;
         var inv = Engine.inventoryEntry(state, part.id);
         var marketVal = P().priceOf(part, state);
+        // §14.2: per-option vs-original comparison so the UI never has to
+        // recompute the better/same/worse rule itself.
+        var vsOriginal = null;
+        if (orig && perfKey != null) {
+          var optMetric = (part.perf || {})[perfKey] || 0;
+          var cmp = optMetric > origMetric ? 'better' :
+                    (optMetric < origMetric ? 'worse' : 'same');
+          vsOriginal = { origLabel: fmtPerfReq(perfKey, origMetric), cmp: cmp };
+        }
+        var overspendGrade = null;
+        if (replaces) {
+          if (marketVal > hardThreshold) overspendGrade = 'hard';
+          else if (marketVal > threshold) overspendGrade = 'mild';
+        }
         var opt = {
           partId: part.id, name: part.name,
           source: (inv && inv.qty > 0) ? 'inventory' : 'market',
@@ -1582,7 +1647,9 @@
           meets: meetsMinPerf(part, need),                // §9.3
           tasteMatch: tasteMatchesPart(job.taste, part),  // §9.2
           replaces: replaces,                             // §10.4
-          overspend: replaces ? marketVal > threshold : false
+          vsOriginal: vsOriginal,                          // §14.2
+          overspend: overspendGrade != null,               // §10.4 back-compat bool
+          overspendGrade: overspendGrade                   // §14.2: null|"mild"|"hard"
         };
         options.push(opt);
       }
@@ -2036,7 +2103,8 @@
 
   // §10.1/§10.3/§11.6: standard-speed hours workable from the current step
   // until an unassigned install step ("assign") or a wait step ("wait").
-  function workableStdHours(job) {
+  // §14.8: singleStep=true stops after the CURRENT step alone (mode "step").
+  function workableStdHours(job, singleStep) {
     var total = 0, barrier = null;
     for (var i = job.stepIndex; i < job.steps.length; i++) {
       var st = job.steps[i];
@@ -2046,6 +2114,7 @@
         if (!nd || nd.filledPartIds.length < nd.qty) { barrier = 'assign'; break; }
       }
       total += st.hours * (1 - (st.progress || 0));
+      if (singleStep) break;
     }
     return { hours: total, barrier: barrier };
   }
@@ -2143,14 +2212,29 @@
     }
   }
 
-  Jobs.workJob = function (state, jobId, hours) {
+  /* §14.8: work modes (rules live entirely here — UI computes none).
+   * `amount` is either a quantized number of hours, or one of the string
+   * modes "step" (work until the CURRENT step completes) / "job" (work to
+   * completion); omitted/null defaults to "job" (unchanged back-compat: a
+   * bare workJob(jobId) still means finish-job). Returns the same
+   * {ok, hoursSpent, completed, result?} shape regardless of mode. */
+  function parseWorkAmount(amount) {
+    if (amount == null) return { mode: 'job', want: null };
+    if (typeof amount === 'string')
+      return { mode: (amount === 'step') ? 'step' : 'job', want: null };
+    return { mode: 'number', want: Engine.round1(Math.max(0, Number(amount) || 0)) };
+  }
+
+  Jobs.workJob = function (state, jobId, amount) {
     var job = Jobs.findActive(state, jobId);
     if (!job) return err('Job not active');
     if (job.status === 'done') return err('Already finished — sell it');
     var problem = readinessProblem(state, job);
     if (problem) return err(problem);
     var avail = Engine.hoursAvailable(state);      // includes overtime room (§9.4)
-    if (avail < 0.5) return err('Too exhausted — call it a day');
+    // §14.8: the smallest unit of work is one 0.1h (6-min) tick.
+    if (avail < 0.1 - 1e-9) return err('Too exhausted — call it a day');
+    var wa = parseWorkAmount(amount);
 
     var C = CFG();
     var equip = Engine.equipEffects(state);
@@ -2173,9 +2257,11 @@
 
     Jobs.ensureSteps(state, job);   // migrated saves get a checklist lazily
     var m = effectiveMult(state, job);
+    var singleStep = wa.mode === 'step';
     // §10.1/§10.3/§11.6: work runs the checklist; barriers are unassigned
-    // install steps ("assign") and wait steps ("wait").
-    var wk = workableStdHours(job);
+    // install steps ("assign") and wait steps ("wait"). §14.8: "step" mode
+    // only ever looks at the CURRENT step, so it stops at its boundary.
+    var wk = workableStdHours(job, singleStep);
     if (wk.hours <= 1e-9 && wk.barrier !== 'assign' &&
         job.stepIndex < job.steps.length) {
       // Self-heal (pre-fix saves): a fully-worked labor step stranded at
@@ -2191,7 +2277,7 @@
         var healResult = completeJob(state, job);
         return { ok: true, hoursSpent: 0, completed: true, result: healResult };
       }
-      wk = workableStdHours(job);   // a diag hook may have appended labor steps
+      wk = workableStdHours(job, singleStep);   // a diag hook may have appended labor steps
     }
     if (wk.hours <= 1e-9) {
       if (wk.barrier === 'assign') return err('Assign a replacement part first');
@@ -2217,16 +2303,20 @@
       return err('Nothing left to work on');
     }
     var remainingEff = Math.max(0, wk.hours * m);
-    var want = (hours == null) ? remainingEff : Math.max(0, Number(hours) || 0);
-    // Default sessions stop at the regular day's end; explicit hour requests may
-    // dip into overtime down to the -overtimeCap floor (§9.4).
-    var budget = (hours == null) ? Math.max(state.hoursLeft, Math.min(avail, 0.5)) : avail;
+    // §14.8: "number" and "step" requests may dip into overtime to hit their
+    // target (a number explicitly asks for it; "step" needs to reach its
+    // boundary); the default "job" mode keeps the old small-dip-only budget.
+    var want, budget;
+    if (wa.mode === 'number') { want = wa.want; budget = avail; }
+    else if (wa.mode === 'step') { want = remainingEff; budget = avail; }
+    else { want = remainingEff; budget = Math.max(state.hoursLeft, Math.min(avail, 0.1)); }
     var spend = Math.min(budget, want, remainingEff);
-    spend = Math.ceil(spend * 2 - 1e-9) / 2;              // half-hour granularity
+    spend = Math.ceil(spend * 10 - 1e-9) / 10;            // §14.8: 0.1h-tick granularity
     spend = Math.min(spend, avail);
-    if (spend < 0.5) return err('Not enough time for a work session');
+    spend = Engine.round1(spend);
+    if (spend < 0.1 - 1e-9) return err('Not enough time for a work session');
 
-    state.hoursLeft = Engine.round2(state.hoursLeft - spend);
+    state.hoursLeft = Engine.round1(state.hoursLeft - spend);
     advanceSteps(state, job, spend / m);   // also recomputes hoursDone
     Engine.accrueStaffXp(state, job.type, spend);   // §11.5
     Jobs.tickWaits(state, spend, job.id);           // §11.6 parallel waits
@@ -2260,6 +2350,7 @@
   function completeJob(state, job) {
     var C = CFG();
     var notes = [];
+    var qualityFlags = [];   // §14.2: [{partId, kind, origPerfLabel, newPerfLabel}]
     var payout = 0;
     var year = Engine.currentYear(state);
     var speed = C.SPEED[job.speed] || C.SPEED.standard;
@@ -2339,29 +2430,80 @@
                      '% (' + Engine.fmtMoney(payout - before) + ')');
         }
       }
-      // §10.4: overspend grumble — replacing a part with something far pricier
-      // than what died. Waived for matching tastes (fanboys) and enthusiasts.
-      if (job.type !== 'enthusiast') {
-        for (var ov = 0; ov < job.needs.length; ov++) {
-          var nd = job.needs[ov];
-          if (!nd.originalPartId || !nd.filledPartIds.length) continue;
-          var orig = Engine.partById(nd.originalPartId);
-          if (!orig) continue;
-          var origVal = P().priceOf(orig, state);
-          var thresh = Math.max(C.OVERSPEND_MULT * origVal,
-                                origVal + Engine.laborRate(year));
-          var usedList = job.partsUsed || [];
-          for (var ou = 0; ou < usedList.length; ou++) {
-            var ue = usedList[ou];
-            if (ue.needIndex != null && ue.needIndex !== ov) continue;
-            if (nd.filledPartIds.indexOf(ue.partId) === -1) continue;
-            if (ue.price <= thresh) continue;
-            var uePart = Engine.partById(ue.partId);
-            if (tasteMatchesPart(job.taste, uePart)) continue;   // fanboy waiver
-            score -= C.OVERSPEND_SCORE;
-            notes.push('"Did it really need a ' + Engine.fmtMoney(ue.price) +
-                       ' part? The old one was worth ' + Engine.fmtMoney(origVal) + '..."');
-            break;   // one grumble per slot
+      // §14.2: symmetric "did the shop do right by the part?" check for
+      // repair/upgrade/device_repair — downgrade (installed something worse
+      // than the original) and graded overspend (installed something far
+      // pricier), never both on the same part. Only categories with a real
+      // class-defining numeric metric (cpu/ram/storage/gpu) get a downgrade
+      // verdict or the "ideal" tag; everything else only ever gets overspend
+      // (which is price-based, not metric-based).
+      if (job.type === 'repair' || job.type === 'upgrade' || job.type === 'device_repair') {
+        for (var qv = 0; qv < job.needs.length; qv++) {
+          var qNd = job.needs[qv];
+          if (!qNd.originalPartId || !qNd.filledPartIds.length) continue;
+          var qOrig = Engine.partById(qNd.originalPartId);
+          if (!qOrig) continue;
+          var qUsedList = job.partsUsed || [];
+          var qUsed = null;
+          for (var qu = 0; qu < qUsedList.length; qu++) {
+            var qe = qUsedList[qu];
+            if (qe.needIndex != null && qe.needIndex !== qv) continue;
+            if (qNd.filledPartIds.indexOf(qe.partId) === -1) continue;
+            qUsed = qe; break;
+          }
+          if (!qUsed) continue;
+          var qNewPart = Engine.partById(qUsed.partId);
+          if (!qNewPart) continue;
+
+          var qKey = perfKeyForCategory(qNd.category);
+          var qOrigVal = P().priceOf(qOrig, state);
+          var qOrigMetric = qKey != null ? ((qOrig.perf || {})[qKey] || 0) : null;
+          var qNewMetric = qKey != null ? ((qNewPart.perf || {})[qKey] || 0) : null;
+          var qOrigLabel = qKey != null ? fmtPerfReq(qKey, qOrigMetric) : Engine.fmtMoney(qOrigVal);
+          var qNewLabel = qKey != null ? fmtPerfReq(qKey, qNewMetric) : Engine.fmtMoney(qUsed.price);
+
+          // Downgrade: repair only (an upgrade's minPerf already hard-gates
+          // below-original commits, §14.1). Waived for budget-conscious asks;
+          // labor-only faults never reach here (no need was ever created).
+          var qIsDowngrade = job.type === 'repair' && qKey != null &&
+            qNewMetric < qOrigMetric && !job.budgetAsk;
+
+          if (qIsDowngrade) {
+            score -= C.DOWNGRADE_SCORE;
+            notes.push('"The replacement ' + qNd.category +
+                       ' is smaller/slower than what we had..."');
+            qualityFlags.push({ partId: qNewPart.id, kind: 'downgrade',
+                                 origPerfLabel: qOrigLabel, newPerfLabel: qNewLabel });
+            continue;   // never both a downgrade AND an overspend ding on one part
+          }
+
+          // Overspend (graded): mild 1.75-2.5x original, hard beyond that. The
+          // FLAG reflects the objective price band regardless of waiver (so
+          // the UI can still show a "waived" tooltip); the score/note ding
+          // itself is waived when the part matches a customer taste (fanboys)
+          // or the job type is enthusiast.
+          var qThresh = Math.max(C.OVERSPEND_MULT * qOrigVal,
+                                 qOrigVal + Engine.laborRate(year));
+          var qHardThresh = Math.max(C.OVERSPEND_HARD_MULT * qOrigVal,
+                                     qOrigVal + Engine.laborRate(year));
+          var qOverspent = qUsed.price > qThresh;
+          if (qOverspent) {
+            var qHard = qUsed.price > qHardThresh;
+            var qWaived = job.type === 'enthusiast' || tasteMatchesPart(job.taste, qNewPart);
+            if (!qWaived) {
+              score -= qHard ? C.OVERSPEND_SCORE_HARD : C.OVERSPEND_SCORE_MILD;
+              notes.push(qHard ?
+                ('"Did it really need a ' + Engine.fmtMoney(qUsed.price) +
+                 ' part? The old one was worth ' + Engine.fmtMoney(qOrigVal) + '..."') :
+                ('"A bit pricey — ' + Engine.fmtMoney(qUsed.price) +
+                 ' for what was a ' + Engine.fmtMoney(qOrigVal) + ' part."'));
+            }
+            qualityFlags.push({ partId: qNewPart.id,
+                                 kind: qHard ? 'overspend-hard' : 'overspend-mild',
+                                 origPerfLabel: qOrigLabel, newPerfLabel: qNewLabel });
+          } else if (qKey != null) {
+            qualityFlags.push({ partId: qNewPart.id, kind: 'ideal',
+                                 origPerfLabel: qOrigLabel, newPerfLabel: qNewLabel });
           }
         }
       }
@@ -2429,7 +2571,7 @@
     job.status = 'done';
     job.result = { onTime: job.deadlineDay == null || state.day <= job.deadlineDay,
                    score: score, payout: payout, notes: notes,
-                   tasteMatched: tasteMatched };
+                   tasteMatched: tasteMatched, qualityFlags: qualityFlags };
     removeFrom(state.jobs.active, job);
     return job.result;
   }
@@ -2499,7 +2641,7 @@
           offeredDay: state.day,
           deadlineDay: Jobs.shiftOffSunday(state, state.day + 3),   // §10.6
           difficulty: 2, speed: 'standard', status: 'active',
-          hoursRequired: Math.max(0.5, Engine.round2((e.origHours || 2) * C.CALLBACK_HOURS_FRACTION)),
+          hoursRequired: Math.max(0.5, Engine.round1((e.origHours || 2) * C.CALLBACK_HOURS_FRACTION)),
           hoursDone: 0,
           steps: [], stepIndex: 0,
           diagnosed: true, needsDiagnosis: false,
@@ -2720,7 +2862,7 @@
     var job = Jobs.findActive(state, jobId);
     if (!job || job.type !== 'refurb' || !job.machine) return err('Not a refurb job');
     if (job.status === 'sold') return err('Already sold');
-    var stripHours = Math.max(0.25, Engine.round2(
+    var stripHours = Engine.round1(Math.max(0.25,             // §14.8: 0.1h grid
       C.STRIP_HOURS * Engine.staffTimeMult(state, 'refurb')));   // §10.7
     var spent = Engine.spendHours(state, stripHours);
     if (!spent.ok) return spent;

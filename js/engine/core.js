@@ -97,9 +97,20 @@
     // §10.5 peripheral kinds set difficulty (CRT rebuild > mouse fix)
     PERIPHERAL_KIND_DIFF: { crt: 3, printer: 2, lcd: 2, modem: 2, scanner: 2,
                             input: 1, other: 2 },
-    // §10.4 overspend: installed price > max(mult x original, original+laborRate)
+    // §10.4/§14.2 overspend: installed price > max(mult x original, original+laborRate)
+    // is a mild overspend; > OVERSPEND_HARD_MULT x original is a hard one.
+    // Graded, waived for taste-match/enthusiast; never combined with a downgrade
+    // ding on the same part.
     OVERSPEND_MULT: 1.75,
-    OVERSPEND_SCORE: 0.5,        // score penalty (waived for tastes/enthusiasts)
+    OVERSPEND_HARD_MULT: 2.5,
+    OVERSPEND_SCORE_MILD: 0.25,
+    OVERSPEND_SCORE_HARD: 0.5,
+    // §14.2 downgrade: installed replacement's class-defining metric (cpu/ram/
+    // storage/gpu) is below the original's — repair only (upgrade is hard-
+    // gated by §14.1). Waived for labor-only faults (no part swap => moot) and
+    // budget-conscious customers (job.budgetAsk).
+    DOWNGRADE_SCORE: 0.4,
+    BUDGET_REPAIR_CHANCE: 0.12,  // §14.2: fraction of repairs that are budget/for-parts asks
     // §10.7 staff
     STAFF_SLOTS: [0, 1, 3, 6],   // by shop tier (garage = solo)
     STAFF_WAGE_BASE: 110,        // wageMonthly ~ laborRate x this x skill x wageFactor
@@ -299,6 +310,14 @@
   Engine.round2 = function (x) {
     if (!isFinite(x)) return 0;
     return Math.round((x + Number.EPSILON) * 100) / 100;
+  };
+  // §14.8: the time-accounting grid — every hour quantity (step hours,
+  // hoursRequired/hoursLeft, overtime, wait-starts, study, supply runs) snaps
+  // to the nearest 0.1h (6 min). Normalizes -0 to plain 0.
+  Engine.round1 = function (x) {
+    if (!isFinite(x)) return 0;
+    var r = Math.round((x + Number.EPSILON) * 10) / 10;
+    return r === 0 ? 0 : r;
   };
   Engine.clamp = function (x, lo, hi) { return x < lo ? lo : (x > hi ? hi : x); };
   Engine.fmtMoney = function (x) {
@@ -517,12 +536,12 @@
     if (state.hoursLeft - cost < -cap - 1e-9) {
       return { ok: false, error: 'Too exhausted — call it a day' };
     }
-    state.hoursLeft = Engine.round2(state.hoursLeft - cost);
+    state.hoursLeft = Engine.round1(state.hoursLeft - cost);   // §14.8: 0.1h grid
     return { ok: true };
   };
   // Hours still spendable today including the overtime allowance.
   Engine.hoursAvailable = function (state) {
-    return Math.max(0, Engine.round2(state.hoursLeft + Engine.CONFIG.overtimeCap));
+    return Math.max(0, Engine.round1(state.hoursLeft + Engine.CONFIG.overtimeCap));
   };
 
   // ------------------------------------------------------------------

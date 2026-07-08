@@ -733,19 +733,21 @@
       state.certsEarnedToday = state.certsEarnedToday || [];
       state.certsEarnedToday.push(msg);
     }
-    var totalHours = Math.max(0, cert.studyHours || 0);
-    var remaining = Math.max(0, Engine.round2(totalHours - (studying.hoursDone || 0)));
+    // §14.8: study time snaps to the 0.1h grid too (cert.studyHours need not
+    // change — the engine quantizes it here, same pattern as TASK_STEPS).
+    var totalHours = Engine.round1(Math.max(0, cert.studyHours || 0));
+    var remaining = Math.max(0, Engine.round1(totalHours - (studying.hoursDone || 0)));
     if (remaining <= 1e-9) {   // degenerate zero-hour cert — nothing left to spend
       finish();
       return { ok: true, hoursSpent: 0, completed: true };
     }
     if (avail <= 1e-9) return err('Too exhausted — call it a day');
-    var want = hours == null ? remaining : Math.max(0, Number(hours) || 0);
-    var spend = Math.min(avail, want, remaining);
+    var want = hours == null ? remaining : Engine.round1(Math.max(0, Number(hours) || 0));
+    var spend = Engine.round1(Math.min(avail, want, remaining));
     if (spend <= 1e-9) return err('Nothing left to study');
     var sp = Engine.spendHours(state, spend);
     if (!sp.ok) return sp;
-    studying.hoursDone = Engine.round2((studying.hoursDone || 0) + spend);
+    studying.hoursDone = Engine.round1((studying.hoursDone || 0) + spend);
     var completed = studying.hoursDone >= totalHours - 1e-9;
     if (completed) finish();
     return { ok: true, hoursSpent: spend, completed: completed };

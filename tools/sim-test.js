@@ -630,6 +630,47 @@ function runEra(era, idx, metricRun) {
 }
 
 // ------------------------------------------------------------------
+// Scenario (§14.1): no generated upgrade job ever demands a downgrade —
+// minPerf on the upgraded metric must exceed the ORIGINAL part's metric,
+// audited across a lightweight 60-day/every-era offer-generation sweep
+// (separate from the tuned 40-day economy runs above).
+// ------------------------------------------------------------------
+function upgradeNoDowngradeScenario() {
+  console.log('--- Upgrade jobs never demand a downgrade (§14.1) ---');
+  var checked = 0, worstBad = null;
+  DATA.ERAS.forEach(function (era, idx) {
+    var r = Engine.newGame({ eraId: era.id, shopName: 'Upgrade Audit', seed: 90000 + idx * 13 });
+    if (!r.ok) return;
+    for (var day = 0; day < 60; day++) {
+      var offers = Engine.getOffers();
+      for (var i = 0; i < offers.length; i++) {
+        var o = offers[i];
+        if (o.type !== 'upgrade' || !o.needs || !o.needs.length) continue;
+        var need = o.needs[0];
+        checked++;
+        if (!need.minPerf) {
+          worstBad = worstBad || (o.title + ': no minPerf set on the upgrade need');
+          continue;
+        }
+        var key = Object.keys(need.minPerf)[0];
+        var orig = need.originalPartId ? Engine.partById(need.originalPartId) : null;
+        var origVal = orig ? ((orig.perf || {})[key] || 0) : 0;
+        if (need.minPerf[key] <= origVal) {
+          worstBad = worstBad || (o.title + ': minPerf.' + key + ' ' + need.minPerf[key] +
+            ' <= original ' + origVal + ' (' + (orig ? orig.name : 'no original part') + ')');
+        }
+      }
+      var res = Engine.endDay();
+      if (!res.ok || Engine.getState().flags.gameOver) break;
+    }
+  });
+  assert(checked > 0, 'no upgrade offers were generated across the 60-day multi-era audit');
+  assert(worstBad == null, 'an upgrade job demanded a downgrade: ' + worstBad);
+  console.log('  audited ' + checked + ' upgrade-job need snapshots across ' +
+              DATA.ERAS.length + ' eras / 60 days — no downgrades found');
+}
+
+// ------------------------------------------------------------------
 // Scenario: compatibility rejection with readable problem string
 // ------------------------------------------------------------------
 function compatScenario() {
@@ -923,11 +964,22 @@ function assignScenario(era) {
   var basis2 = E.getState().inventory.filter(function (x) { return x.partId === pid; })[0].avgCost;
   assert(Math.abs(basis - basis2) < 0.01,
          'assign: inventory cost basis drifted (' + basis + ' -> ' + basis2 + ')');
+  // §14.1: a part below the (now strictly-greater-than-original) minPerf must
+  // be rejected readably — this is also, by construction, a below-original part.
+  var below = needs[0].options.filter(function (o) { return !o.meets; })[0];
+  var downgradeMsg = null;
+  if (below) {
+    var rBelow = E.assignPart(job.id, 0, below.partId);
+    assert(!rBelow.ok && /below the required spec/i.test(rBelow.error || ''),
+           'assign: expected a readable downgrade rejection, got: ' + JSON.stringify(rBelow));
+    downgradeMsg = rBelow.error;
+  }
   // Deprecated alias still works
   var a3 = E.installPart(job.id, 0, pid);
   assert(a3.ok, 'assign: deprecated installPart alias broken');
   console.log('  order/assign/unassign/reassign round-trip ok, basis stable at ' +
-              Engine.fmtMoney(basis2));
+              Engine.fmtMoney(basis2) +
+              (downgradeMsg ? ' | §14.1 downgrade rejection: "' + downgradeMsg + '"' : ''));
 }
 
 // ------------------------------------------------------------------
@@ -997,19 +1049,151 @@ function overspendScenario(era) {
     }
     return res;
   }
+  // §14.2: overspend is now graded (mild "a bit pricey" / hard "did it really
+  // need") — match either phrasing since the priciest-vs-cheapest gap picked
+  // here can land in either band depending on the catalog.
+  var GRUMBLE_RE = /Did it really need|a bit pricey/i;
   var hit = runOnce(35353, false);
   if (hit) {
-    assert(hit.notes.some(function (n) { return /Did it really need/i.test(n); }),
+    assert(hit.notes.some(function (n) { return GRUMBLE_RE.test(n); }),
            'overspend: grumble note missing, notes: ' + JSON.stringify(hit.notes));
     console.log('  penalty fired: score ' + hit.score);
   }
   var waived = runOnce(35353, true);
   if (waived) {
-    assert(!waived.notes.some(function (n) { return /Did it really need/i.test(n); }),
+    assert(!waived.notes.some(function (n) { return GRUMBLE_RE.test(n); }),
            'overspend: taste match should waive the grumble');
     assert(waived.score > (hit ? hit.score : 0),
            'overspend: waived score should beat penalized score');
     console.log('  taste waiver ok: score ' + waived.score + ' vs ' + (hit && hit.score));
+  }
+}
+
+// ------------------------------------------------------------------
+// Scenario (§14.2): symmetric quality check — a downgrade commit on a repair
+// dings rating + flags "downgrade"; putting the same part back reads "ideal"
+// and stays clean. (Overspend grading itself is covered by overspendScenario.)
+// ------------------------------------------------------------------
+function qualityFlagsScenario(era) {
+  console.log('--- Quality flags: downgrade / ideal (§14.2) ---');
+  var E = Engine;
+
+  function setupRepairWithPartFault(seed) {
+    var r = E.newGame({ eraId: era.id, shopName: 'Quality Test', seed: seed });
+    if (!r.ok) return null;
+    E.getState().cash = 200000;
+    var job = null;
+    for (var d = 0; d < 30 && !job; d++) {
+      var offers = E.getOffers().slice();
+      for (var i = 0; i < offers.length; i++) {
+        var o = offers[i];
+        if (o.type === 'repair' && o.fault && o.fault.partCategory &&
+            Engine.Jobs.perfKeyForCategory(o.fault.partCategory) &&
+            !o.rush && E.acceptOffer(o.id).ok) {
+          job = E.getActiveJobs().filter(function (j) { return j.id === o.id; })[0];
+          break;
+        }
+      }
+      if (!job) E.endDay();
+    }
+    if (!job) return null;
+    if (job.needsDiagnosis && !job.diagnosed) E.diagnoseJob(job.id);
+    if (!job.diagnosed || !job.needs.length) return null;
+    return job;
+  }
+
+  function workToResult(job) {
+    var res = null, guard = 0;
+    while (guard++ < 60) {
+      E.getState().hoursLeft = 8;
+      var w = E.workJob(job.id);
+      if (w.ok && w.completed) { res = w.result; break; }
+      if (job.result) { res = job.result; break; }
+      if (!w.ok) {
+        if (/waiting/i.test(w.error || '')) {
+          var wh = E.waitHour();
+          if (job.result) { res = job.result; break; }
+          if (!wh.ok) { E.endDay(); if (job.result) { res = job.result; break; } }
+          continue;
+        }
+        return null;
+      }
+    }
+    return res;
+  }
+
+  // (a) downgrade: pretend the original was the BEST candidate in its
+  // category — any real (weaker) purchasable candidate then reads as a
+  // genuine downgrade, which a repair commit does NOT hard-block (§14.2).
+  var jobA = setupRepairWithPartFault(61101);
+  if (jobA) {
+    var needA = jobA.needs[0];
+    var keyA = Engine.Jobs.perfKeyForCategory(needA.category);
+    var candsA = Engine.Jobs.purchasableByCategory(E.getState(), needA.category);
+    var bestA = candsA.slice().sort(function (a, b) {
+      return ((b.perf || {})[keyA] || 0) - ((a.perf || {})[keyA] || 0);
+    })[0];
+    var worseA = bestA && candsA.filter(function (p) {
+      return ((p.perf || {})[keyA] || 0) < ((bestA.perf || {})[keyA] || 0);
+    }).sort(function (a, b) { return ((b.perf || {})[keyA] || 0) - ((a.perf || {})[keyA] || 0); })[0];
+    if (bestA && worseA) {
+      needA.originalPartId = bestA.id;
+      var viewA = E.getJobNeeds(jobA.id)[0];
+      var optA = viewA.options.filter(function (o) { return o.partId === worseA.id; })[0];
+      if (assert(optA && optA.vsOriginal && optA.vsOriginal.cmp === 'worse',
+                 'quality: expected a "worse" vsOriginal cue on the forced-downgrade option, got: ' +
+                 JSON.stringify(optA && optA.vsOriginal))) {
+        var arA = E.assignPart(jobA.id, 0, worseA.id);
+        var guardA = 0;
+        while (arA.ok && arA.mishap && arA.filled < 1 && guardA++ < 8)
+          arA = E.assignPart(jobA.id, 0, worseA.id);
+        if (assert(arA.ok, 'quality: downgrade assign failed: ' + (arA.error || ''))) {
+          var resA = workToResult(jobA);
+          if (assert(!!resA, 'quality: downgrade job never completed')) {
+            assert(resA.qualityFlags && resA.qualityFlags.some(function (f) { return f.kind === 'downgrade'; }),
+                   'quality: expected a downgrade qualityFlag, got: ' + JSON.stringify(resA.qualityFlags));
+            assert(resA.notes.some(function (n) { return /smaller.slower/i.test(n); }),
+                   'quality: expected a downgrade grumble note, got: ' + JSON.stringify(resA.notes));
+            console.log('  downgrade ding ok: score ' + resA.score +
+                        ', flags ' + JSON.stringify(resA.qualityFlags));
+          }
+        }
+      }
+    } else {
+      console.log('  (no downgrade-capable candidate spread in this category — skipped)');
+    }
+  } else {
+    console.log('  (no part-fault repair offer in 30 days — downgrade case skipped)');
+  }
+
+  // (b) ideal: install the SAME part back (same metric, ~same price => no
+  // downgrade, no overspend) -> qualityFlags reads "ideal", no grumble note.
+  var jobB = setupRepairWithPartFault(61102);
+  if (jobB) {
+    var needB = jobB.needs[0];
+    var origB = needB.originalPartId ? Engine.partById(needB.originalPartId) : null;
+    var stillPurchasable = origB && Engine.Jobs.purchasableByCategory(E.getState(), needB.category)
+      .some(function (p) { return p.id === origB.id; });
+    if (stillPurchasable) {
+      var arB = E.assignPart(jobB.id, 0, origB.id);
+      var guardB = 0;
+      while (arB.ok && arB.mishap && arB.filled < 1 && guardB++ < 8)
+        arB = E.assignPart(jobB.id, 0, origB.id);
+      if (assert(arB.ok, 'quality: ideal assign failed: ' + (arB.error || ''))) {
+        var resB = workToResult(jobB);
+        if (assert(!!resB, 'quality: ideal job never completed')) {
+          assert(resB.qualityFlags && resB.qualityFlags.some(function (f) { return f.kind === 'ideal'; }),
+                 'quality: expected an ideal qualityFlag, got: ' + JSON.stringify(resB.qualityFlags));
+          assert(!resB.notes.some(function (n) { return /smaller.slower|pricey|Did it really need/i.test(n); }),
+                 'quality: ideal completion should carry no quality grumble, got: ' + JSON.stringify(resB.notes));
+          console.log('  ideal part clean: score ' + resB.score);
+        }
+      }
+    } else {
+      console.log('  (original part no longer purchasable this era — ideal case skipped)');
+    }
+  } else {
+    console.log('  (no part-fault repair offer in 30 days — ideal case skipped)');
   }
 }
 
@@ -2189,6 +2373,7 @@ if ((DATA.APPLE_MACHINES || []).length || (DATA.MOBILE_DEVICES || []).length) {
               globals.multiGpuOffers + ', RAM-heavy asks: ' + globals.ramHeavyOffers);
 }
 
+upgradeNoDowngradeScenario();
 compatScenario();
 var era1983 = DATA.ERAS.filter(function (e) { return e.startYear === 1983; })[0];
 if (era1983) unlockScenario(era1983);
@@ -2198,6 +2383,7 @@ stripScenario(DATA.ERAS[0]);
 stepScenario(DATA.ERAS[0]);
 assignScenario(DATA.ERAS[DATA.ERAS.length - 1]);
 overspendScenario(DATA.ERAS[DATA.ERAS.length - 1]);
+qualityFlagsScenario(DATA.ERAS[DATA.ERAS.length - 1]);
 sundayScenario(DATA.ERAS[0]);
 staffScenario();
 rampScenario(DATA.ERAS[0]);

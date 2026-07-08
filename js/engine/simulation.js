@@ -27,11 +27,11 @@
     // the morning — hoursLeft = 8 + carried, never below OVERTIME_MORNING_MIN.
     var carried = Math.min(0, state.hoursLeft || 0);
     state.day += 1;
-    state.hoursLeft = carried < 0 ?
+    state.hoursLeft = Engine.round1(carried < 0 ?           // §14.8: 0.1h grid
       Math.max(C.OVERTIME_MORNING_MIN, state.hoursPerDay + carried) :
-      state.hoursPerDay;
+      state.hoursPerDay);
     if (carried < 0 && summary) {
-      summary.overtimeNote = 'Worked ' + Engine.round2(-carried) +
+      summary.overtimeNote = 'Worked ' + Engine.round1(-carried) +
         'h of overtime — starting today with ' + state.hoursLeft + 'h.';
     }
     state.supplyRunDoneToday = false;

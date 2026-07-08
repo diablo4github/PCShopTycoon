@@ -100,7 +100,10 @@ var globals = {
   minPerfRejected: false,
   minPerfRejectMsg: '',
   badPayOffer: null,         // §10.2: offer pay must be whole dollars
-  badStepsOffer: null        // §10.1: every offer carries a checklist
+  badStepsOffer: null,       // §10.1: every offer carries a checklist
+  buildsSeen: 0,             // §11.1: generated build offers observed…
+  buildWitnessFails: [],     // …and any that were not witness-satisfiable
+  osRequestKinds: {}         // §11.4: family/exact/recommendation seen
 };
 
 // ------------------------------------------------------------------
@@ -222,14 +225,43 @@ function botDay(E, mem) {
   var offers = E.getOffers().slice();
   for (var i = 0; i < offers.length; i++) {
     var o = offers[i];
-    // §10.2/§10.1 sweeps: integer pay + checklist on every offer
+    // §10.2/§10.1 sweeps: integer pay + checklist on every offer (§11.3: the
+    // repair phase may still hide in pendingSteps behind the diagnose phase)
+    var totalSteps = (o.steps ? o.steps.length : 0) +
+                     (o.pendingSteps ? o.pendingSteps.length : 0);
     if (o.pay != null && !Number.isInteger(o.pay) && !globals.badPayOffer)
       globals.badPayOffer = o.title + ' pay=' + o.pay;
-    if ((!o.steps || o.steps.length < 3) && !globals.badStepsOffer)
-      globals.badStepsOffer = o.title + ' steps=' + (o.steps ? o.steps.length : 'none');
+    if (totalSteps < 3 && !globals.badStepsOffer)
+      globals.badStepsOffer = o.title + ' steps=' + totalSteps;
+    // §11.1 sweep: every offered build must be witness-satisfiable in budget
+    if (o.build) {
+      globals.buildsSeen++;
+      var wtn = Engine.Jobs.witnessBuild(E.getState(), o.build);
+      if (!wtn) globals.buildWitnessFails.push(o.title + ': no witness at all');
+      else if (wtn.cost > o.build.budget)
+        globals.buildWitnessFails.push(o.title + ': witness ' + wtn.cost +
+                                       ' > budget ' + o.build.budget);
+    }
+    // §11.4 sweep: OS request kinds & label exposure
+    if (o.type === 'software' && o.needs.length && o.needs[0].category === 'os') {
+      var osn = o.needs[0];
+      var kind = osn.osExactId ? 'exact' : (osn.osFamily ? 'family' : 'recommendation');
+      globals.osRequestKinds[kind] = (globals.osRequestKinds[kind] || 0) + 1;
+      if (!o.osRequest && !globals.badStepsOffer)
+        globals.badStepsOffer = o.title + ' missing osRequest label';
+    }
     if (o.crt && !ownsCrtKit) { E.declineOffer(o.id); continue; }
     // Benchmark-era bot skips sub-$20 cleaning gigs — bench time goes to repairs
     if (mem.standardOnly && o.type === 'cleaning') { E.declineOffer(o.id); continue; }
+    // The flip-metric run splits its day with refurbs: keep the job side at the
+    // workstation count so the $/h comparison isn't polluted by deadline misses.
+    if (mem.multiFlip) {
+      var slotsNow = Engine.tierInfo(E.getState()).workstationSlots;
+      var busyNow = E.getActiveJobs().filter(function (j) {
+        return j.type !== 'refurb';
+      }).length;
+      if (busyNow >= slotsNow) break;
+    }
     var res = E.acceptOffer(o.id);
     if (!res.ok) break; // workstations full
   }
@@ -266,7 +298,11 @@ function botDay(E, mem) {
     });
     if (best) {
       var rr = tracked(E, mem, true, function () { return E.buyAsIsMachine(best.id); });
-      if (rr.ok) { mem.refurbBought = true; mem.flipsStarted++; }
+      if (rr.ok) {
+        mem.refurbBought = true; mem.flipsStarted++;
+        if (process.env.SIM_DEBUG) console.log('      [flip] day ' + mem.day +
+          ' bought "' + best.name + '" ask ' + best.askPrice);
+      }
     }
   }
 
@@ -280,9 +316,24 @@ function botDay(E, mem) {
       var st = E.getState();
       if (st.hoursLeft < 0.5) break;   // the bot itself does not chase overtime
       var isFlip = job.type === 'refurb';
+      if (process.env.SIM_DEBUG && isFlip && guard <= 2) {
+        var cur = job.steps && job.steps[job.stepIndex];
+        console.log('      [rj] day ' + mem.day + ' j' + job.id + ' st=' + job.status +
+          ' diag=' + !!job.diagnosed + ' step ' + job.stepIndex + '/' +
+          (job.steps ? job.steps.length : '-') + ' pend=' +
+          (job.pendingSteps ? job.pendingSteps.length : 0) +
+          (cur ? ' cur="' + cur.label + '" kind=' + cur.kind + ' run=' + !!cur.running +
+                 ' prog=' + Engine.round2(cur.progress || 0) : ''));
+      }
       if (isFlip && job.status === 'done') {
         var sold = tracked(E, mem, true, function () { return E.sellRefurb(job.id); });
-        if (sold.ok) { mem.refurbsSold++; progress = true; }
+        if (sold.ok) {
+          mem.refurbsSold++; progress = true;
+          if (process.env.SIM_DEBUG) console.log('      [flip] day ' + mem.day +
+            ' sold "' + job.title + '" for ' + (sold.price || sold.amount || '?') +
+            ' | flipStats net ' + Engine.round2(mem.flipStats.net) +
+            ' h ' + Engine.round2(mem.flipStats.hours));
+        }
         continue;
       }
       E.setJobSpeed(job.id, botSpeedFor(job, mem));
@@ -304,7 +355,17 @@ function botDay(E, mem) {
         var need = needs[n];
         if (need.filled >= need.qty) continue;
         var opt = chooseOption(E, job, need);
-        if (!opt) { blocked = true; continue; }
+        if (!opt) {
+          if (process.env.SIM_DEBUG && isFlip) {
+            console.log('      [stuck] day ' + mem.day + ' job ' + job.id +
+              ' need#' + need.index + ' "' + need.name + '" cat=' + need.category +
+              ' opts=' + need.options.length + ' meets=' +
+              need.options.filter(function (o) { return o.meets; }).length +
+              (need.options[0] ? ' first="' + need.options[0].name + '" problem=' +
+                (need.options[0].problem || 'none') + ' price=' + need.options[0].price : ''));
+          }
+          blocked = true; continue;
+        }
         if (opt.source === 'market' && opt.price > E.getState().cash - 200) { blocked = true; continue; }
         var ir = tracked(E, mem, isFlip, function () {
           return E.assignPart(job.id, need.index, opt.partId);
@@ -319,6 +380,21 @@ function botDay(E, mem) {
         if (!globals.tasteSampleNotes) globals.tasteSampleNotes = (w.result.notes || []).join(' | ');
       }
       if (blocked) continue;
+    }
+    // §11.6: if everything is parked on running waits and bench time remains,
+    // sit an hour out — completions (and payouts) then land inside the tracked
+    // windows instead of overnight, keeping the §9.6 metric honest.
+    if (!progress && E.getState().hoursLeft >= 1) {
+      var waiting = E.getActiveJobs().filter(function (jw) {
+        return jw.steps && jw.stepIndex < jw.steps.length &&
+               jw.steps[jw.stepIndex].kind === 'wait' &&
+               jw.steps[jw.stepIndex].running;
+      });
+      if (waiting.length) {
+        var flipWaitOnly = waiting.every(function (jw) { return jw.type === 'refurb'; });
+        var wh = tracked(E, mem, flipWaitOnly, function () { return E.waitHour(); });
+        if (wh.ok) progress = true;
+      }
     }
   }
 }
@@ -341,11 +417,13 @@ function runEra(era, idx, metricRun) {
     flipStats: { net: 0, hours: 0 }
   };
   var sawRentCharge = false, offerCount = E.getOffers().length;
+  var offersGenerated = 0;   // §11.2: overnight batches only, for the mean check
   var threw = null;
   var otCap = E.getConfig().overtimeCap;
 
   for (var day = 0; day < 40; day++) {
     try {
+      mem.day = day;
       botDay(E, mem);
       var res = E.endDay();
       if (!assert(res.ok, era.id + ': endDay failed on day ' + day + ': ' + (res.error || ''))) break;
@@ -353,6 +431,7 @@ function runEra(era, idx, metricRun) {
       assert(typeof sum.dateStr === 'string' && sum.dateStr.length > 5,
              era.id + ': summary.dateStr malformed');
       offerCount += sum.newOffers.length;
+      offersGenerated += sum.newOffers.length;
       sum.charges.forEach(function (c) { if (/^Rent/.test(c.label)) sawRentCharge = true; });
       var st = E.getState();
       assert(isFinite(st.cash), era.id + ': cash not finite on day ' + day);
@@ -403,6 +482,13 @@ function runEra(era, idx, metricRun) {
   if (era.startYear === 1983 && !metricRun && REAL()) {
     assert(s.cash >= 2000 && s.cash <= 10000,
            era.id + ': final cash ' + s.cash + ' outside sanity band [2000, 10000]');
+  }
+  // §11.2: ramp-down — the 1983 40-day mean stays at or under 3.6 offers/day
+  if (era.startYear === 1983 && !metricRun) {
+    var meanOffers = offersGenerated / 40;
+    console.log('    offers/day mean: ' + meanOffers.toFixed(2));
+    assert(meanOffers <= 3.6,
+           era.id + ': offer ramp too fast — mean ' + meanOffers.toFixed(2) + '/day > 3.6');
   }
 
   var pendingCallbacks = s.jobs.completedRecent.filter(function (e) { return e.fired; }).length;
@@ -627,8 +713,11 @@ function stepScenario(era) {
         var cand = E.getActiveJobs().filter(function (j) { return j.id === o.id; })[0];
         E.getState().hoursLeft = 8;   // debug: plenty of bench time
         var dg = E.diagnoseJob(cand.id);
-        if (dg.ok && dg.fault.partCategory) { job = cand; break; }
-        E.abandonJob(cand.id);
+        var hasWait = cand.steps.concat(cand.pendingSteps || []).some(function (st) {
+          return st.kind === 'wait';
+        });
+        if (dg.ok && dg.fault.partCategory && !hasWait) { job = cand; break; }
+        E.abandonJob(cand.id);   // wait steps get their own scenario (§11.6)
       }
     }
     if (!job) E.endDay();
@@ -772,8 +861,11 @@ function overspendScenario(era) {
       if (!job) E.endDay();
     }
     if (!assert(!!job, 'overspend: no machine-backed upgrade in 25 days')) return null;
-    // Force a wide value gap: pretend the original was the cheapest of the category
+    // Force a wide value gap: pretend the original was the cheapest of the
+    // category, and lift the machine-fit constraint so the full price range of
+    // the category is on the table (mechanics test, not a compat test).
     var need = job.needs[0];
+    need.anyOfTags = null;
     var cheap = Engine.Jobs.purchasableByCategory(E.getState(), need.category)
       .sort(function (a, b) {
         return Engine.Pricing.priceOf(a, E.getState()) - Engine.Pricing.priceOf(b, E.getState());
@@ -795,11 +887,21 @@ function overspendScenario(era) {
     while (a.ok && a.mishap && a.filled < 1 && guard++ < 8) a = E.assignPart(job.id, 0, pricey.partId);
     if (!assert(a.ok, 'overspend: assign failed: ' + (a.error || ''))) return null;
     var res = null, guard2 = 0;
-    while (guard2++ < 30) {
+    while (guard2++ < 40) {
       E.getState().hoursLeft = 8;
       var w = E.workJob(job.id);
-      if (!assert(w.ok, 'overspend: work failed: ' + (w.error || ''))) return null;
-      if (w.completed) { res = w.result; break; }
+      if (w.ok && w.completed) { res = w.result; break; }
+      if (job.result) { res = job.result; break; }   // completed via a wait tick
+      if (!w.ok) {
+        if (/waiting/i.test(w.error || '')) {   // §11.6: sit out the wait
+          var wh = E.waitHour();
+          if (job.result) { res = job.result; break; }
+          if (!wh.ok) { E.endDay(); if (job.result) { res = job.result; break; } }
+          continue;
+        }
+        assert(false, 'overspend: work failed: ' + (w.error || ''));
+        return null;
+      }
     }
     return res;
   }
@@ -910,10 +1012,303 @@ function staffScenario() {
 }
 
 // ------------------------------------------------------------------
-// Scenario (§10.8): v1 AND v2 fixtures migrate to v3 and play
+// Scenario (§11.2): synthetic ramp check — 4.8-star prestige-2 garage <= 4
+// ------------------------------------------------------------------
+function rampScenario(era) {
+  console.log('--- Offer ramp-down (§11.2) ---');
+  var E = Engine;
+  var r = E.newGame({ eraId: era.id, shopName: 'Ramp Test', seed: 86868 });
+  if (!assert(r.ok, 'ramp: newGame failed')) return;
+  var s = E.getState();
+  s.reputation.rating = 4.8;
+  s.reputation.prestige = 2;
+  s.shop.tier = 0;
+  s.jobs.offers = [];
+  var made = Engine.Jobs.generateOffers(s, null);
+  assert(made.length <= 4,
+         'ramp: 4.8-star prestige-2 garage generated ' + made.length + ' offers (cap 4)');
+  // Busy shop: >=10 pending halves arrivals
+  s.jobs.offers = [];
+  for (var i = 0; i < 10; i++) s.jobs.offers.push({ id: 90000 + i, offeredDay: s.day,
+    deadlineDay: null, title: 'stub', type: 'cleaning', steps: [], needs: [] });
+  var made2 = Engine.Jobs.generateOffers(s, null);
+  assert(made2.length <= 2,
+         'ramp: busy shop should halve arrivals, got ' + made2.length);
+  console.log('  garage cap ok (' + made.length + '), busy-shop halving ok (' +
+              made2.length + ')');
+}
+
+// ------------------------------------------------------------------
+// Scenario (§11.3): diagnosis lives in the checklist; alias still works
+// ------------------------------------------------------------------
+function diagMergeScenario(era) {
+  console.log('--- Diagnose-step merge (§11.3) ---');
+  var E = Engine;
+  var r = E.newGame({ eraId: era.id, shopName: 'Diag Test', seed: 95959 });
+  if (!assert(r.ok, 'diag: newGame failed')) return;
+  E.getState().cash = 100000;
+  // Collect two part-fault repair jobs: one worked manually, one via the alias
+  var jobs = [];
+  for (var d = 0; d < 30 && jobs.length < 2; d++) {
+    var offers = E.getOffers().slice();
+    for (var i = 0; i < offers.length && jobs.length < 2; i++) {
+      var o = offers[i];
+      if (o.type !== 'repair' || o.rush || o.crt) continue;
+      if (!o.fault || !o.fault.partCategory) continue;   // harness peeks
+      if (E.acceptOffer(o.id).ok)
+        jobs.push(E.getActiveJobs().filter(function (j) { return j.id === o.id; })[0]);
+    }
+    if (jobs.length < 2) E.endDay();
+  }
+  if (!assert(jobs.length === 2, 'diag: could not collect two part-fault repairs')) return;
+
+  // Job A: drive the diagnose steps purely through workJob
+  var a = jobs[0];
+  assert(a.steps.length === 2 && /intake/i.test(a.steps[0].label) &&
+         /bench diagnosis/i.test(a.steps[1].label) && a.steps[1].diag === true,
+         'diag: checklist should open with the diagnose phase, got ' +
+         JSON.stringify(a.steps.map(function (st) { return st.label; })));
+  assert(a.pendingSteps.length >= 1, 'diag: repair steps should hide in pendingSteps');
+  assert(a.needs.length === 0 && !a.diagnosed, 'diag: no needs before diagnosis');
+  E.getState().hoursLeft = 8;
+  var guard = 0;
+  while (!a.diagnosed && guard++ < 10) {
+    var w = E.workJob(a.id, 0.5);
+    if (!assert(w.ok, 'diag: workJob failed mid-diagnosis: ' + (w.error || ''))) return;
+    if (!a.diagnosed)
+      assert(a.needs.length === 0, 'diag: fault leaked before the diag step completed');
+  }
+  assert(a.diagnosed, 'diag: working the checklist never diagnosed the job');
+  assert(a.needs.length === 1, 'diag: needs should appear exactly at diag completion');
+  assert(a.pendingSteps.length === 0 && a.steps.length > 2,
+         'diag: repair steps should append at diag completion');
+  var openCount = a.steps.filter(function (st) {
+    return /open|ground|intake/i.test(st.label);
+  }).length;
+  assert(openCount <= 1, 'diag: duplicate open/ground/intake steps after append (' +
+         openCount + ')');
+
+  // Job B: the deprecated diagnoseJob alias works the steps
+  var b = jobs[1];
+  E.getState().hoursLeft = 8;
+  var dr = E.diagnoseJob(b.id);
+  assert(dr.ok && dr.fault && dr.fault.partCategory,
+         'diag: alias failed: ' + (dr.error || ''));
+  assert(b.diagnosed && b.steps[1].done,
+         'diag: alias should complete the bench-diagnosis step');
+  var dr2 = E.diagnoseJob(b.id);
+  assert(!dr2.ok, 'diag: double-diagnosis should refuse');
+  console.log('  merge ok: fault revealed at step completion, alias works, no dupes');
+}
+
+// ------------------------------------------------------------------
+// Scenario (§11.4): OS requests — satisfiable, enforced readably
+// ------------------------------------------------------------------
+function osRequestScenario(era) {
+  console.log('--- OS requests (§11.4) ---');
+  var E = Engine;
+  var r = E.newGame({ eraId: era.id, shopName: 'OS Test', seed: 31414 });
+  if (!assert(r.ok, 'os: newGame failed')) return;
+  E.getState().cash = 100000;
+  var job = null;
+  for (var d = 0; d < 40 && !job; d++) {
+    var offers = E.getOffers().slice();
+    for (var i = 0; i < offers.length; i++) {
+      var o = offers[i];
+      if (o.type !== 'software' || !o.needs.length) continue;
+      var n0 = o.needs[0];
+      if (!n0.osExactId && !n0.osFamily) continue;   // want a restricted request
+      if (E.acceptOffer(o.id).ok) {
+        job = E.getActiveJobs().filter(function (j) { return j.id === o.id; })[0];
+        break;
+      }
+    }
+    if (!job) E.endDay();
+  }
+  if (!assert(!!job, 'os: no restricted OS request arrived in 40 days')) return;
+  assert(typeof job.osRequest === 'string' && job.osRequest.length > 5,
+         'os: job.osRequest label missing');
+  var needs = E.getJobNeeds(job.id)[0];
+  var okOpt = needs.options.filter(function (o) { return o.meets; });
+  assert(okOpt.length >= 1, 'os: restricted request has no satisfying option');
+  var badOpt = needs.options.filter(function (o) { return !o.meets; })[0];
+  if (badOpt) {
+    var rej = E.assignPart(job.id, 0, badOpt.partId);
+    assert(!rej.ok && /asked for|wrong flavor|specifically/i.test(rej.error || ''),
+           'os: wrong-OS rejection unreadable: ' + JSON.stringify(rej));
+    console.log('  rejected: "' + rej.error + '"');
+  } else {
+    console.log('  (only one OS family purchasable this era — rejection path skipped)');
+  }
+  console.log('  request: "' + job.osRequest + '", ' + okOpt.length + ' valid option(s)');
+}
+
+// ------------------------------------------------------------------
+// Scenario (§11.6): wait steps — start, parallel ticking, waitHour, overnight
+// ------------------------------------------------------------------
+function waitScenario(era) {
+  console.log('--- Waiting steps (§11.6) ---');
+  var E = Engine;
+  var r = E.newGame({ eraId: era.id, shopName: 'Wait Test', seed: 27272 });
+  if (!assert(r.ok, 'wait: newGame failed')) return;
+  var s = E.getState();
+  s.cash = 100000;
+  // A refurb machine gives a deterministic job; ensure its checklist has a wait
+  var listing = E.getAsIsMarket()[0];
+  if (!assert(!!listing, 'wait: no as-is listing')) return;
+  var buy = E.buyAsIsMachine(listing.id);
+  if (!assert(buy.ok, 'wait: buy failed')) return;
+  var job = E.getActiveJobs().filter(function (j) { return j.id === buy.jobId; })[0];
+  var all = job.steps.concat(job.pendingSteps || []);
+  var waitStep = all.filter(function (st) { return st.kind === 'wait'; })[0];
+  if (!waitStep) {   // data-independent mechanics test: promote the last step
+    waitStep = all[all.length - 1];
+    waitStep.kind = 'wait';
+    console.log('  (no natural wait step in this checklist — promoted "' +
+                waitStep.label + '" for the mechanics test)');
+  }
+  assert(waitStep.running === false, 'wait: running must default false');
+  // Work the job up to the wait barrier
+  s.hoursLeft = 8;
+  var started = null, guard = 0;
+  while (guard++ < 60 && !started) {
+    if (s.hoursLeft < 1) s.hoursLeft = 8;   // debug refill
+    if (job.needsDiagnosis && !job.diagnosed) { E.diagnoseJob(job.id); continue; }
+    var needs = E.getJobNeeds(job.id);
+    var blocked = false;
+    for (var n = 0; n < needs.length; n++) {
+      if (needs[n].filled < needs[n].qty) {
+        var opt = needs[n].options.filter(function (o) { return o.meets; })[0];
+        if (opt) E.assignPart(job.id, needs[n].index, opt.partId);
+        else blocked = true;
+      }
+    }
+    if (blocked) break;
+    var w = E.workJob(job.id);
+    if (w.ok && w.startedWait) { started = w; break; }
+    if (!w.ok) break;
+    if (w.completed) break;
+  }
+  if (!assert(!!started, 'wait: never reached/started the wait step')) return;
+  assert(started.hoursSpent === Engine.CONFIG.WAIT_START_HOURS,
+         'wait: starting should cost 0.1h, got ' + started.hoursSpent);
+  var cur = job.steps[job.stepIndex];
+  assert(cur.kind === 'wait' && cur.running === true, 'wait: step should be running');
+  // Its own job is blocked while waiting
+  var again = E.workJob(job.id);
+  assert(!again.ok && /waiting/i.test(again.error || ''),
+         'wait: own job should be blocked, got ' + JSON.stringify(again));
+  // waitHour advances it 1:1
+  var p0 = cur.progress;
+  var wh = E.waitHour();
+  assert(wh.ok && wh.hoursSpent === 1 && wh.advanced.length >= 1,
+         'wait: waitHour failed: ' + JSON.stringify(wh));
+  var doneViaWaitHour = cur.done;
+  assert(doneViaWaitHour || cur.progress > p0, 'wait: waitHour did not advance the step');
+  // Parallelism: hours on another job also tick a running wait
+  if (!doneViaWaitHour) {
+    var other = E.getOffers()[0];
+    if (other && E.acceptOffer(other.id).ok) {
+      var p1 = cur.progress;
+      s.hoursLeft = 8;
+      var ww = E.workJob(other.id, 1);
+      if (ww.ok && ww.hoursSpent > 0) {
+        assert(cur.done || cur.progress > p1,
+               'wait: hours on another job should tick the wait');
+      }
+    }
+  }
+  // Overnight completion
+  if (!cur.done) {
+    var res = E.endDay();
+    assert(res.ok, 'wait: endDay failed');
+    assert(cur.done && cur.running === false,
+           'wait: running wait should complete free overnight');
+  }
+  // waitHour with nothing running refuses
+  var idle = E.waitHour();
+  assert(!idle.ok, 'wait: waitHour with nothing running should refuse');
+  console.log('  start 0.1h, own-job block, waitHour tick, overnight completion ok');
+}
+
+// ------------------------------------------------------------------
+// Scenario (§11.5): staff XP thresholds, fixed tables, senior firing
+// ------------------------------------------------------------------
+function staffXpScenario() {
+  console.log('--- Staff XP & levels (§11.5) ---');
+  var E = Engine;
+  var era = DATA.ERAS.filter(function (e) { return e.startYear >= 1991; })[0] || DATA.ERAS[0];
+  var r = E.newGame({ eraId: era.id, shopName: 'XP Test', seed: 64646 });
+  if (!assert(r.ok, 'xp: newGame failed')) return;
+  var s = E.getState();
+  s.cash = 100000;
+  s.shop.tier = 1;
+  var sv = E.getStaffView();
+  assert(sv.candidates.every(function (c) { return c.level >= 1 && c.level <= 2; }),
+         'xp: candidates must spawn L1-L2, got ' +
+         JSON.stringify(sv.candidates.map(function (c) { return c.level; })));
+  var cand = sv.candidates.filter(function (c) { return c.role === 'tech'; })[0] ||
+             sv.candidates[0];
+  E.hireStaff(cand.id);
+  var member = s.staff[0];
+  var role = Engine.staffRoleById(member.role);
+  var affected = Engine.isApprenticeRole(role) ? 'repair' : role.jobTypes[0];
+  // Poke to the brink of the next level, then do one boosted action
+  var TH = Engine.CONFIG.STAFF_LEVEL_THRESHOLDS;
+  member.level = 1;
+  member.skill = Engine.staffSkillFor(1);
+  member.xp = TH[1] - 0.5;
+  // find any job of an applicable type to work (poke a cleaning job's type if needed)
+  var target = null;
+  for (var d = 0; d < 15 && !target; d++) {
+    var offers = E.getOffers().slice();
+    for (var i = 0; i < offers.length; i++) {
+      if (offers[i].type === affected && !offers[i].crt &&
+          E.acceptOffer(offers[i].id).ok) {
+        target = E.getActiveJobs().filter(function (j) { return j.id === offers[i].id; })[0];
+        break;
+      }
+    }
+    if (!target) E.endDay();
+  }
+  if (!assert(!!target, 'xp: no ' + affected + ' job arrived to train on')) return;
+  s.hoursLeft = 8;
+  var w = target.needsDiagnosis && !target.diagnosed ?
+          E.diagnoseJob(target.id) : E.workJob(target.id, 1);
+  assert(w.ok, 'xp: boosted action failed: ' + (w.error || ''));
+  assert(member.level === 2, 'xp: 0.5h past the threshold should reach L2, got L' +
+         member.level + ' xp ' + member.xp);
+  assert(member.skill === Engine.staffSkillFor(2),
+         'xp: level-up must adopt the fixed skill table');
+  assert(/Level up/.test(s.news[0].headline) || s.levelUpsToday.length >= 1,
+         'xp: level-up should push news + summary line');
+  var view = E.getStaffView().staff[0];
+  assert(view.level === 2 && view.xp >= TH[1] && view.nextLevelAt === TH[2] &&
+         typeof view.title === 'string',
+         'xp: getStaffView missing level/xp/nextLevelAt/title: ' + JSON.stringify(view));
+  var res = E.endDay();
+  assert(res.ok && res.summary.levelUps.length >= 1,
+         'xp: morning summary should list the level-up');
+  // §11.5: firing L4+ doubles the rep ding
+  member = s.staff[0];
+  member.level = 4;
+  var histBefore = s.reputation.history.length;
+  E.fireStaff(member.id);
+  var hist = s.reputation.history;
+  var added = hist.length - Math.min(histBefore, Engine.CONFIG.RATING_HISTORY - 2);
+  var lastTwo = hist.slice(-2);
+  assert(lastTwo[0] === Engine.CONFIG.FIRE_REP_SCORE &&
+         lastTwo[1] === Engine.CONFIG.FIRE_REP_SCORE,
+         'xp: firing L4+ should push the rep ding twice, got ' + JSON.stringify(lastTwo));
+  console.log('  L2 at ' + TH[1] + 'h ok, fixed tables ok, summary line ok, ' +
+              'senior firing double-ding ok');
+}
+
+// ------------------------------------------------------------------
+// Scenario (§10.8/§11.7): v1, v2 AND v3 fixtures migrate to v4 and play
 // ------------------------------------------------------------------
 function migrationScenario(era) {
-  console.log('--- Save migration (v1/v2 -> v3) ---');
+  console.log('--- Save migration (v1/v2/v3 -> v4) ---');
   var E = Engine;
   var r = E.newGame({ eraId: era.id, shopName: 'Migrate Test', seed: 73737 });
   if (!assert(r.ok, 'migration: newGame failed')) return;
@@ -922,43 +1317,65 @@ function migrationScenario(era) {
   E.getState().cash = 50000;
   var listing = E.getAsIsMarket()[0];
   if (listing) E.buyAsIsMachine(listing.id);
-  var v3snapshot = E.exportSave();
+  var v4snapshot = E.exportSave();
 
   function downgrade(version) {
-    var obj = JSON.parse(v3snapshot);
+    var obj = JSON.parse(v4snapshot);
     obj.version = version;
-    delete obj.staff; delete obj.staffMarket;
-    delete obj.staffNextRefreshDay; delete obj.staffNextId;
+    delete obj.levelUpsToday;
+    (obj.staff || []).concat(obj.staffMarket || []).forEach(function (m) {
+      delete m.level; delete m.xp; delete m.title;
+    });
     function strip(job) {
       if (!job) return;
-      delete job.steps; delete job.stepIndex; delete job.peripheral;
+      delete job.pendingSteps; delete job.osRequest;
+      (job.steps || []).forEach(function (st) {
+        delete st.kind; delete st.running; delete st.diag;
+      });
+      (job.needs || []).forEach(function (n) {
+        delete n.osExactId; delete n.osFamily;
+      });
+      if (version <= 2) {
+        delete job.steps; delete job.stepIndex; delete job.peripheral;
+        if (job.type === 'repair' || job.type === 'upgrade') job.machine = null;
+        (job.needs || []).forEach(function (n) { delete n.originalPartId; });
+        (job.partsUsed || []).forEach(function (e) {
+          delete e.needIndex; delete e.cost; delete e.fromStock; delete e.stockCost;
+        });
+      }
       if (version === 1) {
         delete job.taste;
         if (job.machine) { delete job.machine.specSummary; delete job.machine.faultRepaired; }
       }
-      // v1/v2 jobs never carried customer machines on repair/upgrade
-      if (job.type === 'repair' || job.type === 'upgrade') job.machine = null;
-      (job.needs || []).forEach(function (n) { delete n.originalPartId; });
-      (job.partsUsed || []).forEach(function (e) {
-        delete e.needIndex; delete e.cost; delete e.fromStock; delete e.stockCost;
-      });
     }
     (obj.jobs.offers || []).forEach(strip);
     (obj.jobs.active || []).forEach(strip);
+    if (version <= 2) {
+      delete obj.staff; delete obj.staffMarket;
+      delete obj.staffNextRefreshDay; delete obj.staffNextId;
+    }
     if (version === 1) (obj.asIsMarket || []).forEach(function (m) { delete m.specSummary; });
     return JSON.stringify(obj);
   }
 
-  [1, 2].forEach(function (ver) {
+  [1, 2, 3].forEach(function (ver) {
     var imp = E.importSave(downgrade(ver));
     if (!assert(imp.ok, 'migration: v' + ver + ' fixture rejected: ' + (imp.error || ''))) return;
     var s = E.getState();
-    assert(s.version === 3, 'migration: v' + ver + ' should land on version 3');
-    assert(Array.isArray(s.staff) && Array.isArray(s.staffMarket),
-           'migration: v' + ver + ' missing staff fields');
+    assert(s.version === 4, 'migration: v' + ver + ' should land on version 4');
+    assert(Array.isArray(s.staff) && Array.isArray(s.staffMarket) &&
+           Array.isArray(s.levelUpsToday),
+           'migration: v' + ver + ' missing staff/levelUps fields');
+    assert(s.staffMarket.every(function (m) {
+      return m.level >= 1 && typeof m.title === 'string' && m.xp != null;
+    }), 'migration: v' + ver + ' candidates missing level/xp/title');
     var allJobs = s.jobs.offers.concat(s.jobs.active);
-    assert(allJobs.every(function (j) { return Array.isArray(j.steps) && j.steps.length >= 3; }),
-           'migration: v' + ver + ' jobs missing synthesized steps');
+    assert(allJobs.every(function (j) {
+      var total = (j.steps || []).length + (j.pendingSteps || []).length;
+      return total >= 2 && (j.steps || []).every(function (st) {
+        return (st.kind === 'labor' || st.kind === 'wait') && st.running === false;
+      });
+    }), 'migration: v' + ver + ' steps missing kind/running/pendingSteps');
     var day = E.endDay();
     assert(day.ok, 'migration: v' + ver + ' endDay failed: ' + (day.error || ''));
     // Play a job end-to-end on the migrated save
@@ -966,23 +1383,23 @@ function migrationScenario(era) {
     if (act) {
       if (act.needsDiagnosis && !act.diagnosed) E.diagnoseJob(act.id);
       var w = E.workJob(act.id);
-      assert(w.ok || /assign|cash|time|exhaust/i.test(w.error || ''),
+      assert(w.ok || /assign|cash|time|exhaust|waiting|nothing/i.test(w.error || ''),
              'migration: v' + ver + ' workJob broke: ' + (w.error || ''));
     }
     console.log('  v' + ver + ' fixture migrated & playable');
   });
-  // Idempotence: v3 round-trips byte-identically
-  E.importSave(v3snapshot);
-  var v3b = E.exportSave();
-  E.importSave(v3b);
-  assert(E.exportSave() === v3b, 'migration: v3 re-import not byte-identical');
+  // Idempotence: v4 round-trips byte-identically
+  E.importSave(v4snapshot);
+  var v4b = E.exportSave();
+  E.importSave(v4b);
+  assert(E.exportSave() === v4b, 'migration: v4 re-import not byte-identical');
 }
 
 // ------------------------------------------------------------------
 // Main
 // ------------------------------------------------------------------
 console.log('sim-test using: ' + DATA_SOURCE + ' | engine v' + Engine.VERSION);
-assert(Engine.VERSION === '0.3', 'Engine.VERSION must be "0.3"');
+assert(Engine.VERSION === '0.4', 'Engine.VERSION must be "0.4"');
 var lines = [];
 try {
   DATA.ERAS.forEach(function (era, idx) {
@@ -1011,6 +1428,20 @@ assert(totalCallbacks >= 1,
 // §10.2: whole-dollar offers; §10.1: checklists everywhere
 assert(globals.badPayOffer == null, 'non-integer offer pay: ' + globals.badPayOffer);
 assert(globals.badStepsOffer == null, 'offer without a step checklist: ' + globals.badStepsOffer);
+
+// §11.1: builds only ever offered when witness-satisfiable within budget
+assert(globals.buildWitnessFails.length === 0,
+       'unsatisfiable build offers: ' + globals.buildWitnessFails.slice(0, 3).join(' | '));
+if (REAL()) {
+  assert(globals.buildsSeen >= 60,
+         'need >=60 generated builds across eras to prove §11.1, saw ' + globals.buildsSeen);
+}
+console.log('build witnesses: ' + globals.buildsSeen + ' offers, all satisfiable in budget');
+
+// §11.4: the generator produced varied OS requests
+console.log('OS request kinds seen: ' + JSON.stringify(globals.osRequestKinds));
+assert(Object.keys(globals.osRequestKinds).length >= 2,
+       'OS request generator never varied: ' + JSON.stringify(globals.osRequestKinds));
 
 // §9.2: a taste-matched job paid its bonus somewhere in the run
 var catalogHasBrands = DATA.PARTS.some(function (p) { return !!p.brand; });
@@ -1041,6 +1472,11 @@ assignScenario(DATA.ERAS[DATA.ERAS.length - 1]);
 overspendScenario(DATA.ERAS[DATA.ERAS.length - 1]);
 sundayScenario(DATA.ERAS[0]);
 staffScenario();
+rampScenario(DATA.ERAS[0]);
+diagMergeScenario(DATA.ERAS[0]);
+osRequestScenario(DATA.ERAS[DATA.ERAS.length - 1]);
+waitScenario(DATA.ERAS[0]);
+staffXpScenario();
 migrationScenario(DATA.ERAS[DATA.ERAS.length - 1]);
 
 finish();

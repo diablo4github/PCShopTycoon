@@ -69,13 +69,15 @@
     ASIS_ARRIVAL_CHANCE: 0.33,   // <=1 new arrival/night (~1 per 3 nights) below cap
     ASIS_START_MIN: 2, ASIS_START_MAX: 4,     // listings seeded at newGame
     ASIS_ASK_MIN: 0.45, ASIS_ASK_MAX: 0.55,   // ask vs part value (§9.6: 40-55%)
-    REFURB_SALE_RATIO: 0.67,     // of part value (§9.6 override of §5.4's 0.85:
+    REFURB_SALE_RATIO: 0.66,     // of part value (§9.6 override of §5.4's 0.85:
                                  //   keeps flips at 1.2-1.8x the jobs $/hour)
-    REFURB_COND_MIN: 0.95, REFURB_COND_MAX: 1.05,
+    REFURB_COND_MIN: 0.90, REFURB_COND_MAX: 1.00,  // buyers price in "refurb" —
+                                 //   mean 0.95 keeps flips inside 1.2-1.8x jobs
     REFURB_PREMIUM_HOURS: 3,     // working-machine premium = laborRate*this (§9.6)
     REFURB_SCRAP_RATIO: 0.25,    // abandon: 25% of parts value
     REFURB_HOURS_MIN: 3, REFURB_HOURS_MAX: 5,  // §9.6: flips are slower work now
     ASIS_MAX_AGE_YEARS: 12,      // how far back as-is machines reach
+    ASIS_MAX_VALUE_BB_MULT: 1.0, // dealers keep machines worth > buildBudget x this
     // §9.5 strip-for-parts
     STRIP_HOURS: 1.5,
     STRIP_SURVIVAL: 0.9, STRIP_SURVIVAL_ESD: 0.97,

@@ -204,11 +204,66 @@
     (obj.jobs.active || []).forEach(fixJob);
     return obj;
   }
+  // v3 -> v4 migration (§11): staff gain level/xp/title from the fixed tables
+  // (nearest level to the old rolled skill); steps gain kind/running; jobs gain
+  // pendingSteps/osRequest; undiagnosed jobs get the merged diagnose phase.
+  function migrateV3toV4(obj) {
+    obj.version = 4;
+    if (!Array.isArray(obj.levelUpsToday)) obj.levelUpsToday = [];
+    var C = Engine.CONFIG;
+    function fixStaffEntry(m, isCandidate) {
+      if (!m) return;
+      if (m.level == null) m.level = Engine.staffLevelForSkill(m.skill);
+      if (isCandidate && m.level > C.STAFF_CANDIDATE_MAX_LEVEL)
+        m.level = C.STAFF_CANDIDATE_MAX_LEVEL;
+      m.skill = Engine.staffSkillFor(m.level);
+      if (m.xp == null) m.xp = C.STAFF_LEVEL_THRESHOLDS[m.level - 1];
+      if (!m.title) {
+        var role = Engine.staffRoleById(m.role);
+        m.title = Engine.staffTitleFor(role, m.level);
+      }
+    }
+    (obj.staff || []).forEach(function (m) { fixStaffEntry(m, false); });
+    (obj.staffMarket || []).forEach(function (m) { fixStaffEntry(m, true); });
+    var diagMult = (obj.shop.equipment || []).indexOf('diag-station') !== -1 ? 0.5 : 1;
+    function fixJob(job) {
+      if (!job || typeof job !== 'object') return;
+      if (!('osRequest' in job)) job.osRequest = null;
+      if (!Array.isArray(job.pendingSteps)) job.pendingSteps = [];
+      (job.steps || []).forEach(function (st) {
+        if (!st.kind) st.kind = Engine.Jobs.classifyStepKind(null, st.label);
+        if (st.running == null) st.running = false;
+      });
+      // Merge diagnosis into the checklist for still-undiagnosed jobs (§11.3)
+      if (job.needsDiagnosis && !job.diagnosed && (job.steps || []).length &&
+          !job.steps.some(function (st) { return st.diag; })) {
+        var pending = job.steps;
+        if (pending.length && /open|ground|intake/i.test(pending[0].label) &&
+            pending[0].needIndex == null) pending = pending.slice(1);
+        job.pendingSteps = pending;
+        job.steps = [
+          { id: 'd1', label: 'Intake & symptom interview', hours: 0.25,
+            done: false, progress: 0, needIndex: null, kind: 'labor', running: false },
+          { id: 'd2', label: 'Bench diagnosis', hours: Math.max(0.25, diagMult),
+            done: false, progress: 0, needIndex: null, kind: 'labor', running: false,
+            diag: true }
+        ];
+        job.stepIndex = 0;
+        job.hoursDone = 0;
+        var total = 0;
+        job.steps.concat(job.pendingSteps).forEach(function (st) { total += st.hours; });
+        job.hoursRequired = Engine.round2(total);
+      }
+    }
+    (obj.jobs.offers || []).forEach(fixJob);
+    (obj.jobs.active || []).forEach(fixJob);
+    return obj;
+  }
   Engine.importSave = function (str) {
     var obj;
     try { obj = JSON.parse(String(str)); }
     catch (e) { return err('Not valid save JSON'); }
-    if (!obj || (obj.version !== 1 && obj.version !== 2 && obj.version !== 3))
+    if (!obj || [1, 2, 3, 4].indexOf(obj.version) === -1)
       return err('Unsupported save version');
     var required = ['seed', 'rngState', 'eraId', 'startDate', 'day', 'cash',
                     'hoursLeft', 'flags', 'reputation', 'shop', 'inventory',
@@ -218,6 +273,7 @@
     }
     if (obj.version === 1) migrateV1toV2(obj);
     if (obj.version === 2) migrateV2toV3(obj);
+    if (obj.version === 3) migrateV3toV4(obj);
     Engine._state = obj;
     return { ok: true };
   };
@@ -534,21 +590,31 @@
     var C = Engine.CONFIG;
     var slots = C.STAFF_SLOTS[Engine.clamp(state.shop.tier, 0, C.STAFF_SLOTS.length - 1)] || 0;
     var total = 0;
+    var TH = C.STAFF_LEVEL_THRESHOLDS;
     var staff = (state.staff || []).map(function (m) {
       total += m.wageMonthly || 0;
       var role = Engine.staffRoleById(m.role);
+      var lvl = m.level || 1;
       return { id: m.id, name: m.name, role: m.role,
                roleName: role ? role.name : m.role,
                desc: role ? (role.desc || '') : '',
                skill: m.skill, hiredDay: m.hiredDay, wageMonthly: m.wageMonthly,
+               // §11.5 (UI contract): cumulative xp & cumulative next threshold
+               level: lvl, xp: m.xp || 0,
+               nextLevelAt: lvl < TH.length ? TH[lvl] : null,
+               title: m.title || Engine.staffTitleFor(role, lvl),
                effectNote: staffEffectNote(m, role) };
     });
     var candidates = (state.staffMarket || []).map(function (c) {
       var role = Engine.staffRoleById(c.role);
+      var lvl = c.level || 1;
       return { id: c.id, name: c.name, role: c.role,
                roleName: role ? role.name : c.role,
                desc: role ? (role.desc || '') : '',
                skill: c.skill, wageMonthly: c.wageMonthly,
+               level: lvl, xp: c.xp || 0,
+               nextLevelAt: lvl < TH.length ? TH[lvl] : null,
+               title: c.title || Engine.staffTitleFor(role, lvl),
                effectNote: staffEffectNote(c, role) };
     });
     return { staff: staff, candidates: candidates,
@@ -571,11 +637,17 @@
     }
     if (!cand) return err('That candidate is gone');
     state.staffMarket.splice(state.staffMarket.indexOf(cand), 1);
+    var role = Engine.staffRoleById(cand.role);
+    var lvl = cand.level || 1;
     state.staff.push({ id: cand.id, name: cand.name, role: cand.role,
                        skill: cand.skill, hiredDay: state.day,
-                       wageMonthly: cand.wageMonthly });
+                       wageMonthly: cand.wageMonthly,
+                       level: lvl,
+                       xp: cand.xp != null ? cand.xp :
+                           Engine.CONFIG.STAFF_LEVEL_THRESHOLDS[lvl - 1],
+                       title: cand.title || Engine.staffTitleFor(role, lvl) });
     Engine.pushNews(state, 'system', 'Hired: ' + cand.name,
-      'Joins the shop as ' + ((Engine.staffRoleById(cand.role) || {}).name || cand.role) +
+      'Joins the shop as ' + (cand.title || (role ? role.name : cand.role)) +
       ' at ' + Engine.fmtMoney(cand.wageMonthly) + '/month.');
     return { ok: true };
   };
@@ -593,9 +665,28 @@
     if (severance > 0) Engine.ledgerAdd(state, 'other', severance);
     state.staff.splice(state.staff.indexOf(member), 1);
     Engine.pushScore(state, Engine.CONFIG.FIRE_REP_SCORE);   // small rep ding
+    if ((member.level || 1) >= 4) {   // §11.5: firing senior talent stings double
+      Engine.pushScore(state, Engine.CONFIG.FIRE_REP_SCORE);
+    }
     Engine.pushNews(state, 'system', 'Let go: ' + member.name,
       'Two weeks severance paid (' + Engine.fmtMoney(severance) + '). Word gets around.');
     return { ok: true, severance: severance };
+  };
+
+  // §11.6: burn an hour purely to advance running wait steps (overtime applies).
+  Engine.waitHour = function () {
+    var bad = needLive(); if (bad) return bad;
+    var state = S();
+    var anyRunning = state.jobs.active.some(function (j) {
+      if (!j.steps || j.stepIndex >= j.steps.length) return false;
+      var st = j.steps[j.stepIndex];
+      return st.kind === 'wait' && st.running;
+    });
+    if (!anyRunning) return err('Nothing is running — no waits to sit through');
+    var sp = Engine.spendHours(state, 1);
+    if (!sp.ok) return sp;
+    var advanced = Engine.Jobs.tickWaits(state, 1, null);
+    return { ok: true, hoursSpent: 1, advanced: advanced };
   };
 
   // ------------------------------------------------------------------

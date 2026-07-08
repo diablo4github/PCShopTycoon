@@ -262,7 +262,11 @@
     return WAIT_LABEL_RE.test(String(label || '')) ? 'wait' : 'labor';
   }
   Jobs.classifyStepKind = classifyStepKind;
-  var DIAG_INTAKE_RE = /open|ground|intake/i;   // §11.3 dedupe on append
+  // §11.3 dedupe on append: the diagnose phase already does intake + opens the
+  // case, so leading interview/open/ground steps in the repair template are
+  // redundant (spec minimum is /open|ground|intake/i; interview/symptom steps
+  // are the same intake work under other names).
+  var DIAG_INTAKE_RE = /open|ground|intake|interview|symptom/i;
 
   /* Assemble the step checklist (§10.1). Falls back to a synthesized generic
    * checklist when no template resolves (old data / migrated saves). */
@@ -321,9 +325,12 @@
     job.pendingSteps = [];
     if (job.needsDiagnosis && !job.diagnosed) {
       var pending = job.steps;
-      if (pending.length && DIAG_INTAKE_RE.test(pending[0].label) &&
-          pending[0].needIndex == null) {
-        pending = pending.slice(1);   // the diag phase already opens the case
+      var dropped = 0;
+      while (dropped < 2 && pending.length > 2 &&
+             DIAG_INTAKE_RE.test(pending[0].label) &&
+             pending[0].needIndex == null) {
+        pending = pending.slice(1);   // the diag phase already covers this
+        dropped++;
       }
       job.pendingSteps = pending;
       var equip = Engine.equipEffects(state);
@@ -912,12 +919,19 @@
 
     // §10.1: assemble the step checklist (sets hoursRequired deterministically),
     // then derive difficulty (§10.2) and price from the real time on the bench.
+    // §11.3: the diagnose phase is NOT billed as labor — the §9.6 bench fee
+    // already covers diagnostics (no double-dipping).
     assembleSteps(state, job);
     job.difficulty = deriveDifficulty(state, job);
+    var diagPhaseHours = 0;
+    if (job.needsDiagnosis && !job.diagnosed) {
+      for (var dp = 0; dp < job.steps.length; dp++) diagPhaseHours += job.steps[dp].hours;
+    }
+    var payHours = Math.max(0.5, Engine.round2(job.hoursRequired - diagPhaseHours));
     if (!isBuildJob(job) && job.type !== 'contract') {
-      job.pay = Math.round(basePay(state, job.type, job.hoursRequired, job.difficulty));
+      job.pay = Math.round(basePay(state, job.type, payHours, job.difficulty));
     } else if (job.type === 'contract') {
-      job.pay = Math.round(basePay(state, 'contract', job.hoursRequired, job.difficulty));
+      job.pay = Math.round(basePay(state, 'contract', payHours, job.difficulty));
     } else {
       job.pay = Math.round(job.pay);   // builds: budget, whole dollars (§10.2)
     }
@@ -1081,11 +1095,8 @@
       if (!hit) return part.name + ' does not fit this machine (' +
                        need.anyOfTags.join('/') + ' needed)';
     }
-    if (!meetsMinPerf(part, need)) {
-      return part.name + ' is below the required spec — needs at least ' +
-             minPerfText(need.minPerf);
-    }
-    // §11.4: OS request enforcement, readable like minPerf
+    // §11.4: OS request enforcement, readable like minPerf (checked first so
+    // the message names the request, not an empty spec)
     if (need.osExactId && part.id !== need.osExactId) {
       var exact = Engine.partById(need.osExactId);
       return part.name + ' is not what the customer asked for — they want ' +
@@ -1094,6 +1105,10 @@
     if (need.osFamily && osFamilyOf(part) !== need.osFamily) {
       return part.name + ' is the wrong flavor — the customer wants any ' +
              Jobs.osFamilyLabel(need.osFamily);
+    }
+    if (!meetsMinPerf(part, need)) {
+      return part.name + ' is below the required spec — needs at least ' +
+             minPerfText(need.minPerf);
     }
     return null;
   }
@@ -1108,7 +1123,8 @@
     if (need.osFamily && osFamilyOf(part) !== need.osFamily) return false;
     return true;
   }
-  // Category/tag fit only — below-spec parts still appear in pickers, greyed (§9.3).
+  // Category/tag fit only — below-spec parts still appear in pickers, greyed (§9.3),
+  // EXCEPT OS-request mismatches, which §11.4 restricts out of the list entirely.
   function candidateListed(part, need, state) {
     if (!part || part.category !== need.category) return false;
     if (!purchasable(part, state)) return false;
@@ -1118,6 +1134,8 @@
         if (tags.indexOf(need.anyOfTags[i]) !== -1) { hit = true; break; }
       if (!hit) return false;
     }
+    if (need.osExactId && part.id !== need.osExactId) return false;
+    if (need.osFamily && osFamilyOf(part) !== need.osFamily) return false;
     return true;
   }
 
@@ -1511,9 +1529,13 @@
         left -= rem;
         finishStep(state, job, st);
       } else {
-        st.progress = Math.min(1, (st.hours * (st.progress || 0) + left) / st.hours);
-        st.progress = Math.round(st.progress * 1000) / 1000;
+        var np = Math.min(1, (st.hours * (st.progress || 0) + left) / st.hours);
+        np = Math.round(np * 1000) / 1000;
         left = 0;
+        // Rounding to 3 decimals can land on 1.0 with a sliver of work left —
+        // treat that as complete, or the step wedges at "100%, not done".
+        if (np >= 1) finishStep(state, job, st);
+        else st.progress = np;
       }
     }
     recomputeHours(job);
@@ -1610,6 +1632,23 @@
     // §10.1/§10.3/§11.6: work runs the checklist; barriers are unassigned
     // install steps ("assign") and wait steps ("wait").
     var wk = workableStdHours(job);
+    if (wk.hours <= 1e-9 && wk.barrier !== 'assign' &&
+        job.stepIndex < job.steps.length) {
+      // Self-heal (pre-fix saves): a fully-worked labor step stranded at
+      // progress 1 without completing leaves the checklist wedged. Zero
+      // workable hours with no assign barrier means every labor step up to
+      // the next wait (or the end) is effectively done — finish them.
+      while (job.stepIndex < job.steps.length &&
+             job.steps[job.stepIndex].kind !== 'wait') {
+        finishStep(state, job, job.steps[job.stepIndex]);
+      }
+      recomputeHours(job);
+      if (jobFinished(job) && job.status !== 'done') {
+        var healResult = completeJob(state, job);
+        return { ok: true, hoursSpent: 0, completed: true, result: healResult };
+      }
+      wk = workableStdHours(job);   // a diag hook may have appended labor steps
+    }
     if (wk.hours <= 1e-9) {
       if (wk.barrier === 'assign') return err('Assign a replacement part first');
       if (wk.barrier === 'wait') {
@@ -1986,6 +2025,10 @@
       Engine.randInt(mobo.introYear, Math.min(year, (mobo.eolYear || year) + 2)),
       mobo.introYear, year);
     var value = machinePartsValue(state, { partIds: partIds });
+    var blNow = Engine.baselineFor(year);
+    // §9.6: dealers keep machines above the era's build-budget class for
+    // themselves — bounds flip margins so labor stays the backbone.
+    if (value > blNow.buildBudget * C.ASIS_MAX_VALUE_BB_MULT) return null;
     // Dealers price big iron closer to its real worth, and machines that
     // "just need some love" cost extra — flattens flip margins (§9.6).
     var span = C.ASIS_ASK_MAX - C.ASIS_ASK_MIN;

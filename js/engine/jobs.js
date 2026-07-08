@@ -52,6 +52,9 @@
   // ------------------------------------------------------------------
   // Offer generation (overnight step 7)
   // ------------------------------------------------------------------
+  // §11.2 ramp-down: offers/night = clamp(2 + tierBonus + floor(prestige/2)
+  //   + clamp(round((rating-3)/1.5), -1, 1) + eventAdj, 1, tierCap);
+  // a shop drowning in >= 10 pending offers sees walk-ins halved.
   Jobs.generateOffers = function (state, summary) {
     var C = CFG();
     var tier = Engine.tierInfo(state);
@@ -59,10 +62,15 @@
     var volumeMult = 1;
     for (var i = 0; i < state.market.activeEvents.length; i++)
       volumeMult *= state.market.activeEvents[i].jobVolumeMult || 1;
-    var base = C.OFFER_BASE + (tier.offerBonus || 0) + rep.prestige +
-               Math.round(rep.rating - 3);
-    var count = Engine.clamp(Math.round(base * volumeMult), 2,
-                             C.OFFER_HARD_MAX + (tier.offerBonus || 0));
+    var eventAdj = Engine.clamp(Math.round((volumeMult - 1) * 3), -2, 3);
+    var cap = C.OFFER_TIER_CAPS[
+      Engine.clamp(state.shop.tier, 0, C.OFFER_TIER_CAPS.length - 1)];
+    var count = Engine.clamp(
+      C.OFFER_BASE + (tier.offerBonus || 0) + Math.floor(rep.prestige / 2) +
+      Engine.clamp(Math.round((rep.rating - 3) / 1.5), -1, 1) + eventAdj,
+      1, cap);
+    if (state.jobs.offers.length >= C.OFFER_BUSY_THRESHOLD)
+      count = Math.floor(count / 2);   // walk-ins see a busy shop
     var made = [];
     for (var n = 0; n < count; n++) {
       var job = makeOffer(state);
@@ -247,6 +255,14 @@
     return true;   // unknown conditions are inclusive (defensive)
   }
   var INSTALL_LABEL_RE = /install|swap|replace|fit |seat|mount|clone/i;
+  // §11.6: steps whose labels look like unattended runs become "wait" steps
+  var WAIT_LABEL_RE = /burn.?in|scan|low.?level format|imag(e|ing)|copy|clone|download|updates|rebuild/i;
+  function classifyStepKind(tmplStep, label) {
+    if (tmplStep && tmplStep.wait) return 'wait';
+    return WAIT_LABEL_RE.test(String(label || '')) ? 'wait' : 'labor';
+  }
+  Jobs.classifyStepKind = classifyStepKind;
+  var DIAG_INTAKE_RE = /open|ground|intake/i;   // §11.3 dedupe on append
 
   /* Assemble the step checklist (§10.1). Falls back to a synthesized generic
    * checklist when no template resolves (old data / migrated saves). */
@@ -264,6 +280,7 @@
         steps.push({ id: 's' + (steps.length + 1), label: String(s.label || 'Bench work'),
                      hours: Math.max(0.25, Engine.round2(s.hours || 0.25)),
                      done: false, progress: 0, needIndex: null,
+                     kind: classifyStepKind(s, s.label), running: false,   // §11.6
                      install: !!s.install });
       }
     }
@@ -298,6 +315,28 @@
         s.label += ' (x' + job.units + ' units)';
       });
     }
+    // §11.3: diagnosis merges into the checklist. Undiagnosed jobs start with a
+    // diagnose phase; the repair steps hide in pendingSteps until the bench-
+    // diagnosis step completes (spoiler-free single task list).
+    job.pendingSteps = [];
+    if (job.needsDiagnosis && !job.diagnosed) {
+      var pending = job.steps;
+      if (pending.length && DIAG_INTAKE_RE.test(pending[0].label) &&
+          pending[0].needIndex == null) {
+        pending = pending.slice(1);   // the diag phase already opens the case
+      }
+      job.pendingSteps = pending;
+      var equip = Engine.equipEffects(state);
+      var benchH = Math.max(0.25, Engine.round2(1 * equip.diagHoursMult));
+      job.steps = [
+        { id: 'd1', label: 'Intake & symptom interview', hours: 0.25,
+          done: false, progress: 0, needIndex: null, kind: 'labor', running: false },
+        { id: 'd2', label: 'Bench diagnosis', hours: benchH,
+          done: false, progress: 0, needIndex: null, kind: 'labor', running: false,
+          diag: true }
+      ];
+      job.stepIndex = 0;
+    }
     recomputeHours(job);
   }
   Jobs.assembleSteps = assembleSteps;
@@ -307,11 +346,15 @@
     return 0;
   }
   function recomputeHours(job) {
-    var total = 0, done = 0;
-    for (var i = 0; i < job.steps.length; i++) {
+    var total = 0, done = 0, i;
+    for (i = 0; i < job.steps.length; i++) {
       total += job.steps[i].hours;
       done += job.steps[i].hours * (job.steps[i].progress || 0);
     }
+    // §11.3: repair steps hidden behind the diagnose phase still count toward
+    // the job's total (pricing & the progress-bar denominator stay honest).
+    var pending = job.pendingSteps || [];
+    for (i = 0; i < pending.length; i++) total += pending[i].hours;
     job.hoursRequired = Engine.round2(total);
     job.hoursDone = Engine.round2(done);
   }
@@ -325,11 +368,12 @@
                       (job && job.fault && job.fault.partCategory));
     return [
       { id: 's1', label: 'Open up, inspect & prep', hours: a,
-        done: false, progress: 0, needIndex: null },
+        done: false, progress: 0, needIndex: null, kind: 'labor', running: false },
       { id: 's2', label: installs ? 'Swap in the replacement part' : 'Do the bench work',
-        hours: b, done: false, progress: 0, needIndex: null, install: true },
+        hours: b, done: false, progress: 0, needIndex: null, kind: 'labor',
+        running: false, install: true },
       { id: 's3', label: 'Test & button up', hours: c,
-        done: false, progress: 0, needIndex: null }
+        done: false, progress: 0, needIndex: null, kind: 'labor', running: false }
     ];
   }
   Jobs.synthesizeSteps = synthesizeSteps;
@@ -461,6 +505,32 @@
     return Engine.clamp(Math.round(d), 1, 5);
   }
 
+  // ------------------------------------------------------------------
+  // §11.4 OS families, derived from part names/brands
+  // ------------------------------------------------------------------
+  var OS_FAMILY_LABELS = {
+    DOS: 'DOS', WIN3X: 'Windows 3.x', WIN9X: 'Windows 9x',
+    WINNT: 'NT-class Windows', WINVISTA7: 'Windows Vista/7',
+    WINMOD: 'modern Windows', OS2: 'OS/2', MACOS: 'Mac OS', LINUX: 'Linux',
+    OTHER: 'compatible OS'
+  };
+  function osFamilyOf(part) {
+    if (!part) return 'OTHER';
+    var n = String(part.name || '').toLowerCase();
+    if (/os\/?2/.test(n)) return 'OS2';
+    if (/mac ?os|macintosh|system [67]\b/.test(n) || part.brand === 'Apple') return 'MACOS';
+    if (/linux|ubuntu|red ?hat|debian|suse|mandrake|fedora|mint/.test(n)) return 'LINUX';
+    if (/windows (nt|2000|xp)|winnt/.test(n)) return 'WINNT';
+    if (/windows (vista|7)(\D|$)/.test(n)) return 'WINVISTA7';
+    if (/windows (8|10|11)(\D|$)/.test(n)) return 'WINMOD';
+    if (/windows (3|for workgroups)/.test(n) || /win ?3/.test(n)) return 'WIN3X';
+    if (/windows (9[58]|me)(\D|$)/.test(n)) return 'WIN9X';
+    if (/\bdos\b|dr-dos|ms-dos|pc dos|freedos/.test(n)) return 'DOS';
+    return 'OTHER';
+  }
+  Jobs.osFamilyOf = osFamilyOf;
+  Jobs.osFamilyLabel = function (fam) { return OS_FAMILY_LABELS[fam] || fam; };
+
   // §10.5: peripheral item kind, defensively inferred for old-format data
   function peripheralKindOf(item) {
     if (item && item.kind) return item.kind;
@@ -473,6 +543,77 @@
     if (name.indexOf('scanner') !== -1) return 'scanner';
     if (name.indexOf('mouse') !== -1 || name.indexOf('keyboard') !== -1) return 'input';
     return 'other';
+  }
+
+  // ------------------------------------------------------------------
+  // §11.1 witness build: prove a build request is satisfiable within budget
+  // before it is ever offered. Greedy cheapest parts meeting compat + minPerf
+  // + minStyle + the PSU rule. Returns { cost, partIds } or null.
+  // ------------------------------------------------------------------
+  function witnessBuild(state, build) {
+    var mp = build.minPerf || {};
+    var minStyle = build.minStyle || 0;
+    var year = Engine.currentYear(state);
+    function price(p) { return P().priceOf(p, state, { buy: true }); }
+    function byPrice(a, b) { return price(a) - price(b); }
+    function byStyleThenPrice(a, b) {
+      return ((b.style || 0) - (a.style || 0)) || (price(a) - price(b));
+    }
+    var mobos = purchasableByCategory(state, 'motherboard').sort(byPrice).slice(0, 12);
+    for (var mi = 0; mi < mobos.length; mi++) {
+      var mobo = mobos[mi];
+      var pick = function (cat, pred, sorter) {
+        var cands = purchasableByCategory(state, cat).filter(function (p) {
+          return Engine.Compat.fits(p, mobo).fits && (!pred || pred(p));
+        });
+        cands.sort(sorter || byPrice);
+        return cands[0] || null;
+      };
+      var cpu = pick('cpu', function (p) { return (p.perf || {}).cpu >= (mp.cpu || 0); });
+      var ram = pick('ram', function (p) { return (p.perf || {}).ramMB >= (mp.ramMB || 0); });
+      var sto = pick('storage', function (p) { return (p.perf || {}).storageGB >= (mp.storageGB || 0); });
+      var gpu = null;
+      if (!mobo.integratedVideo || (mp.gpu || 0) > CFG().INTEGRATED_GPU_PERF) {
+        gpu = pick('gpu', function (p) { return (p.perf || {}).gpu >= (mp.gpu || 0); });
+        if (!gpu && !mobo.integratedVideo) continue;
+      }
+      var kase = pick('case', null, minStyle > 0 ? byStyleThenPrice : byPrice);
+      var os = pick('os');
+      var cool = minStyle > 0 ? pick('cooling', null, byStyleThenPrice) : null;
+      if (!cpu || !ram || !sto || !kase || !os) continue;
+      var draw = 0;
+      [mobo, cpu, ram, sto, gpu, kase, cool].forEach(function (p) {
+        if (p) draw += p.powerDraw || 0;
+      });
+      var psu = pick('psu', function (p) {
+        return (p.watts || 0) >= Math.ceil(draw * CFG().PSU_HEADROOM);
+      });
+      if (!psu) continue;
+      var ids = [mobo, cpu, ram, sto, gpu, psu, kase, cool, os]
+        .filter(Boolean).map(function (p) { return p.id; });
+      var v = Engine.Compat.validatePartList(ids, {
+        requireFull: true, minPerfGpu: mp.gpu, year: year });
+      if (!v.valid) continue;
+      if ((v.perf.cpu || 0) < (mp.cpu || 0) || (v.perf.gpu || 0) < (mp.gpu || 0) ||
+          (v.perf.ramMB || 0) < (mp.ramMB || 0) ||
+          (v.perf.storageGB || 0) < (mp.storageGB || 0)) continue;
+      if (v.style < minStyle) continue;
+      var cost = 0;
+      ids.forEach(function (id) { cost += P().priceOf(id, state, { buy: true }); });
+      return { cost: Engine.round2(cost), partIds: ids };
+    }
+    return null;
+  }
+  Jobs.witnessBuild = witnessBuild;
+  // Apply the §11.1 guarantee: null = skip the offer; else budget may be raised.
+  function ensureBuildFeasible(state, job) {
+    var w = witnessBuild(state, job.build);
+    if (!w) return false;
+    if (w.cost > job.build.budget * 0.92) {
+      job.build.budget = Math.ceil((w.cost * 1.25) / 10) * 10;
+      job.pay = job.build.budget;
+    }
+    return true;
   }
 
   function makeOffer(state) {
@@ -533,6 +674,7 @@
       units: 1, unitsDone: 0,
       machine: null,
       peripheral: null,           // §10.5 {name, kind}
+      osRequest: null,            // §11.4 (UI contract: string label)
       drTier: 0,
       crt: false,
       result: null
@@ -621,10 +763,30 @@
           job.hoursRequired = 2;
           job.title = 'Software: virus cleanup';
         } else {
-          job.hoursRequired = Engine.randInt(1, 2);
-          job.needs = [{ category: 'os', anyOfTags: null, minPerf: null, qty: 1,
-                         filledPartIds: [], label: 'Operating system' }];
-          job.title = 'Software: fresh OS install';
+          // §11.4: the customer asks for a family (60%), an exact product (30%),
+          // or your recommendation (10%). Always satisfiable: the rolled target
+          // part is itself purchasable today.
+          var osParts = purchasableByCategory(state, 'os');
+          var osTarget = Engine.pick(osParts);
+          var osNeed = { category: 'os', anyOfTags: null, minPerf: null, qty: 1,
+                         filledPartIds: [], label: 'Operating system',
+                         osExactId: null, osFamily: null };
+          var osRoll = Engine.rand();
+          if (osTarget && osRoll < 0.6) {
+            osNeed.osFamily = osFamilyOf(osTarget);
+            osNeed.label = 'Install ' + osTarget.name + ' — any ' +
+                           Jobs.osFamilyLabel(osNeed.osFamily) + ' acceptable';
+          } else if (osTarget && osRoll < 0.9) {
+            osNeed.osExactId = osTarget.id;
+            osNeed.label = 'Install ' + osTarget.name + ' — exactly this one';
+          } else {
+            osNeed.label = 'Install an operating system — your recommendation';
+          }
+          job.needs = [osNeed];
+          job.hoursRequired = 1.5;   // fallback-step sizing only
+          job.title = 'Software: ' + (osNeed.osExactId || osNeed.osFamily ?
+            osNeed.label.replace(/^Install /, '').replace(/ — .*$/, '') + ' install'
+            : 'fresh OS install');
         }
         break;
       }
@@ -684,10 +846,12 @@
           minStyle: 0, parts: [], validated: false, committed: false
         };
         job.pay = budget;
+        if (!ensureBuildFeasible(state, job)) return null;   // §11.1: unbuildable
         job.hoursRequired = C.BUILD_HOURS +
-          (budget > bl.buildBudget * 1.15 ? C.BUILD_HOURS_PREMIUM_EXTRA : 0);
+          (job.build.budget > bl.buildBudget * 1.15 ? C.BUILD_HOURS_PREMIUM_EXTRA : 0);
         job.deadlineDay = state.day + Engine.randInt(4, C.DEADLINE_MAX);
-        job.title = 'Custom build: ' + useCase + ' PC (' + Engine.fmtMoney(budget) + ' budget)';
+        job.title = 'Custom build: ' + useCase + ' PC (' +
+          Engine.fmtMoney(job.build.budget) + ' budget)';
         break;
       }
       case 'enthusiast': {
@@ -709,9 +873,11 @@
             minStyle: C.AESTHETIC_MIN_STYLE, parts: [], validated: false, committed: false
           };
           job.pay = abudget;
+          if (!ensureBuildFeasible(state, job)) return null;   // §11.1
           job.hoursRequired = C.BUILD_HOURS + 1;
           job.deadlineDay = state.day + Engine.randInt(4, C.DEADLINE_MAX);
-          job.title = 'Enthusiast: showpiece build (' + Engine.fmtMoney(abudget) + ')';
+          job.title = 'Enthusiast: showpiece build (' +
+            Engine.fmtMoney(job.build.budget) + ')';
         }
         break;
       }
@@ -836,20 +1002,12 @@
   };
 
   // ------------------------------------------------------------------
-  // Diagnosis
+  // Diagnosis (§11.3: merged into the step checklist)
   // ------------------------------------------------------------------
-  Jobs.diagnoseJob = function (state, jobId) {
-    var job = Jobs.findActive(state, jobId);
-    if (!job) return err('Job not active');
-    if (!job.needsDiagnosis) return err('Nothing to diagnose');
-    if (job.diagnosed) return err('Already diagnosed');
-    var equip = Engine.equipEffects(state);
-    // §10.7: staff speed up diagnosis too (diagnosis counts as the job's type)
-    var hours = Engine.round2(1 * equip.diagHoursMult *
-                              Engine.staffTimeMult(state, job.type));
-    hours = Math.max(0.25, hours);
-    var spent = Engine.spendHours(state, hours);   // overtime rules apply (§9.4)
-    if (!spent.ok) return spent;
+  // Old diagnoseJob effects, fired when the bench-diagnosis STEP completes:
+  // reveal the fault, create the needs, append the hidden repair steps.
+  function performDiagnosis(state, job) {
+    if (job.diagnosed) return;
     job.diagnosed = true;
     var fault = job.fault || { desc: 'No fault found', partCategory: null, laborHours: 1 };
     if (fault.partCategory) {
@@ -873,7 +1031,37 @@
       }
       job.needs = [need];
     }
-    return { ok: true, hoursSpent: hours,
+    // Append the repair phase (dedupe already happened at assembly, §11.3)
+    if (job.pendingSteps && job.pendingSteps.length) {
+      job.steps = job.steps.concat(job.pendingSteps);
+      job.pendingSteps = [];
+      for (var r = 0; r < job.steps.length; r++) job.steps[r].id = 's' + (r + 1);
+    }
+    recomputeHours(job);
+  }
+
+  /* §11.3: diagnoseJob is now an alias for "work the diagnose step(s)".
+   * Keeps the old return shape: { ok, hoursSpent, fault: {desc, partCategory} }. */
+  Jobs.diagnoseJob = function (state, jobId) {
+    var job = Jobs.findActive(state, jobId);
+    if (!job) return err('Job not active');
+    if (!job.needsDiagnosis) return err('Nothing to diagnose');
+    if (job.diagnosed) return err('Already diagnosed');
+    Jobs.ensureSteps(state, job);
+    var m = effectiveMult(state, job);
+    var needStd = 0;
+    for (var i = job.stepIndex; i < job.steps.length; i++) {
+      var st = job.steps[i];
+      needStd += st.hours * (1 - (st.progress || 0));
+      if (st.diag) break;
+    }
+    var effNeeded = Math.max(0.5, Math.ceil(needStd * m * 2 - 1e-9) / 2);
+    var r = Jobs.workJob(state, jobId, effNeeded);
+    if (!r.ok) return r;
+    if (!job.diagnosed)
+      return err('Ran out of steam mid-diagnosis — finish it tomorrow');
+    var fault = job.fault || { desc: 'No fault found', partCategory: null };
+    return { ok: true, hoursSpent: r.hoursSpent,
              fault: { desc: fault.desc, partCategory: fault.partCategory } };
   };
 
@@ -896,14 +1084,27 @@
       return part.name + ' is below the required spec — needs at least ' +
              minPerfText(need.minPerf);
     }
+    // §11.4: OS request enforcement, readable like minPerf
+    if (need.osExactId && part.id !== need.osExactId) {
+      var exact = Engine.partById(need.osExactId);
+      return part.name + ' is not what the customer asked for — they want ' +
+             (exact ? exact.name : 'a specific OS') + ' specifically';
+    }
+    if (need.osFamily && osFamilyOf(part) !== need.osFamily) {
+      return part.name + ' is the wrong flavor — the customer wants any ' +
+             Jobs.osFamilyLabel(need.osFamily);
+    }
     return null;
   }
   function meetsMinPerf(part, need) {
-    if (!need.minPerf) return true;
-    var keys = Object.keys(need.minPerf);
-    for (var k = 0; k < keys.length; k++) {
-      if (((part.perf || {})[keys[k]] || 0) < need.minPerf[keys[k]]) return false;
+    if (need.minPerf) {
+      var keys = Object.keys(need.minPerf);
+      for (var k = 0; k < keys.length; k++) {
+        if (((part.perf || {})[keys[k]] || 0) < need.minPerf[keys[k]]) return false;
+      }
     }
+    if (need.osExactId && part.id !== need.osExactId) return false;   // §11.4
+    if (need.osFamily && osFamilyOf(part) !== need.osFamily) return false;
     return true;
   }
   // Category/tag fit only — below-spec parts still appear in pickers, greyed (§9.3).
@@ -1248,11 +1449,10 @@
   // Working & completion
   // ------------------------------------------------------------------
   function readinessProblem(state, job) {
-    if (job.needsDiagnosis && !job.diagnosed) return 'Diagnose it first';
+    // §11.3: diagnosis no longer blocks — it IS the first steps of the list.
     if (isBuildJob(job) && job.build && !job.build.committed)
       return 'Configure and commit the build first';
-    // §10.3: unassigned needs no longer block starting work — they block the
-    // install STEP instead (see workableStdHours).
+    // §10.3: unassigned needs block the install STEP (see workableStdHours).
     return null;
   }
 
@@ -1270,19 +1470,28 @@
     return m;
   }
 
-  // §10.1/§10.3: standard-speed hours workable from the current step until the
-  // first install step whose need is not fully assigned.
+  // §10.1/§10.3/§11.6: standard-speed hours workable from the current step
+  // until an unassigned install step ("assign") or a wait step ("wait").
   function workableStdHours(job) {
-    var total = 0, blocked = false;
+    var total = 0, barrier = null;
     for (var i = job.stepIndex; i < job.steps.length; i++) {
       var st = job.steps[i];
+      if (st.kind === 'wait') { barrier = 'wait'; break; }
       if (st.needIndex != null) {
         var nd = job.needs[st.needIndex];
-        if (!nd || nd.filledPartIds.length < nd.qty) { blocked = true; break; }
+        if (!nd || nd.filledPartIds.length < nd.qty) { barrier = 'assign'; break; }
       }
       total += st.hours * (1 - (st.progress || 0));
     }
-    return { hours: total, blocked: blocked };
+    return { hours: total, barrier: barrier };
+  }
+
+  // Complete one step's bookkeeping (install/diagnosis hooks + advance).
+  function finishStep(state, job, st) {
+    st.progress = 1; st.done = true; st.running = false;
+    if (st.needIndex != null) performInstall(state, job, st.needIndex);
+    job.stepIndex++;
+    if (st.diag) performDiagnosis(state, job);   // may append repair steps
   }
 
   // Consume std-hours across the checklist; installs fire as steps complete.
@@ -1290,6 +1499,7 @@
     var left = stdHours + 1e-9;
     while (left > 0 && job.stepIndex < job.steps.length) {
       var st = job.steps[job.stepIndex];
+      if (st.kind === 'wait') break;   // §11.6: waits advance in parallel only
       if (st.needIndex != null) {
         var nd = job.needs[st.needIndex];
         if (!nd || nd.filledPartIds.length < nd.qty) break;   // blocked install
@@ -1297,9 +1507,7 @@
       var rem = st.hours * (1 - (st.progress || 0));
       if (left >= rem - 1e-9) {
         left -= rem;
-        st.progress = 1; st.done = true;
-        if (st.needIndex != null) performInstall(state, job, st.needIndex);
-        job.stepIndex++;
+        finishStep(state, job, st);
       } else {
         st.progress = Math.min(1, (st.hours * (st.progress || 0) + left) / st.hours);
         st.progress = Math.round(st.progress * 1000) / 1000;
@@ -1308,6 +1516,53 @@
     }
     recomputeHours(job);
   }
+
+  function jobFinished(job) {
+    return job.stepIndex >= job.steps.length &&
+           !(job.pendingSteps && job.pendingSteps.length);
+  }
+
+  // §11.6: running wait steps progress 1:1 with hours spent on ANYTHING else
+  // (and can complete their job from here — e.g. a burn-in ends mid-afternoon).
+  Jobs.tickWaits = function (state, hours, excludeJobId) {
+    if (!(hours > 0)) return [];
+    var advanced = [];
+    var active = state.jobs.active.slice();
+    for (var i = 0; i < active.length; i++) {
+      var j = active[i];
+      if (j.id === excludeJobId) continue;
+      if (!j.steps || j.stepIndex >= j.steps.length) continue;
+      var st = j.steps[j.stepIndex];
+      if (st.kind !== 'wait' || !st.running) continue;
+      st.progress = Math.min(1, (st.progress || 0) + hours / st.hours);
+      st.progress = Math.round(st.progress * 1000) / 1000;
+      advanced.push(j.title + ' — ' + st.label);
+      if (st.progress >= 1 - 1e-9) {
+        finishStep(state, j, st);
+        recomputeHours(j);
+        if (jobFinished(j) && j.status === 'active') completeJob(state, j);
+      } else {
+        recomputeHours(j);
+      }
+    }
+    return advanced;
+  };
+
+  // §11.6: running waits complete free overnight (before the deadline sweep).
+  Jobs.completeWaitsOvernight = function (state) {
+    var active = state.jobs.active.slice();
+    for (var i = 0; i < active.length; i++) {
+      var j = active[i];
+      if (!j.steps) continue;
+      while (j.stepIndex < j.steps.length) {
+        var st = j.steps[j.stepIndex];
+        if (st.kind !== 'wait' || !st.running) break;
+        finishStep(state, j, st);
+      }
+      recomputeHours(j);
+      if (jobFinished(j) && j.status === 'active') completeJob(state, j);
+    }
+  };
 
   // §10.3: the actual install — swap the replacement into the machine.
   function performInstall(state, job, needIndex) {
@@ -1350,11 +1605,31 @@
 
     Jobs.ensureSteps(state, job);   // migrated saves get a checklist lazily
     var m = effectiveMult(state, job);
-    // §10.1/§10.3: work runs the checklist; an unassigned install step blocks.
+    // §10.1/§10.3/§11.6: work runs the checklist; barriers are unassigned
+    // install steps ("assign") and wait steps ("wait").
     var wk = workableStdHours(job);
     if (wk.hours <= 1e-9) {
-      return err(wk.blocked ? 'Assign a replacement part first'
-                            : 'Nothing left to work on');
+      if (wk.barrier === 'assign') return err('Assign a replacement part first');
+      if (wk.barrier === 'wait') {
+        var wst = job.steps[job.stepIndex];
+        if (wst.needIndex != null) {   // an install-flavored wait still needs its part
+          var wnd = job.needs[wst.needIndex];
+          if (!wnd || wnd.filledPartIds.length < wnd.qty)
+            return err('Assign a replacement part first');
+        }
+        if (wst.running)
+          return err('Waiting on "' + wst.label + '" — work another job, ' +
+                     'hit Wait 1h, or end the day');
+        var sp = Engine.spendHours(state, C.WAIT_START_HOURS);   // 0.1h to start
+        if (!sp.ok) return sp;
+        wst.running = true;
+        state.workedToday = state.workedToday || [];
+        if (state.workedToday.indexOf(job.id) === -1) state.workedToday.push(job.id);
+        Jobs.tickWaits(state, C.WAIT_START_HOURS, job.id);
+        return { ok: true, hoursSpent: C.WAIT_START_HOURS, completed: false,
+                 startedWait: wst.label };
+      }
+      return err('Nothing left to work on');
     }
     var remainingEff = Math.max(0, wk.hours * m);
     var want = (hours == null) ? remainingEff : Math.max(0, Number(hours) || 0);
@@ -1368,13 +1643,15 @@
 
     state.hoursLeft = Engine.round2(state.hoursLeft - spend);
     advanceSteps(state, job, spend / m);   // also recomputes hoursDone
+    Engine.accrueStaffXp(state, job.type, spend);   // §11.5
+    Jobs.tickWaits(state, spend, job.id);           // §11.6 parallel waits
     state.workedToday = state.workedToday || [];
     if (state.workedToday.indexOf(job.id) === -1) state.workedToday.push(job.id);
     if (job.perUnitHours) {
       job.unitsDone = Math.min(job.units, Math.floor(job.hoursDone / job.perUnitHours));
     }
 
-    var completed = job.stepIndex >= job.steps.length;
+    var completed = jobFinished(job) && job.status !== 'done';
     var result = null;
     if (completed) result = completeJob(state, job);
     return { ok: true, hoursSpent: spend, completed: completed, result: result };

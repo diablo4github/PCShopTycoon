@@ -103,7 +103,19 @@
     STAFF_REFRESH_DAYS: 7,       // candidate market refresh cadence
     STAFF_CANDIDATES_MIN: 2, STAFF_CANDIDATES_MAX: 4,
     SEVERANCE_MONTHS: 0.5,       // firing costs wageMonthly x this
-    FIRE_REP_SCORE: 2.5,         // small rep ding when firing
+    FIRE_REP_SCORE: 2.5,         // small rep ding when firing (doubled at L4+, §11.5)
+    // §11.5 staff XP & levels: fixed thresholds (boosted-hours) & skill table.
+    // Wage stays laborRate x 110 x skill x wageFactor — fixing skill per level
+    // fixes the wage table too (year-rescaled on the 1st).
+    STAFF_LEVEL_THRESHOLDS: [0, 40, 120, 280, 520],  // xp to REACH L1..L5
+    STAFF_SKILL_TABLE: [0.16, 0.20, 0.25, 0.30, 0.36],
+    STAFF_TITLES: ['Junior', '', 'Experienced', 'Senior', 'Master'],
+    STAFF_CANDIDATE_MAX_LEVEL: 2,   // elite talent must be grown in-house (§11.5)
+    // §11.2 offer ramp-down
+    OFFER_TIER_CAPS: [4, 6, 8, 11],   // offers/night cap by shop tier
+    OFFER_BUSY_THRESHOLD: 10,    // pending offers >= this halves new arrivals
+    // §11.6 waiting steps
+    WAIT_START_HOURS: 0.1,       // labor cost to set a wait step running
 
     // Mishaps (§5.5)
     MISHAP_PART_DAMAGE: 0.03,    // per install; esd-setup effects.mishapMult applies
@@ -201,7 +213,7 @@
   // ------------------------------------------------------------------
   // Live state reference (set by api.js newGame/importSave)
   // ------------------------------------------------------------------
-  Engine.VERSION = '0.3';        // shown in the System tab (§10)
+  Engine.VERSION = '0.4';        // shown in the System tab (§10/§11)
   Engine._state = null;
   Engine.getData = function () { return root.DATA || {}; };
 
@@ -565,6 +577,57 @@
   Engine.staffWageFor = function (year, skill, wageFactor) {
     return Engine.round2(Engine.laborRate(year) * Engine.CONFIG.STAFF_WAGE_BASE *
                          skill * (wageFactor || 1));
+  };
+
+  // ------------------------------------------------------------------
+  // Staff XP & levels (§11.5) — fixed tables, no rolled values
+  // ------------------------------------------------------------------
+  Engine.staffSkillFor = function (level) {
+    var t = Engine.CONFIG.STAFF_SKILL_TABLE;
+    return t[Engine.clamp(level, 1, t.length) - 1];
+  };
+  Engine.staffTitleFor = function (role, level) {
+    var prefix = Engine.CONFIG.STAFF_TITLES[Engine.clamp(level, 1, 5) - 1] || '';
+    var base = role ? role.name : 'Employee';
+    return prefix ? prefix + ' ' + base : base;
+  };
+  // Nearest level for a legacy rolled skill (v3 -> v4 migration).
+  Engine.staffLevelForSkill = function (skill) {
+    var t = Engine.CONFIG.STAFF_SKILL_TABLE, best = 1, dist = Infinity;
+    for (var i = 0; i < t.length; i++) {
+      var d = Math.abs((skill || t[0]) - t[i]);
+      if (d < dist) { dist = d; best = i + 1; }
+    }
+    return best;
+  };
+  /* Accrue XP = hours of actions each applicable staffer boosted (§11.5).
+   * Level-ups update skill/wage/title from the fixed tables, push news, and
+   * queue a morning-summary line via state.levelUpsToday. */
+  Engine.accrueStaffXp = function (state, jobType, hours) {
+    if (!state.staff || !state.staff.length || !(hours > 0)) return;
+    var C = Engine.CONFIG;
+    var year = Engine.currentYear(state);
+    for (var i = 0; i < state.staff.length; i++) {
+      var m = state.staff[i];
+      var role = Engine.staffRoleById(m.role);
+      if (!role) continue;
+      var applicable = isApprenticeRole(role) ||
+                       (role.jobTypes || []).indexOf(jobType) !== -1;
+      if (!applicable) continue;
+      m.xp = Engine.round2((m.xp || 0) + hours);
+      while ((m.level || 1) < C.STAFF_LEVEL_THRESHOLDS.length &&
+             m.xp >= C.STAFF_LEVEL_THRESHOLDS[m.level || 1]) {
+        m.level = (m.level || 1) + 1;
+        m.skill = Engine.staffSkillFor(m.level);
+        m.wageMonthly = Engine.staffWageFor(year, m.skill, role.wageFactor);
+        m.title = Engine.staffTitleFor(role, m.level);
+        var msg = m.name + ' is now ' + m.title + ' (level ' + m.level + ')';
+        Engine.pushNews(state, 'system', 'Level up: ' + m.name,
+          msg + '. New wage ' + Engine.fmtMoney(m.wageMonthly) + '/month.');
+        state.levelUpsToday = state.levelUpsToday || [];
+        state.levelUpsToday.push(msg);
+      }
+    }
   };
 
   // Rating = mean of last 25 scores.

@@ -520,6 +520,18 @@
       waitBtn.hidden = !showWait;
       waitBtn.disabled = !!(st.flags && st.flags.gameOver);
     }
+
+    UI.updateHeaderHeightVar();
+  };
+
+  /** §14.5 — measured header height kept in sync as a CSS var, so anchor
+   * jumps (Shop sub-nav, etc.) via scroll-margin-top land clear of the
+   * sticky header even as its content wraps at different widths/zoom. */
+  UI.updateHeaderHeightVar = function () {
+    try {
+      var hdr = document.getElementById('app-header');
+      if (hdr) document.documentElement.style.setProperty('--hdr-h', hdr.offsetHeight + 'px');
+    } catch (e) { /* ignore */ }
   };
 
   /** §11.6 — is a wait-kind step running on any active job? A wait step

@@ -307,6 +307,9 @@ button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-
   margin: 18px 0 8px;
   padding-bottom: 4px;
   border-bottom: 1px solid var(--border);
+  /* §14.5 — jump-to-section targets (Shop sub-nav, anchors) land clear of
+   * the sticky header; --hdr-h is kept in sync by UI.updateHeaderHeightVar. */
+  scroll-margin-top: calc(var(--hdr-h, 54px) + 10px);
 }
 .section-title:first-child { margin-top: 0; }
 .sub-title { font-weight: 600; font-size: 12.5px; margin-bottom: 4px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
@@ -606,6 +609,27 @@ textarea { width: 100%; min-height: 130px; font-family: ui-monospace, Menlo, Con
 .equip-cost { font-weight: 700; }
 .insurance-row { display: flex; align-items: center; gap: 10px; margin: 8px 0; }
 .insurance-row input[type="checkbox"] { width: 17px; height: 17px; }
+
+/* ---------- §14.5 Shop discoverability ---------- */
+.shop-subnav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 2px 0 14px;
+}
+.unlock-callout {
+  border: 2px solid var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft), var(--shadow);
+  margin-bottom: 14px;
+}
+.unlock-callout .card-title { font-size: 15.5px; }
+.badge.b-unlock {
+  background: var(--accent-soft);
+  border: 1px solid var(--accent);
+  color: var(--ink);
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
 
 /* ---------- news ---------- */
 .news-feed { max-width: 860px; }
@@ -1087,6 +1111,32 @@ body.debug [data-debug] { display: inline-block !important; }
   padding: 1px 8px;
   cursor: help;
 }
+/* §14.2 — graded overspend: mild keeps the original amber tone, hard steps
+ * up to a red-leaning warning so the two are distinguishable at a glance. */
+.chip-overspend.mild {
+  background: rgba(201, 118, 43, 0.14);
+  border-color: var(--warn);
+  color: #8a4c12;
+}
+.chip-overspend.hard {
+  background: rgba(179, 53, 44, 0.18);
+  border-color: var(--bad);
+  color: #7a231c;
+  font-weight: 800;
+}
+
+/* §14.2 — vs-original quality cue: green better / grey match / amber worse.
+ * Used in the needs picker's meta line and the build schematic's slot
+ * popover; plain-text fallback (▲/▼/=) is used inside native <option>s. */
+.vs-cue {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.vs-cue.vs-better { color: var(--good); }
+.vs-cue.vs-match { color: var(--muted); font-weight: 600; }
+.vs-cue.vs-worse { color: var(--warn); }
 
 /* ---------- §10.7 staff ---------- */
 .staff-slots { max-width: 380px; margin: 6px 0 12px; }

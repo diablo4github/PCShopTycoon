@@ -92,9 +92,12 @@
   var SPEED_TIP = 'Work speed trade-off — Quick: fewer hours on the bench but a much higher ' +
     'warranty-callback risk and a rating penalty. Standard: baseline. Meticulous: more hours, ' +
     'far fewer callbacks and a rating bonus.';
-  var OVERSPEND_TIP = 'The customer will grumble — and dock the job score — if you fit a part ' +
-    'far pricier than what it replaces. Fans do not mind when it matches their taste, and ' +
-    'enthusiasts never complain.';
+  /* §14.2 — graded: 1.75-2.5x the original is a mild ding, over 2.5x is worse.
+   * Waived when the part matches the customer's taste (fanboys) or the job
+   * is enthusiast work — same waiver either grade. */
+  var OVERSPEND_TIP = 'The customer grumbles — and the job score dips — when you fit a part far ' +
+    'pricier than what it replaces. 1.75-2.5x the original price is a mild ding; over 2.5x costs ' +
+    'more. Waived when the part matches the customer\'s taste (fanboys) or the job is enthusiast work.';
 
   var marketTimer = null;
   var refocusMarketSearch = false;
@@ -121,6 +124,64 @@
       if (cfg && typeof cfg.overtimeCap === 'number') otCap = cfg.overtimeCap;
     } catch (e) { /* ignore */ }
     return otCap;
+  }
+
+  /* ------------------------------------------------------------------ *
+   * §14.2 — vs-original quality cue + graded overspend, shared by the
+   * needs picker, the build schematic's slot popover, and the classic
+   * select-list fallback. Every field here is feature-detected: an engine
+   * that hasn't shipped the new fields yet just renders no cue/old chip,
+   * never a crash.
+   * ------------------------------------------------------------------ */
+
+  /** Grade an option's overspend severity. Prefers the engine's explicit
+   * `overspendKind` ('mild'|'hard'); falls back to the pre-14.2 boolean
+   * `overspend` (rendered as the old single-level ⚠ warning) so nothing
+   * breaks while the engine ships the graded version. */
+  function overspendKind(o) {
+    if (!o) return null;
+    if (o.overspendKind === 'mild' || o.overspendKind === 'hard') return o.overspendKind;
+    return o.overspend ? 'legacy' : null;
+  }
+  function overspendPrefix(kind) {
+    if (kind === 'hard') return '⚠⚠ ';
+    if (kind === 'mild' || kind === 'legacy') return '⚠ ';
+    return '';
+  }
+  /** Colored chip for rich (HTML) contexts — the need-meta line, schematic popover. */
+  function overspendChipHTML(kind) {
+    if (!kind) return '';
+    if (kind === 'legacy') {
+      return '<span class="chip-overspend" title="' + esc(OVERSPEND_TIP) + '">⚠ much pricier than the original</span>';
+    }
+    var mild = kind === 'mild';
+    return '<span class="chip-overspend ' + (mild ? 'mild' : 'hard') + '" title="' + esc(OVERSPEND_TIP) + '">' +
+      (mild ? '⚠ a bit pricier than the original' : '⚠⚠ much pricier than the original') + '</span>';
+  }
+
+  /** Feature-detect the engine's per-option vs-original comparison:
+   * `option.vsOriginal = { origLabel, cmp: 'better'|'match'|'worse', newLabel? }`.
+   * Absent on engines that have not shipped it yet — degrade to no cue,
+   * never guess at a value the engine has not computed. */
+  function vsOriginalOf(o) {
+    var v = o && o.vsOriginal;
+    return (v && v.cmp) ? v : null;
+  }
+  function vsArrow(cmp) {
+    return cmp === 'better' ? '▲' : (cmp === 'worse' ? '▼' : '=');
+  }
+  /** Plain-text cue for native <option> labels (no HTML allowed inside <option>). */
+  function vsOriginalText(v) {
+    var lead = v.newLabel ? (v.newLabel + ' ') : '';
+    return lead + vsArrow(v.cmp) + (v.origLabel ? ' vs ' + v.origLabel : '');
+  }
+  /** Colored HTML cue for rich contexts — green ▲ better / grey = match / amber ▼ worse. */
+  function vsOriginalHTML(v) {
+    if (!v) return '';
+    var cls = v.cmp === 'better' ? 'vs-better' : (v.cmp === 'worse' ? 'vs-worse' : 'vs-match');
+    return '<span class="vs-cue ' + cls + '" title="Compared with the part currently installed">' +
+      (v.newLabel ? esc(v.newLabel) + ' ' : '') + vsArrow(v.cmp) +
+      (v.origLabel ? ' vs ' + esc(v.origLabel) : '') + '</span>';
   }
 
   /* ------------------------------------------------------------------ *
@@ -284,6 +345,12 @@
         if (ar && ar.ok === false) UI.toast(ar.error, 'error');
         else if (ar) UI.toast('Appraisal: should sell for about ' + fm(ar.estimate), 'info', 5000);
         break; // read-only — no refresh needed
+      }
+      case 'scrollto': { /* §14.5 Shop sub-nav — pure UI, no engine call */
+        var jumpId = el.getAttribute('data-target');
+        var jumpEl = jumpId && document.getElementById(jumpId);
+        if (jumpEl && jumpEl.scrollIntoView) jumpEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        break;
       }
       case 'commit-build':
         UI.act(function () { return Engine.commitBuild(jobId); },
@@ -929,13 +996,17 @@
     return partId;
   }
 
-  /* §10.3/§10.4 — needs picker: assign/unassign, replaces + overspend meta. */
+  /* §10.3/§10.4/§14.2 — needs picker: assign/unassign, replaces + graded
+   * overspend + vs-original cue. Below-original options in an upgrade stay
+   * disabled with a reason (assignPart already enforces this server-side;
+   * the picker just needs to say so plainly). */
   function needsHTML(j) {
     var needs = tryCall(function () { return Engine.getJobNeeds(j.id); });
     if (!Array.isArray(needs) || !needs.length) return '';
     var anyUnassigned = false;
     needs.forEach(function (n) { if ((n.filled || 0) < (n.qty || 1)) anyUnassigned = true; });
     var canUnassign = has('unassignPart');
+    var isUpgradeJob = (j.type === 'upgrade' || j.subtype === 'contract_upgrade'); // §14.2 wording
 
     var h = '<div class="needs' + (anyUnassigned ? ' attention' : '') + '" id="needs-' + j.id + '">' +
       '<div class="sub-title">Parts needed' + (anyUnassigned ? ' — assign a part to continue' : '') + '</div>';
@@ -971,18 +1042,24 @@
           h += '<select class="sel" id="' + selId + '">';
           n.options.forEach(function (o) {
             var below = o.meets === false;                       // §9.3
-            var label = (o.overspend ? '⚠ ' : '') +              // §10.4
+            var ovKind = overspendKind(o);                        // §14.2 graded
+            var vs = vsOriginalOf(o);                             // §14.2 vs-original cue
+            var belowReason = isUpgradeJob ? 'below the current part' : 'below spec';
+            var label = overspendPrefix(ovKind) +                // §10.4/§14.2
               (o.tasteMatch ? '♥ ' : '') + o.name +              // §9.2
               ' — ' + fm(o.price) +
               (o.source === 'inventory' ? ' (in stock)' : ' (order from market)') +
-              (below ? ' — below spec' : '');
+              (vs ? ' — ' + vsOriginalText(vs) : '') +
+              (below ? ' — ' + belowReason : '');
             var repTxt = (o.replaces && o.replaces.name)
               ? o.replaces.name + ' · ~' + fm(o.replaces.value)
               : (n.replaces && n.replaces.name ? n.replaces.name + ' · ~' + fm(n.replaces.value) : '');
-            h += '<option value="' + esc(o.partId) + '"' + (below ? ' disabled' : '') +
+            h += '<option value="' + esc(o.partId) + '"' + (below ? ' disabled title="' + esc(belowReason) + '"' : '') +
               ' data-source="' + esc(o.source || 'market') + '"' +
-              ' data-overspend="' + (o.overspend ? 1 : 0) + '"' +
+              ' data-overspend-kind="' + esc(ovKind || '') + '"' +
               (repTxt ? ' data-replaces="' + esc(repTxt) + '"' : '') +
+              (vs ? ' data-vs-cue="' + esc(vs.cmp) + '" data-vs-label="' + esc(vs.origLabel || '') +
+                '" data-vs-new="' + esc(vs.newLabel || '') + '"' : '') +
               '>' + esc(label) + '</option>';
           });
           h += '</select>' +
@@ -1002,8 +1079,8 @@
     return h + '</div>';
   }
 
-  /** Sync a need picker's button label + replaces/overspend meta line with
-   * its currently selected option (§10.3/§10.4). */
+  /** Sync a need picker's button label + replaces/vs-original/overspend meta
+   * line with its currently selected option (§10.3/§10.4/§14.2). */
   function updateNeedRowUI(sel) {
     var m = /^need-sel-(\d+)-(\d+)$/.exec(sel.id || '');
     if (!m) return;
@@ -1018,9 +1095,16 @@
       var bits = [];
       var rep = opt ? opt.getAttribute('data-replaces') : null;
       if (rep) bits.push('replaces ' + esc(rep));
-      if (opt && opt.getAttribute('data-overspend') === '1') {
-        bits.push('<span class="chip-overspend" title="' + esc(OVERSPEND_TIP) + '">⚠ much pricier than the original</span>');
+      var vsCmp = opt ? opt.getAttribute('data-vs-cue') : null;
+      if (vsCmp) {
+        bits.push(vsOriginalHTML({
+          cmp: vsCmp,
+          origLabel: opt.getAttribute('data-vs-label') || '',
+          newLabel: opt.getAttribute('data-vs-new') || ''
+        }));
       }
+      var ovChip = overspendChipHTML(opt ? opt.getAttribute('data-overspend-kind') : null);
+      if (ovChip) bits.push(ovChip);
       meta.innerHTML = bits.join(' &nbsp;·&nbsp; ');
       meta.hidden = !bits.length;
     }
@@ -1173,7 +1257,10 @@
         '<select id="' + selId + '" data-action="buildpart" data-job="' + j.id + '" data-cat="' + esc(c) + '">' +
         '<option value="">— none —</option>';
       (info ? info.options : []).forEach(function (o) {
-        var label = (o.tasteMatch ? '♥ ' : '') + o.name + ' — ' + fm(o.price) + (o.inStock ? ' (in stock)' : '');
+        var ovKind = overspendKind(o);   // §14.2 — build parts rarely carry this (no "original"), but degrade cleanly
+        var vs = vsOriginalOf(o);
+        var label = overspendPrefix(ovKind) + (o.tasteMatch ? '♥ ' : '') + o.name + ' — ' + fm(o.price) +
+          (o.inStock ? ' (in stock)' : '') + (vs ? ' — ' + vsOriginalText(vs) : '');
         if (o.compatible === false) {
           label = '✕ ' + label + (o.why ? ' — ' + o.why : '');
         }
@@ -1311,6 +1398,8 @@
     info.options.forEach(function (o) {
       var incompat = o.compatible === false;
       var below = o.meets === false;
+      var vs = vsOriginalOf(o);              // §14.2 vs-original cue
+      var ovKind = overspendKind(o);          // §14.2 graded overspend
       body += '<div class="picker-line">' +
         '<button type="button" class="picker-row' + (incompat ? ' incompat' : '') +
           (o.partId === current ? ' current' : '') + '"' + (incompat ? ' disabled' : '') +
@@ -1320,6 +1409,8 @@
           '<span class="pr-meta num">' + esc(fm(o.price)) +
             (o.inStock ? ' · in stock' : ' · order') +
             (o.perf ? ' · ' + esc(perfStr(o.perf)) : '') + '</span>' +
+          (vs ? vsOriginalHTML(vs) : '') +
+          overspendChipHTML(ovKind) +
           (below ? ' <span class="badge b-warn" title="Below this job’s minimum spec">below spec</span>' : '') +
           (incompat ? '<span class="pr-why">✕ ' + esc(o.why || 'Incompatible with this build') + '</span>' : '') +
         '</button>' +
@@ -1883,13 +1974,69 @@
    * TAB: Shop
    * ================================================================== */
 
+  /** §14.5 — "Unlocks: …" badge label for equipment that gates a job type.
+   * The DATA agent added an optional `unlocksLabel` string to the gating
+   * DATA.EQUIPMENT items (build-bench/software-station/dr-rig-1..3); items
+   * that are just speed/mitigation perks (crt-kit, imaging-kit, …) have
+   * none, so no badge. Prefer the field straight off the getShopView()
+   * entry (in case the engine ever passes it through); else fall back to a
+   * DATA.EQUIPMENT lookup by id. Never invents a label of its own. */
+  function equipUnlockLabel(eq) {
+    if (eq && typeof eq.unlocksLabel === 'string' && eq.unlocksLabel) return eq.unlocksLabel;
+    try {
+      var list = window.DATA && DATA.EQUIPMENT;
+      if (list) {
+        for (var i = 0; i < list.length; i++) {
+          if (list[i].id === eq.id) return list[i].unlocksLabel || null;
+        }
+      }
+    } catch (e) { /* ignore */ }
+    return null;
+  }
+
   function renderShop(panel) {
     var st = getState();
     if (!st) { panel.innerHTML = emptyBox('Waiting for the engine to load…'); return; }
     var sv = tryCall(function () { return Engine.getShopView(); });
     if (!sv || sv.ok === false) { panel.innerHTML = emptyBox('Shop data unavailable.'); return; }
 
-    var html = '<h2 class="section-title">Your Shop</h2><div class="shop-grid">';
+    /* §10.7/§13.4 — compute these once up front so the sub-nav only offers
+     * links to sections that will actually render below. */
+    var stv = has('getStaffView') ? tryCall(function () { return Engine.getStaffView(); }) : null;
+    var showStaff = !!(stv && stv.ok !== false);
+    var tv = has('getCertifications') ? tryCall(function () { return Engine.getCertifications(); }) : null;
+    var showTraining = !!(tv && tv.ok !== false);
+
+    var html = '<h2 class="section-title">Your Shop</h2>';
+
+    /* §14.5 — small sub-nav so nothing here requires blind scrolling. */
+    html += '<nav class="shop-subnav" aria-label="Jump to a shop section">' +
+      '<button type="button" class="btn btn-sm" data-action="scrollto" data-target="shop-sec-upgrade">Shop Upgrade</button>' +
+      '<button type="button" class="btn btn-sm" data-action="scrollto" data-target="shop-sec-equipment">Equipment</button>' +
+      (showTraining ? '<button type="button" class="btn btn-sm" data-action="scrollto" data-target="shop-sec-training">Training</button>' : '') +
+      (showStaff ? '<button type="button" class="btn btn-sm" data-action="scrollto" data-target="shop-sec-staff">Staff</button>' : '') +
+      '</nav>';
+
+    /* §14.5 — surface the Assembly Bench prominently: custom builds are
+     * era-available (state.customBuildsUnlocked) but the bench isn't owned
+     * yet, so the payoff of buying it is obvious at a glance. */
+    var equipmentList = arr(sv.equipment);
+    var bench = null;
+    for (var bi = 0; bi < equipmentList.length; bi++) { if (equipmentList[bi].id === 'build-bench') bench = equipmentList[bi]; }
+    if (st.customBuildsUnlocked && bench && !bench.owned) {
+      html += '<div class="card unlock-callout">' +
+        '<div class="card-title">🔓 Custom builds are ready to unlock</div>' +
+        '<p class="muted small">The era supports custom-build jobs now — you are just missing the bench. Buy the <b>' +
+          esc(bench.name) + '</b> to start taking them.</p>' +
+        '<div class="job-actions">' +
+          '<button type="button" class="btn btn-primary btn-sm" data-action="buy-equip" data-id="' + esc(bench.id) + '"' +
+            (bench.available === false ? ' disabled title="Not available yet"' : '') +
+            '>Buy — ' + esc(fm(bench.cost)) + '</button>' +
+          ' <button type="button" class="btn btn-sm btn-ghost" data-action="scrollto" data-target="shop-sec-equipment">See all equipment</button>' +
+        '</div></div>';
+    }
+
+    html += '<h2 class="section-title" id="shop-sec-upgrade">Shop Tier &amp; Upgrade</h2><div class="shop-grid">';
 
     /* current tier */
     var tier = sv.tier || {};
@@ -1937,20 +2084,14 @@
     html += '</div>'; /* /shop-grid */
 
     /* §10.7 staff */
-    if (has('getStaffView')) {
-      var stv = tryCall(function () { return Engine.getStaffView(); });
-      if (stv && stv.ok !== false) html += staffSectionHTML(stv, st);
-    }
+    if (showStaff) html += staffSectionHTML(stv, st);
 
     /* §13.4 training & certifications */
-    if (has('getCertifications')) {
-      var tv = tryCall(function () { return Engine.getCertifications(); });
-      if (tv && tv.ok !== false) html += trainingSectionHTML(tv, st);
-    }
+    if (showTraining) html += trainingSectionHTML(tv, st);
 
     /* equipment */
-    html += '<h2 class="section-title">Equipment</h2><div class="shop-grid">';
-    var equipment = arr(sv.equipment);
+    html += '<h2 class="section-title" id="shop-sec-equipment">Equipment</h2><div class="shop-grid">';
+    var equipment = equipmentList;
     if (!equipment.length) {
       html += '</div>' + emptyBox('No equipment catalog available.');
       panel.innerHTML = html;
@@ -1962,9 +2103,12 @@
         if (eq.available === false) reasons.push('Not available yet');
         if (eq.requiresOwned === false) reasons.push('Requires the earlier model first');
       }
+      var unlocks = equipUnlockLabel(eq); // §14.5
       html += '<div class="card equip-card' + (eq.owned ? ' owned' : '') + '">' +
         '<div class="card-title">' + esc(eq.name) +
-          (eq.owned ? ' <span class="chip chip-status done">Owned</span>' : '') + '</div>' +
+          (eq.owned ? ' <span class="chip chip-status done">Owned</span>' : '') +
+          (unlocks ? ' <span class="badge b-unlock" title="Owning this opens up this job type">Unlocks: ' + esc(unlocks) + '</span>' : '') +
+          '</div>' +
         (eq.desc ? '<p class="muted small">' + esc(eq.desc) + '</p>' : '') +
         '<div class="job-actions">' +
           (eq.owned
@@ -2005,7 +2149,7 @@
   function staffSectionHTML(stv, st) {
     var slots = Number(stv.slots) || 0;
     var used = Number(stv.slotsUsed) || 0;
-    var h = '<h2 class="section-title">Staff</h2>';
+    var h = '<h2 class="section-title" id="shop-sec-staff">Staff</h2>';
 
     if (slots <= 0) {
       h += '<div class="note">A one-person garage — upgrade the shop to hire help.</div>';
@@ -2094,7 +2238,7 @@
     var avail = arr(tv.available);
     var studying = tv.studying;
 
-    var h = '<h2 class="section-title">Training &amp; Certifications</h2>';
+    var h = '<h2 class="section-title" id="shop-sec-training">Training &amp; Certifications</h2>';
 
     /* Graceful fully-empty state (e.g. DATA.CERTIFICATIONS still landing):
      * a single calm note instead of a stack of empty boxes. */

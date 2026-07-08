@@ -1410,3 +1410,24 @@ buttons with four graduated controls.
   0.1 grid cleanly. Sim: assert every step's quantized hours and `hoursRequired` are exact
   0.1 multiples, that a "step" call stops at the step boundary, and that a "job" call
   completes; balance guards stay green.
+
+## 14.9 Overflow/scroll bug in build schematic & pickers (UI) — HIGH PRIORITY BUG
+Tester repro: in a custom build, the storage part-picker was cut off with no scrollbar —
+an 80 MB drive option existed but was below the fold and unreachable (had to zoom the
+BROWSER out to see it), making the build look impossible ("best I can get is .086, it
+wants .1"). Any list/popover/zone that can exceed its space MUST scroll within its own
+container — the user must never have to zoom the browser to reach an option.
+- Audit and fix EVERY scrollable surface: the slot part-picker popover (cap its height at
+  e.g. min(70vh, …) with `overflow-y:auto` and a visible scrollbar; keep it within the
+  viewport, repositioned so it never renders partly off-screen), the build schematic
+  itself (if the board's slot zones exceed the panel, the schematic scrolls — horizontal
+  zones in an `overflow-x:auto` wrapper, the whole configurator in a bounded scroll
+  region), the needs picker `<select>`/option lists, the Market/Wiki/Inventory tables
+  (wrap wide tables in `overflow-x:auto`), the Chronicle timeline and Articles list, and
+  any modal whose body can exceed the screen (modal body `overflow-y:auto`, header/footer
+  fixed).
+- The page body itself must never be the thing clipped: long content lives in bounded,
+  scrollable regions. Verify at the default zoom AND at the UI's 130% scale, and at a
+  1366×768 laptop viewport, that every part option in a build with many slots (and every
+  option in a long picker) is reachable by scrolling — no browser zoom required.
+- Keep it keyboard-accessible (scroll regions focusable / options reachable by keyboard).

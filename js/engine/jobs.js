@@ -244,7 +244,7 @@
     if (!cond) return true;
     if (cond === 'cooler') {   // machine/build has cooling, or modern era
       var ids = (job.machine && job.machine.partIds) ||
-                (job.build && job.build.parts) || [];
+                (job.build && flattenBuildIds(job.build)) || [];
       for (var i = 0; i < ids.length; i++) {
         var p = Engine.partById(ids[i]);
         if (p && p.category === 'cooling') return true;
@@ -1511,14 +1511,15 @@
     var v = Jobs.validateBuild(state, jobId);
     if (!v.valid) return err('Build has problems: ' + v.problems.join('; '));
     if (!v.meetsTarget) return err("Build doesn't meet the customer's targets yet");
+    var flatIds = flattenBuildIds(job.build);   // §12.2
     // Cost of parts not already in inventory
     var toBuy = [], cost = 0, i, part;
-    for (i = 0; i < job.build.parts.length; i++) {
-      part = Engine.partById(job.build.parts[i]);
+    for (i = 0; i < flatIds.length; i++) {
+      part = Engine.partById(flatIds[i]);
       var inv = Engine.inventoryEntry(state, part.id);
       if (inv && inv.qty > 0 &&
           // count how many of this part are already claimed from stock in this build
-          claimedSoFar(job.build.parts, i, part.id) < inv.qty) continue;
+          claimedSoFar(flatIds, i, part.id) < inv.qty) continue;
       toBuy.push(part);
       cost = Engine.round2(cost + P().priceOf(part, state, { buy: true }));
     }
@@ -1529,8 +1530,8 @@
       if (!run.ok) return run;
     }
     job.partsUsed = job.partsUsed || [];
-    for (i = 0; i < job.build.parts.length; i++) {
-      part = Engine.partById(job.build.parts[i]);
+    for (i = 0; i < flatIds.length; i++) {
+      part = Engine.partById(flatIds[i]);
       var chargePrice = P().priceOf(part, state);
       var inv2 = Engine.inventoryEntry(state, part.id);
       if (inv2 && inv2.qty > 0) {
@@ -1904,7 +1905,7 @@
       if (isBuildJob(job) && job.build) {
         // Build pay = budget; bonuses for overdelivering (§5.5)
         var mp = job.build.minPerf || {};
-        var v = Engine.Compat.validatePartList(job.build.parts, {
+        var v = Engine.Compat.validatePartList(flattenBuildIds(job.build), {
           requireFull: true, minPerfGpu: mp.gpu, year: year });
         var ratio = 99;
         if (mp.cpu > 0) ratio = Math.min(ratio, v.perf.cpu / mp.cpu);

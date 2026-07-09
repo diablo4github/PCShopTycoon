@@ -1444,3 +1444,128 @@ radius or a note style). Keep genuinely short pills (type, status, difficulty) a
 Ensure the chip container (`.meta-row`) wraps its chips to new lines rather than
 overflowing. Verify no clipping on offer AND workbench cards across the four era skins,
 at 80–130% UI scale, and with the longest real labels in the catalog.
+
+---
+
+# v0.6 Addendum — The Long Arc Update
+
+Binding; wins on conflict. Save `version` → **7** (chain-migrate v1-v6; new fields
+default; never reject a valid old save). `Engine.VERSION = "0.6"`. External testers are
+active — the §13.6 hardening bar applies to everything here. Read AGENTS.md first.
+
+## 15.1 Era-transition pressure (DATA + ENGINE)
+Platform shifts should threaten the shop the way they threatened real shops.
+- **DATA `DATA.TRANSITIONS`** (js/data/events.js): 6-9 dated transition windows, each
+  `{ id, name: "The ATX Changeover", startDate, durationDays (180-540), body (2-3
+  sentences of period story), newsLead (headline fired ~60 days BEFORE start as a
+  warning), obsoleteTags: ["FF-AT","SKT-7"...] (platform tags whose parts age out),
+  demandMix: { build: 1.4, upgrade: 1.3, repair: 0.9, ... } (job-weight multipliers
+  while active), retrainHours: 4, retrainCostBase: 150 }`. Canon: the AT→ATX changeover
+  (~1996-98), ISA death (~1999-2001), the Win95 support wave (already a market event —
+  transitions are STRUCTURAL, keep distinct), PCI→PCIe (~2004-06), XP→Vista/7 support
+  churn (~2007-09), HDD→SSD service shift (~2012-15), the DIY/mobile squeeze (~2013-16),
+  DDR4→DDR5/platform churn (~2021-23).
+- **ENGINE**: fire the warning news on the lead date and a start/end news pair. While a
+  transition is active: (a) demandMix multiplies job-type generation weights; (b) parts
+  carrying any obsoleteTag get an accelerated age-curve decay (multiplier, CONFIG-
+  tunable — stockpiles of dying platforms bleed value; the Wiki/market "fading" status
+  should reflect it); (c) STAFF RETRAINING: each staff member has
+  `retrainedFor: [transitionIds]`; until retrained, their time-bonus contribution is
+  HALVED for job types in the transition's demandMix boost set. `Engine.retrainStaff(
+  staffId, transitionId)` → {ok, cost} (year-scaled cost + retrainHours of owner time,
+  overtime rules apply). getStaffView surfaces the flag + a retrain button state. Sim:
+  a transition fires with warning→start→end ordering; obsolete-tag parts decay faster
+  during the window; an unretrained tech is measurably slower on boosted types and
+  recovers after retraining.
+
+## 15.2 Scenario starts (DATA + ENGINE + UI)
+Curated, scored 1-2 year challenges beside the six sandbox eras.
+- **DATA `DATA.SCENARIOS`** (js/data/eras.js): exactly these 4 —
+  `y2k-rush` (start 1998-06-01, end 2000-03-01): contract/software flood, deadline
+  pressure, goal = banked cash + zero failed contracts bonus;
+  `dotcom-survivor` (start 2000-03-01, end 2001-12-31): demand slump modifiers, high
+  starting rent, goal = survive solvent + cash;
+  `flood-trader` (start 2011-08-01, end 2012-12-31): starts 60 days before the Thailand
+  flood HDD spike, modest cash, goal = profit (stockpiling is the intended play);
+  `shortage-shop` (start 2020-03-01, end 2021-12-31): GPU drought + WFH demand, goal =
+  reputation + cash under scarcity.
+  Schema: `{ id, name, blurb (sell the fantasy + hint the strategy), startDate, endDate,
+  cash, shopTier, difficultyNote, modifiers: { jobWeightMult?, rentMult?, offerMult? },
+  scoring: { cashWeight, ratingWeight, bonus: [{stat, threshold, points, label}] } }`.
+- **ENGINE**: `newGame({scenarioId})` path; scenario state on `state.scenario`
+  {id, endDay, active}. At endDate the run ENDS (not game over — a **completion
+  screen**): `Engine.getScenarioResult()` → {score, grade "S/A/B/C/D", lines: [{label,
+  value, points}], name}. Scoring engine-side from the data weights. Bankruptcy before
+  the end = normal game over. Sim: each scenario boots, runs 30 days, modifiers apply,
+  and a fast-forwarded run reaches the end screen with a computed grade.
+- **UI**: New Game screen gains a **Scenarios** section (4 cards: dates, goal, blurb,
+  difficulty note) below the era grid; in-game a subtle countdown chip in the header
+  ("Y2K Rush — 214 days left"); scenario end screen (grade, score lines, New Game /
+  keep-playing-sandbox choice if you want — engine supports `continueSandbox()` which
+  clears scenario state and keeps the save).
+
+## 15.3 Credit line (ENGINE + UI)
+- Unlocks at prestige ≥ 1. Limit = laborRate(year) × 40 × (1 + prestigeTier) (CONFIG).
+  Era-appropriate APR from YEAR_BASELINES interpolation — add nothing to DATA: engine
+  maps year → APR via a CONFIG table {1983: 0.19, 1995: 0.12, 2010: 0.08, 2021: 0.07}
+  interpolated. `Engine.getCredit()` → {unlocked, limit, drawn, apr, monthlyInterest,
+  reason?}; `Engine.drawCredit(amount)` / `Engine.repayCredit(amount)` → {ok,...}
+  (0.1h paperwork each, quantized). Interest accrues on drawn balance, charged on the
+  1st with rent (ledger fixedCosts, summary line). Drawn credit does NOT count as
+  negative cash for the grace/bankruptcy clock — but interest can drag cash negative.
+  Save v7 adds `credit: {drawn}`. Sim: draw→interest billed→repay; grace untouched by
+  drawn balance; limit scales with prestige.
+- **UI**: a Credit card in the **Ledger** tab: limit/drawn/APR meter, Draw and Repay
+  inputs (validated amounts), interest history note; header cash tooltip mentions drawn
+  credit. Locked state shows the prestige requirement.
+
+## 15.4 Repeat customers & business accounts (ENGINE + DATA + UI)
+- **Repeat customers (ENGINE)**: remember satisfied customers (score ≥ 4) in
+  `state.regulars` (cap ~30: {name, type, lastDay, jobs, tasteBrand?}). Each night,
+  some offers draw from regulars (chance scales with rating): the SAME named customer
+  returns, flagged `regular: true` on the job, +10% pay (loyalty premium), −0.3 extra
+  rating hit if failed. Tastes persist per regular (their brand stays consistent —
+  educationally nice: your IBM loyalist keeps coming back). UI: a small "Regular" chip
+  + their visit count on offer cards.
+- **Business accounts (ENGINE + DATA)**: prestige ≥ 2 unlocks retainer offers (rare,
+  ~monthly): `{ name (from FLAVOR business pool — DATA adds ~15 business names),
+  monthlyFee, jobsPerMonth (2-4 auto-accepted service jobs with relaxed deadlines),
+  minRating (account cancels + rep hit if your rolling rating drops below it or you
+  fail 2 of their jobs in a month) }`. Accept/decline like an offer; active accounts
+  listed in Ledger; fee paid on the 1st (revenue line). State `accounts: []`. Sim: an
+  account signs, pays monthly, generates its jobs, and cancels on failure conditions.
+- **UI**: account offer card variant, Ledger "Business accounts" list w/ cancel-risk
+  note, regular chip.
+
+## 15.5 Achievements & lifetime stats (ENGINE + UI)
+- **ENGINE**: `DATA`-free, engine-defined table of 28-36 achievements with id/name/
+  desc/check hooks (first repair, first flip, first build, first SLI build, first
+  device repair, cert earned, all certs of an era, L5 employee, survive a shortage
+  event with 10+ GPUs in stock, complete a transition retrained, scenario grades,
+  $100k lifetime revenue, 5.0 rating with 50 jobs, superstore tier, zero callbacks in
+  30 days, Wiki reader (open 10 articles — UI reports via `Engine.markAchievementEvent(
+  "article-read")`), etc.). Stored `achievements: {id: dayUnlocked}` in save (v7).
+  Unlock → toast-worthy news + `summary.achievements` line. `Engine.getAchievements()`
+  → [{id,name,desc,unlocked,dayLabel?,hidden?}] (a few fun hidden ones show "???" until
+  unlocked). Sim: several unlock naturally in a bot run; no achievement unlocks twice.
+- **UI**: an **Achievements & Stats** section in the System tab (or Ledger — pick the
+  better fit and report): grid of badges (locked greyed, hidden as "???"), plus the
+  lifetime stats table that already exists on game-over rendered for the LIVE game.
+
+## 15.6 Difficulty settings (ENGINE + UI)
+New-game option (sandbox eras only; scenarios fix their own): Relaxed / Standard /
+Survival. CONFIG-driven multiplier sets: starting cash ×1.3/1.0/0.8, rent ×0.85/1.0/1.15,
+job pay ×1.1/1.0/0.95, grace days 21/14/10, random-event harshness (negative-event
+weight ×0.7/1.0/1.3). Stored `difficulty` in save (v7); shown on the header tier
+tooltip + game-over/scenario screens; achievements note the difficulty. Balance guards
+stay pinned to Standard.
+
+## 15.7 Testing
+validate-data: TRANSITIONS (dates/enum/obsoleteTags exist in the tag universe/demandMix
+types valid), SCENARIOS (schema, dates within data range, scoring sane), business-name
+pool. sim-test: every §15 feature per the sections above + all prior guards green at
+Standard difficulty + a Relaxed and Survival boot sanity (no crash, modifiers applied).
+Overseer E2E: scenario card boots + countdown chip + end screen; credit draw/repay in
+Ledger; a regular returns with chip; achievements grid + an unlock toast; difficulty
+selector affects starting cash; transition warning news appears in a long run; no
+console errors.

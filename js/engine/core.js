@@ -69,17 +69,35 @@
     ASIS_ARRIVAL_CHANCE: 0.33,   // <=1 new arrival/night (~1 per 3 nights) below cap
     ASIS_START_MIN: 2, ASIS_START_MAX: 4,     // listings seeded at newGame
     ASIS_ASK_MIN: 0.45, ASIS_ASK_MAX: 0.55,   // ask vs part value (§9.6: 40-55%)
-    REFURB_SALE_RATIO: 0.66,     // of part value (§9.6 override of §5.4's 0.85:
-                                 //   keeps flips at 1.2-1.8x the jobs $/hour)
+    // §14.3: retuned 0.66 -> 0.75 alongside the new used-market saturation
+    // mechanic and the §14.8 time-quantization pass (both of which shifted
+    // jobs' effective $/hour up sharply — quantization removed artificial
+    // half-hour rounding padding that used to inflate small jobs' tracked
+    // hours far more than refurbs' chunkier steps) so flips still clear the
+    // intended 1.2-1.8x jobs' $/hour band (§9.6) rather than falling behind.
+    REFURB_SALE_RATIO: 0.745,    // of part value (§9.6 origin: override of §5.4's 0.85)
     // §13.6: condition scales flip PROCEEDS but is not in the bot's buy decision
     // and consumes the same single RNG draw whatever its range — so nudging the
     // mean 0.93->0.99 restores flip-margin headroom (ratio back toward ~1.4)
     // after the offer-ramp retune WITHOUT perturbing the deterministic stream.
     REFURB_COND_MIN: 0.90, REFURB_COND_MAX: 1.00,  // buyers price in "refurb",
                                  //   mean 0.95, still within §5.4's 0.9-1.1 band
-    REFURB_PREMIUM_HOURS: 3,     // working-machine premium = laborRate*this (§9.6)
+    // §14.3: bumped 3 -> 8. This flat premium scales with laborRate(year), so
+    // it grows across eras the same way job pay does — needed so a dedicated
+    // flip strategy keeps pace with a dedicated jobs strategy in LATER eras
+    // too (parts-value*ratio alone fell behind faster there).
+    REFURB_PREMIUM_HOURS: 8,     // working-machine premium = laborRate*this (§9.6/§14.3)
     REFURB_SCRAP_RATIO: 0.25,    // abandon: 25% of parts value
     REFURB_HOURS_MIN: 3, REFURB_HOURS_MAX: 5,  // §9.6: flips are slower work now
+    // §14.3 used-market saturation: each refurb sale within a rolling window
+    // depresses the NEXT sale's parts-value proceeds (diminishing returns for
+    // a pure-flip spam strategy; recovers linearly as sales age out of the
+    // window). Applies only to the parts-value*ratio*condition term, not the
+    // flat working-machine labor premium.
+    REFURB_SAT_WINDOW_DAYS: 21,
+    REFURB_SAT_PER_SALE: 0.15,   // depression contributed by one recent sale (full weight)
+    REFURB_SAT_MAX: 0.20,        // cap on cumulative depression (floor = 1 - this)
+    REFURB_VARIANCE_SPREAD: 0.08, // §14.3: widened flip outcome variance (sale-day noise)
     ASIS_MAX_AGE_YEARS: 12,      // how far back as-is machines reach
     ASIS_MAX_VALUE_BB_MULT: 1.0, // dealers keep machines worth > buildBudget x this
     // §9.5 strip-for-parts
@@ -262,7 +280,8 @@
   // ------------------------------------------------------------------
   // Live state reference (set by api.js newGame/importSave)
   // ------------------------------------------------------------------
-  Engine.VERSION = '0.5';        // §13: parseFloat-compatible with the UI's >=0.4 gate
+  Engine.VERSION = '0.5.1';      // §14: parseFloat-compatible with the UI's >=0.4 gate;
+                                  // NO save-shape change — state.version stays 6
   Engine._state = null;
   Engine.getData = function () { return root.DATA || {}; };
 

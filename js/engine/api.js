@@ -59,7 +59,7 @@
       jobs: { offers: [], active: [], completedRecent: [], nextId: 1 },
       asIsMarket: [],
       asIsNextId: 1,
-      market: { noise: {}, hist: {}, activeEvents: [] },
+      market: { noise: {}, hist: {}, activeEvents: [], refurbLog: [] },  // §14.3
       news: [],
       ledger: {
         months: [],

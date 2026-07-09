@@ -2463,15 +2463,19 @@
           var qNewLabel = qKey != null ? fmtPerfReq(qKey, qNewMetric) : Engine.fmtMoney(qUsed.price);
 
           // Downgrade: repair only (an upgrade's minPerf already hard-gates
-          // below-original commits, §14.1). Waived for budget-conscious asks;
-          // labor-only faults never reach here (no need was ever created).
-          var qIsDowngrade = job.type === 'repair' && qKey != null &&
-            qNewMetric < qOrigMetric && !job.budgetAsk;
+          // below-original commits, §14.1). The FLAG reflects the objective
+          // metric comparison regardless of waiver (a budget-conscious ask
+          // still genuinely got a smaller/slower part — it's just not dinged
+          // for it); labor-only faults never reach here (no need was ever
+          // created), so that waiver is automatic and needs no check here.
+          var qIsDowngrade = job.type === 'repair' && qKey != null && qNewMetric < qOrigMetric;
 
           if (qIsDowngrade) {
-            score -= C.DOWNGRADE_SCORE;
-            notes.push('"The replacement ' + qNd.category +
-                       ' is smaller/slower than what we had..."');
+            if (!job.budgetAsk) {
+              score -= C.DOWNGRADE_SCORE;
+              notes.push('"The replacement ' + qNd.category +
+                         ' is smaller/slower than what we had..."');
+            }
             qualityFlags.push({ partId: qNewPart.id, kind: 'downgrade',
                                  origPerfLabel: qOrigLabel, newPerfLabel: qNewLabel });
             continue;   // never both a downgrade AND an overspend ding on one part
@@ -2891,11 +2895,32 @@
     return { ok: true, recovered: recovered, lost: lost, hoursSpent: stripHours };
   };
 
+  // §14.3 used-market saturation: each recent refurb sale (within a rolling
+  // window) depresses the parts-value share of the NEXT sale's proceeds,
+  // recency-weighted (a fresh sale hurts most, decaying to nothing at the
+  // window edge) and capped — diminishing returns for flooding the local
+  // used market, not a hard ban on repeat flips.
+  function refurbSaturationMult(state, C) {
+    var log = state.market.refurbLog;
+    if (!log || !log.length) return 1;
+    var window = C.REFURB_SAT_WINDOW_DAYS;
+    var total = 0;
+    for (var i = 0; i < log.length; i++) {
+      var age = state.day - log[i].day;
+      if (age < 0 || age > window) continue;
+      total += C.REFURB_SAT_PER_SALE * (1 - age / window);
+    }
+    total = Math.min(C.REFURB_SAT_MAX, total);
+    return 1 - total;
+  }
+  Jobs.refurbSaturationMult = refurbSaturationMult;
+
   function refurbEstimate(state, job) {
     var C = CFG();
     var cond = (job.machine && job.machine.condition != null) ? job.machine.condition : 1.0;
     var year = Engine.currentYear(state);
-    return Engine.round2(machinePartsValue(state, job.machine) * C.REFURB_SALE_RATIO * cond +
+    var sat = refurbSaturationMult(state, C);   // §14.3: recent-sales market glut
+    return Engine.round2(machinePartsValue(state, job.machine) * C.REFURB_SALE_RATIO * cond * sat +
                          Engine.laborRate(year) * C.REFURB_PREMIUM_HOURS);
   }
 
@@ -2909,10 +2934,22 @@
     var job = Jobs.findActive(state, jobId);
     if (!job || job.type !== 'refurb') return err('Not a refurb job');
     if (job.status !== 'done') return err('Fix it up before selling');
-    var price = refurbEstimate(state, job);
+    var C = CFG();
+    // §14.3: widen actual outcome variance around the appraised estimate —
+    // real flip risk; some sales underperform, the best ones stay lucrative.
+    var base = refurbEstimate(state, job);
+    var price = Math.max(0, Engine.round2(
+      base * Engine.uniform(1 - C.REFURB_VARIANCE_SPREAD, 1 + C.REFURB_VARIANCE_SPREAD)));
     Engine.addCash(state, price);
     Engine.ledgerAdd(state, 'revenue', price);
     state.ledger.lifetime.refurbsSold++;
+    // Log this sale for the saturation window (pruned to keep it bounded).
+    state.market.refurbLog = state.market.refurbLog || [];
+    state.market.refurbLog.push({ day: state.day });
+    var satCutoff = state.day - C.REFURB_SAT_WINDOW_DAYS * 2;
+    state.market.refurbLog = state.market.refurbLog.filter(function (e) {
+      return e.day >= satCutoff;
+    });
     job.status = 'sold';
     removeFrom(state.jobs.active, job);
     Engine.pushNews(state, 'money', 'Refurb sold: ' + job.machine.name,

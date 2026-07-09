@@ -1552,3 +1552,178 @@ body.era-modern { --pcb-bg: #23252b; --pcb-line: rgba(255, 255, 255, 0.12); --pc
 @media (max-width: 480px) {
   .tut-callout { width: calc((100vw - 24px) / var(--ui-zoom, 1)); }
 }
+
+/* ==========================================================================
+   v0.6 additions (SPEC §15) — The Long Arc Update
+   ========================================================================== */
+
+/* ---------- §15.2 scenario cards (New Game) ---------- */
+.scenario-card { border-style: dashed; }
+.scenario-card.selected { border-style: solid; }
+.badge.b-scenario {
+  background: rgba(93, 63, 168, 0.13);
+  border: 1px solid rgba(93, 63, 168, 0.4);
+  color: #5d3fa8;
+}
+.scenario-dates {
+  font-size: 12px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
+/* ---------- §15.2 header countdown chip ---------- */
+.hdr-scenario { font-variant-numeric: tabular-nums; }
+.hdr-scenario.urgent {
+  color: var(--hdr-neg);
+  border-color: var(--hdr-neg);
+  font-weight: 700;
+}
+
+/* ---------- §15.2 scenario completion screen ---------- */
+.scenario-end .sc-grade {
+  width: 84px;
+  height: 84px;
+  margin: 0 auto 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 44px;
+  font-weight: 800;
+  border-radius: 50%;
+  border: 4px solid var(--border-strong);
+  background: var(--panel-bg-alt);
+  color: var(--muted);
+}
+.scenario-end .sc-grade.grade-s { border-color: #d4a017; color: #a87b00; background: rgba(224, 161, 0, 0.12); }
+.scenario-end .sc-grade.grade-a { border-color: var(--good); color: var(--good); background: rgba(28, 124, 60, 0.1); }
+.scenario-end .sc-grade.grade-b { border-color: #2f6db8; color: #2f6db8; background: rgba(47, 109, 184, 0.1); }
+.scenario-end .sc-grade.grade-c { border-color: var(--warn); color: #8a4c12; background: rgba(201, 118, 43, 0.12); }
+.scenario-end .sc-grade.grade-d { border-color: var(--bad); color: var(--bad); background: rgba(179, 53, 44, 0.1); }
+.scenario-end .sc-score { font-size: 15px; }
+.score-lines {
+  margin: 12px auto;
+  border-collapse: collapse;
+  min-width: 60%;
+}
+.score-lines td {
+  padding: 4px 12px;
+  border-bottom: 1px dashed var(--border);
+  text-align: left;
+  font-size: 13px;
+}
+.score-lines td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.score-lines td.pts { font-weight: 700; color: var(--good); white-space: nowrap; }
+
+/* ---------- §15.6 difficulty selector (New Game) ---------- */
+.ng-difficulty { margin: 14px 0 4px; }
+.diff-row { display: flex; gap: 10px; flex-wrap: wrap; }
+.diff-card {
+  flex: 1 1 180px;
+  max-width: 300px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  text-align: left;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-bg);
+  color: var(--ink);
+  cursor: pointer;
+}
+.diff-card:hover { border-color: var(--border-strong); }
+.diff-card.selected { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+.diff-card .small { white-space: normal; }
+
+/* ---------- §15.3 credit line + §15.4 accounts (Ledger) ---------- */
+.ledger-fin { margin-bottom: 14px; }
+.credit-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin: 8px 0;
+}
+.credit-row input[type="number"] {
+  width: 110px;
+  padding: 4px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--panel-bg);
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.chip-risk {
+  background: rgba(179, 53, 44, 0.1);
+  border: 1px solid rgba(179, 53, 44, 0.4);
+  color: #7a231c;
+}
+.account-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 5px 0;
+  border-bottom: 1px dashed var(--border);
+}
+.account-row .acct-name { font-weight: 600; }
+
+/* ---------- §15.4 offer variants ---------- */
+.badge.b-account {
+  background: rgba(23, 56, 94, 0.12);
+  border: 1px solid rgba(23, 56, 94, 0.4);
+  color: #17385e;
+}
+.account-card { border-left: 4px solid #17385e; }
+body.era-early .account-card { border-left-color: var(--accent); }
+.chip-regular {
+  background: rgba(28, 124, 60, 0.1);
+  border: 1px solid rgba(28, 124, 60, 0.4);
+  color: var(--good);
+}
+
+/* ---------- §15.5 achievements ---------- */
+.ach-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 8px;
+  margin: 8px 0 14px;
+}
+.ach-badge {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-bg);
+  cursor: help;
+  min-width: 0;
+}
+.ach-badge .ach-ico { font-size: 17px; line-height: 1.2; }
+.ach-badge .ach-name { font-weight: 700; font-size: 12.5px; overflow-wrap: break-word; }
+.ach-badge .ach-desc { font-size: 11.5px; color: var(--muted); overflow-wrap: break-word; }
+.ach-badge .ach-day { font-size: 11px; color: var(--good); font-weight: 600; }
+.ach-badge.unlocked { border-color: var(--good); background: rgba(28, 124, 60, 0.06); }
+.ach-badge.locked { opacity: 0.6; }
+.ach-badge.locked .ach-ico { filter: grayscale(1); }
+.ach-badge.hidden-ach { opacity: 0.55; border-style: dashed; }
+
+/* ---------- §15.1 staff retraining ---------- */
+.staff-card.needs-retrain { border-color: var(--warn); }
+.retrain-note {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #8a4c12;
+  background: rgba(201, 118, 43, 0.12);
+  border-left: 3px solid var(--warn);
+  border-radius: 4px;
+  padding: 4px 9px;
+  margin: 6px 0 2px;
+  cursor: help;
+  overflow-wrap: break-word;
+}
+.retrain-actions { border-top: none; padding-top: 0; margin-top: 4px; }

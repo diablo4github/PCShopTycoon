@@ -2343,6 +2343,25 @@
     return role ? prettySubtype(role) : '';
   }
 
+  /** §15.1 — does this getStaffView entry need transition retraining?
+   * Preferred contract: s.retrain = {needed, transitionId, transitionName?,
+   * cost?, hours?}; boolean-flag fallbacks tolerated. Null = no. */
+  function retrainInfoOf(s) {
+    if (!s) return null;
+    if (s.retrain && typeof s.retrain === 'object') {
+      return s.retrain.needed === false ? null : s.retrain;
+    }
+    if (s.needsRetraining || s.needsRetrain) {
+      return {
+        needed: true,
+        transitionId: s.retrainTransitionId || s.transitionId || null,
+        transitionName: s.retrainTransitionName || s.transitionName || null,
+        cost: s.retrainCost, hours: s.retrainHours
+      };
+    }
+    return null;
+  }
+
   /** §11.5 — level pips, 1-5. */
   function lvlPips(level) {
     var l = Math.max(0, Math.min(5, Math.round(Number(level) || 0)));
@@ -2386,7 +2405,23 @@
             xpRow = '<div class="xp-row"><span class="xp-txt">Top of their craft — max level</span></div>';
           }
         }
-        h += '<div class="card staff-card">' +
+        /* §15.1 — transition retraining state (feature-detected shape) */
+        var rt = retrainInfoOf(s);
+        var rtRow = '';
+        if (rt) {
+          var rtName = rt.transitionName || rt.name || 'the current platform shift';
+          var rtBits = [];
+          if (rt.cost !== undefined && rt.cost !== null) rtBits.push(fm(rt.cost));
+          if (rt.hours !== undefined && rt.hours !== null) rtBits.push(rt.hours + 'h of your time');
+          rtRow = '<div class="retrain-note" title="Until retrained, their speed bonus is halved on the job types this transition boosts">' +
+            '⚠ Needs retraining — ' + esc(rtName) + '</div>' +
+            '<div class="job-actions retrain-actions">' +
+              '<button type="button" class="btn btn-primary btn-sm" data-action="retrain" data-id="' + esc(s.id) + '"' +
+                (rt.transitionId ? ' data-transition="' + esc(rt.transitionId) + '"' : '') +
+                '>Retrain' + (rtBits.length ? ' — ' + esc(rtBits.join(' + ')) : '') + '</button>' +
+            '</div>';
+        }
+        h += '<div class="card staff-card' + (rt ? ' needs-retrain' : '') + '">' +
           '<div class="card-title">' + esc(s.name) +
             ' <span class="chip chip-role">' + esc(roleTxt) + '</span> ' + lvlPips(s.level) + '</div>' +
           '<div class="meta-row">' +
@@ -2395,6 +2430,7 @@
           '</div>' +
           xpRow +
           (s.effectNote ? '<div class="effect-note">' + esc(s.effectNote) + '</div>' : '') +
+          rtRow +
           '<div class="job-actions">' +
             '<button type="button" class="btn btn-sm btn-ghost" data-action="fire" data-id="' + esc(s.id) +
               '" data-name="' + esc(s.name) + '" data-level="' + (Number(s.level) || 0) + '">Fire…</button>' +
@@ -2523,6 +2559,11 @@
 
     var html = '<h2 class="section-title">Ledger</h2>';
 
+    /* §15.3/§15.4 — financing & retainers (each renders only once its
+     * engine feature exists; both absent = no empty shell). */
+    var finHTML = creditCardHTML(st) + businessAccountsHTML(st);
+    if (finHTML) html += '<div class="shop-grid ledger-fin">' + finHTML + '</div>';
+
     /* current month preview */
     var cur = lg.currentMonthPreview;
     if (cur) {
@@ -2557,9 +2598,9 @@
       html += '</tbody></table></div>';
     }
 
-    /* lifetime */
+    /* lifetime — §15.5 pairs the live stats table with the badge grid */
     var lt = lg.lifetime || {};
-    html += '<h3 class="sub-title">Lifetime</h3><div class="kv">' +
+    html += '<h3 class="sub-title" id="ledger-sec-stats">Lifetime</h3><div class="kv">' +
       kvCell('Revenue', fm(lt.revenue)) +
       kvCell('Parts cost', fm(lt.partsCost)) +
       kvCell('Fixed costs', fm(lt.fixedCosts)) +
@@ -2571,7 +2612,111 @@
       kvCell('Days played', lt.daysPlayed || 0) +
       '</div>';
 
+    /* §15.5 achievements — in the Ledger (not System) because this tab is
+     * already the shop's record book: the lifetime table above IS the
+     * "stats" half of Achievements & Stats. System stays settings/saves. */
+    html += achievementsHTML();
+
     panel.innerHTML = html;
+  }
+
+  /* ---- §15.3 credit line card ---- */
+  function creditCardHTML(st) {
+    if (!has('getCredit')) return '';
+    var cr = tryCall(function () { return Engine.getCredit(); });
+    if (!cr || cr.ok === false) return '';
+
+    var h = '<div class="card credit-card"><div class="card-title">Credit line</div>';
+    if (!cr.unlocked) {
+      h += '<p class="muted small">🔒 ' + esc(cr.reason ||
+        'Banks want a name they can trust — reach prestige tier 1 (Neighborhood Fixture) to open a credit line.') + '</p></div>';
+      return h;
+    }
+
+    var limit = Number(cr.limit) || 0;
+    var drawn = Number(cr.drawn) || 0;
+    var apr = Number(cr.apr) || 0;
+    var avail = Math.max(0, limit - drawn);
+    h += '<div class="bar-row"><span class="muted small">Drawn</span>' +
+      UI.barHTML(drawn, limit || 1, 'wide' + (drawn > 0 ? ' over' : '')) +
+      '<span class="num small">' + esc(fm(drawn)) + ' of ' + esc(fm(limit)) + '</span></div>' +
+      '<div class="meta-row small">' +
+        '<span class="chip">APR ' + esc((apr * 100).toFixed(1)) + '%</span>' +
+        (cr.monthlyInterest !== undefined && cr.monthlyInterest !== null && drawn > 0
+          ? '<span class="chip chip-risk" title="Charged on the 1st with rent">~' + esc(fm(cr.monthlyInterest)) + '/month interest</span>'
+          : '') +
+        '<span class="muted">' + esc(fm(avail)) + ' available</span>' +
+      '</div>' +
+      '<div class="credit-row">' +
+        '<input type="number" id="credit-draw-amt" min="1" step="50" placeholder="Amount" aria-label="Amount to draw">' +
+        '<button type="button" class="btn btn-primary btn-sm" data-action="credit-draw"' +
+          (avail <= 0 ? ' disabled title="The line is fully drawn"' : '') + '>Draw</button>' +
+        '<input type="number" id="credit-repay-amt" min="1" step="50" placeholder="Amount" aria-label="Amount to repay">' +
+        '<button type="button" class="btn btn-sm" data-action="credit-repay"' +
+          (drawn <= 0 ? ' disabled title="Nothing drawn"' : '') + '>Repay</button>' +
+      '</div>' +
+      '<p class="muted small">Interest on the drawn balance is charged on the 1st with rent. Drawn credit never starts the bankruptcy clock — but the interest can drag your cash under.</p>' +
+      '</div>';
+    return h;
+  }
+
+  /* ---- §15.4 business accounts card ---- */
+  function businessAccountsHTML(st) {
+    var accounts = null;
+    if (has('getBusinessAccounts')) {
+      var av = tryCall(function () { return Engine.getBusinessAccounts(); });
+      if (Array.isArray(av)) accounts = av;
+    }
+    if (accounts === null && st && Array.isArray(st.accounts)) accounts = st.accounts;
+    if (accounts === null) return ''; // feature not landed yet
+
+    var h = '<div class="card accounts-card"><div class="card-title">Business accounts</div>';
+    if (!accounts.length) {
+      h += '<p class="muted small">No retainers yet — business accounts appear as offers once your shop is Well-Reviewed (prestige tier 2).</p></div>';
+      return h;
+    }
+    accounts.forEach(function (a) {
+      if (!a) return;
+      h += '<div class="account-row">' +
+        '<span class="acct-name">' + esc(a.name || 'Business client') + '</span>' +
+        '<span class="meta-row small">' +
+          (a.monthlyFee !== undefined && a.monthlyFee !== null ? '<span class="chip">' + esc(fm(a.monthlyFee)) + '/mo</span>' : '') +
+          (a.jobsPerMonth ? '<span class="chip">' + esc(a.jobsPerMonth) + ' job' + (Number(a.jobsPerMonth) === 1 ? '' : 's') + '/mo</span>' : '') +
+          (a.minRating
+            ? '<span class="chip chip-risk" title="The account cancels — with a reputation hit — if your rating drops below this or you fail two of their jobs in a month">cancels under ' + esc(a.minRating) + '★</span>'
+            : '') +
+        '</span></div>';
+    });
+    h += '<p class="muted small">Retainers pay on the 1st. Keep their jobs on time and your rating up, or they walk.</p></div>';
+    return h;
+  }
+
+  /* ---- §15.5 achievements grid (badge wall) ---- */
+  function achievementsHTML() {
+    if (!has('getAchievements')) return '';
+    var list = arr(tryCall(function () { return Engine.getAchievements(); }));
+    var unlocked = list.filter(function (a) { return a && a.unlocked; }).length;
+
+    var h = '<h3 class="sub-title" id="ledger-sec-achievements">Achievements' +
+      (list.length ? ' <span class="muted">— ' + unlocked + ' / ' + list.length + ' unlocked</span>' : '') + '</h3>';
+    if (!list.length) {
+      return h + emptyBox('No achievements defined yet — they arrive with the next engine update.');
+    }
+    h += '<div class="ach-grid">';
+    list.forEach(function (a) {
+      if (!a) return;
+      var isHidden = a.hidden && !a.unlocked;
+      var cls = a.unlocked ? 'unlocked' : (isHidden ? 'hidden-ach' : 'locked');
+      var name = isHidden ? '???' : (a.name || a.id);
+      var desc = isHidden ? 'Keep playing to discover this one.' : (a.desc || '');
+      h += '<div class="ach-badge ' + cls + '" title="' + esc(desc) + '">' +
+        '<span class="ach-ico">' + (a.unlocked ? '🏆' : (isHidden ? '❓' : '🔒')) + '</span>' +
+        '<span class="ach-name">' + esc(name) + '</span>' +
+        (desc ? '<span class="ach-desc">' + esc(desc) + '</span>' : '') +
+        (a.unlocked && a.dayLabel ? '<span class="ach-day">' + esc(a.dayLabel) + '</span>' : '') +
+        '</div>';
+    });
+    return h + '</div>';
   }
 
   function kvCell(k, v) {

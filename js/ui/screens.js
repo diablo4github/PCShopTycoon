@@ -137,7 +137,10 @@
 
     var h = '<div class="ng-wrap">' +
       '<header class="ng-head">' +
-        '<h1>Circuit &amp; Solder</h1>' +
+        '<h1 class="ng-logo-wrap">' +
+          '<img class="ng-logo" src="assets/brand/logo-circuit-solder.jpg" width="200" height="200" ' +
+            'alt="Circuit &amp; Solder" decoding="async">' +
+        '</h1>' +
         '<p class="ng-tag">PC Shop Tycoon — fix, build and flip computers across four decades of hardware history.</p>' +
       '</header>';
 
@@ -163,15 +166,18 @@
       eras.forEach(function (era) {
         var sel = !scenarioPicked && UI.state.selectedEra === era.id;
         h += '<button type="button" class="era-card' + (sel ? ' selected' : '') + '" data-action="pick-era" data-era="' + esc(era.id) + '">' +
-          '<h3>' + esc(era.name) + '</h3>' +
-          (era.blurb ? '<div class="era-blurb">' + esc(era.blurb) + '</div>' : '') +
-          '<div class="era-facts">' +
-            '<span>Starting cash <b>' + esc(fm(era.cash)) + '</b></span>' +
-            (era.difficulty ? '<span>Difficulty: <b>' + esc(era.difficulty) + '</b></span>' : '') +
+          cardArt('assets/eras/' + era.id + '.jpg') +
+          '<div class="era-card-body">' +
+            '<h3>' + esc(era.name) + '</h3>' +
+            (era.blurb ? '<div class="era-blurb">' + esc(era.blurb) + '</div>' : '') +
+            '<div class="era-facts">' +
+              '<span>Starting cash <b>' + esc(fm(era.cash)) + '</b></span>' +
+              (era.difficulty ? '<span>Difficulty: <b>' + esc(era.difficulty) + '</b></span>' : '') +
+            '</div>' +
+            (era.customBuildsUnlocked === false
+              ? '<div class="era-callout">Custom building locked until September 1989 — repairs pay the bills first.</div>'
+              : '') +
           '</div>' +
-          (era.customBuildsUnlocked === false
-            ? '<div class="era-callout">Custom building locked until September 1989 — repairs pay the bills first.</div>'
-            : '') +
           '</button>';
       });
       h += '</div>';
@@ -187,13 +193,16 @@
         var sel = UI.state.selectedScenario === sc.id;
         h += '<button type="button" class="era-card scenario-card' + (sel ? ' selected' : '') +
           '" data-action="pick-scenario" data-scenario="' + esc(sc.id) + '">' +
-          '<h3>' + esc(sc.name || sc.id) + ' <span class="badge b-scenario">SCENARIO</span></h3>' +
-          '<div class="scenario-dates">' + esc(fmtDateRange(sc.startDate, sc.endDate)) + '</div>' +
-          (sc.blurb ? '<div class="era-blurb">' + esc(sc.blurb) + '</div>' : '') +
-          '<div class="era-facts">' +
-            (sc.cash !== undefined && sc.cash !== null ? '<span>Starting cash <b>' + esc(fm(sc.cash)) + '</b></span>' : '') +
+          cardArt('assets/scenarios/' + sc.id + '.jpg') +
+          '<div class="era-card-body">' +
+            '<h3>' + esc(sc.name || sc.id) + ' <span class="badge b-scenario">SCENARIO</span></h3>' +
+            '<div class="scenario-dates">' + esc(fmtDateRange(sc.startDate, sc.endDate)) + '</div>' +
+            (sc.blurb ? '<div class="era-blurb">' + esc(sc.blurb) + '</div>' : '') +
+            '<div class="era-facts">' +
+              (sc.cash !== undefined && sc.cash !== null ? '<span>Starting cash <b>' + esc(fm(sc.cash)) + '</b></span>' : '') +
+            '</div>' +
+            (sc.difficultyNote ? '<div class="era-callout">' + esc(sc.difficultyNote) + '</div>' : '') +
           '</div>' +
-          (sc.difficultyNote ? '<div class="era-callout">' + esc(sc.difficultyNote) + '</div>' : '') +
           '</button>';
       });
       h += '</div>';
@@ -241,6 +250,17 @@
 
     el.innerHTML = h + '</div>';
   };
+
+  /**
+   * Banner art for era/scenario cards. Fail-soft: if the file is missing the
+   * <img> onerror collapses the art strip so the text card still works.
+   */
+  function cardArt(src) {
+    return '<div class="era-card-art" aria-hidden="true">' +
+      '<img src="' + esc(src) + '" alt="" loading="lazy" decoding="async" ' +
+        'onerror="this.parentNode.classList.add(\'no-art\'); this.remove();">' +
+      '</div>';
+  }
 
   /** §15.6 — one selectable difficulty card. */
   function diffCard(id, label, blurb) {

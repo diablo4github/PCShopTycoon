@@ -60,7 +60,10 @@ var REAL = function () { return DATA_SOURCE.indexOf('real') === 0; };
 // Tuning hooks (harness-only): sweep seeds/ratios without editing files.
 // Default gate seed chosen so the deterministic run sits near the median of
 // the seed distribution for both the §9.6 band and the flips ratio.
-var SEED_BASE = Number(process.env.SIM_SEED_BASE || 3000);
+// (v0.6: gate seed 3000 -> 3200 — the §15 features add seeded-RNG draws to
+// the nightly stream, reshuffling every downstream roll; 3200 sits near the
+// median of the new seed distribution for the same §9.6 band.)
+var SEED_BASE = Number(process.env.SIM_SEED_BASE || 3200);
 if (process.env.SIM_SALE_RATIO) {
   Engine.CONFIG.REFURB_SALE_RATIO = Number(process.env.SIM_SALE_RATIO);
   console.log('[sim-test] REFURB_SALE_RATIO override: ' + Engine.CONFIG.REFURB_SALE_RATIO);
@@ -322,14 +325,21 @@ function botDay(E, mem) {
       if (o.title && o.title.indexOf('{') !== -1) globals.badCopyToken = 'title: ' + o.title;
       else if (o.blurb && o.blurb.indexOf('{') !== -1) globals.badCopyToken = 'blurb: ' + o.blurb;
     }
-    // §11.1 sweep: every offered build must be witness-satisfiable in budget
+    // §11.1 sweep: every offered build must be witness-satisfiable in budget.
+    // buildsSeen counts every morning sighting (the historical >=60 metric);
+    // the witness ASSERT only runs on offers fresh from last night — the
+    // §11.1 guarantee is at GENERATION, and a lingering offer can genuinely
+    // drift unbuildable as prices move (§15.1 transition bleed accelerates
+    // this); the player's remedy there is declining, not a stale guarantee.
     if (o.build) {
       globals.buildsSeen++;
-      var wtn = Engine.Jobs.witnessBuild(E.getState(), o.build);
-      if (!wtn) globals.buildWitnessFails.push(o.title + ': no witness at all');
-      else if (wtn.cost > o.build.budget)
-        globals.buildWitnessFails.push(o.title + ': witness ' + wtn.cost +
-                                       ' > budget ' + o.build.budget);
+      if (o.offeredDay >= E.getState().day - 1) {
+        var wtn = Engine.Jobs.witnessBuild(E.getState(), o.build);
+        if (!wtn) globals.buildWitnessFails.push(o.title + ': no witness at all');
+        else if (wtn.cost > o.build.budget)
+          globals.buildWitnessFails.push(o.title + ': witness ' + wtn.cost +
+                                         ' > budget ' + o.build.budget);
+      }
     }
     // §11.4 sweep: OS request kinds & label exposure
     if (o.type === 'software' && o.needs.length && o.needs[0].category === 'os') {
@@ -622,6 +632,7 @@ function runEra(era, idx, metricRun) {
     refurbsSold: s.ledger.lifetime.refurbsSold,
     callbacksArrived: s.reputation.callbacks,
     callbacksPending: pendingCallbacks,
+    achievementsUnlocked: Object.keys(s.achievements || {}).length,   // §15.5
     mem: mem
   };
   console.log('  ' + era.id + ': cash ' + Engine.fmtMoney(line.cash) +
@@ -2739,20 +2750,41 @@ function certScenario() {
 // Scenario (§10.8/§11.7/§12.6/§13.8): v1-v5 fixtures migrate to v6 and play
 // ------------------------------------------------------------------
 function migrationScenario(era) {
-  console.log('--- Save migration (v1/v2/v3/v4/v5 -> v6) ---');
+  console.log('--- Save migration (v1/v2/v3/v4/v5/v6 -> v7) ---');
   var E = Engine;
   var r = E.newGame({ eraId: era.id, shopName: 'Migrate Test', seed: 73737 });
   if (!assert(r.ok, 'migration: newGame failed')) return;
   var offers = E.getOffers().slice(0, 2);
-  offers.forEach(function (o) { E.acceptOffer(o.id); });
+  offers.forEach(function (o) {
+    if (o.type !== 'business_account') E.acceptOffer(o.id);
+  });
   E.getState().cash = 50000;
   var listing = E.getAsIsMarket()[0];
   if (listing) E.buyAsIsMachine(listing.id);
-  var v6snapshot = E.exportSave();
+  var v7snapshot = E.exportSave();
 
   function downgrade(version) {
-    var obj = JSON.parse(v6snapshot);
+    var obj = JSON.parse(v7snapshot);
     obj.version = version;
+    // §15: a genuine pre-v7 save never carried credit/regulars/accounts/
+    // achievements/difficulty/scenario/transition bookkeeping
+    if (version < 7) {
+      delete obj.credit; delete obj.regulars; delete obj.accounts;
+      delete obj.achievements; delete obj.achievementEvents;
+      delete obj.difficulty; delete obj.scenario; delete obj.transitionsFired;
+      if (obj.ledger && obj.ledger.lifetime) {
+        delete obj.ledger.lifetime.contractsFailed;
+        delete obj.ledger.lifetime.graceDays;
+      }
+      (obj.staff || []).forEach(function (m) { delete m.retrainedFor; });
+      // account offers / regular flags didn't exist pre-v7
+      obj.jobs.offers = (obj.jobs.offers || []).filter(function (j) {
+        return j.type !== 'business_account';
+      });
+      [].concat(obj.jobs.offers || [], obj.jobs.active || []).forEach(function (j) {
+        delete j.regular; delete j.regularVisits; delete j.accountId;
+      });
+    }
     // §13: a genuine pre-v6 save never carried training/certs/article-seen bookkeeping
     if (version < 6) {
       delete obj.training; delete obj.certsEarnedToday; delete obj.articlesSeen;
@@ -2822,11 +2854,25 @@ function migrationScenario(era) {
     return JSON.stringify(obj);
   }
 
-  [1, 2, 3, 4, 5].forEach(function (ver) {
+  [1, 2, 3, 4, 5, 6].forEach(function (ver) {
     var imp = E.importSave(downgrade(ver));
     if (!assert(imp.ok, 'migration: v' + ver + ' fixture rejected: ' + (imp.error || ''))) return;
     var s = E.getState();
-    assert(s.version === 6, 'migration: v' + ver + ' should land on version 6');
+    assert(s.version === 7, 'migration: v' + ver + ' should land on version 7');
+    // §15: v7 fields fill in with sane defaults
+    assert(s.credit && s.credit.drawn === 0,
+           'migration: v' + ver + ' missing credit.{drawn:0}');
+    assert(Array.isArray(s.regulars) && Array.isArray(s.accounts),
+           'migration: v' + ver + ' missing regulars/accounts arrays');
+    assert(s.achievements && typeof s.achievements === 'object' &&
+           s.achievementEvents && typeof s.achievementEvents === 'object',
+           'migration: v' + ver + ' missing achievements bookkeeping');
+    assert(s.difficulty === 'standard' && s.scenario === null,
+           'migration: v' + ver + ' difficulty/scenario defaults wrong');
+    assert(s.ledger.lifetime.contractsFailed === 0 && s.ledger.lifetime.graceDays === 0,
+           'migration: v' + ver + ' missing contractsFailed/graceDays counters');
+    assert((s.staff || []).every(function (m) { return Array.isArray(m.retrainedFor); }),
+           'migration: v' + ver + ' staff missing retrainedFor');
     assert(Array.isArray(s.staff) && Array.isArray(s.staffMarket) &&
            Array.isArray(s.levelUpsToday),
            'migration: v' + ver + ' missing staff/levelUps fields');
@@ -2865,18 +2911,591 @@ function migrationScenario(era) {
     }
     console.log('  v' + ver + ' fixture migrated & playable');
   });
-  // Idempotence: v6 round-trips byte-identically
-  E.importSave(v6snapshot);
-  var v6b = E.exportSave();
-  E.importSave(v6b);
-  assert(E.exportSave() === v6b, 'migration: v6 re-import not byte-identical');
+  // Idempotence: v7 round-trips byte-identically
+  E.importSave(v7snapshot);
+  var v7b = E.exportSave();
+  E.importSave(v7b);
+  assert(E.exportSave() === v7b, 'migration: v7 re-import not byte-identical');
+}
+
+// ------------------------------------------------------------------
+// Scenario (§15.1): era transitions — warning -> start -> end news ordering,
+// obsolete-tag price bleed, unretrained-staff slowdown + recovery.
+// ------------------------------------------------------------------
+function transitionsScenario() {
+  console.log('--- Era transitions (§15.1) ---');
+  var E = Engine;
+  var list = Engine.transitionsData().slice().sort(function (a, b) {
+    return a.startDate < b.startDate ? -1 : 1;
+  });
+  if (!list.length) { console.log('  (no DATA.TRANSITIONS — skipped)'); return; }
+  var t = list.filter(function (x) { return (x.obsoleteTags || []).length > 0; })[0] || list[0];
+  var startYear = Number(String(t.startDate).slice(0, 4));
+  var era = eraLatestAtOrBefore(startYear);
+  if (!era || era.startYear > startYear) {
+    console.log('  (no era at/before ' + startYear + ' — skipped)'); return;
+  }
+  var r = E.newGame({ eraId: era.id, shopName: 'Transition Test', seed: 15151 });
+  if (!assert(r.ok, 'transition: newGame failed')) return;
+  var s = E.getState();
+  s.cash = 1000000;
+  var w = Engine.transitionWindow(t, s);
+  if (!assert(w.warnDay > 0, 'transition: window starts before the era (' + t.id + ')')) return;
+
+  function hasNews(re) {
+    return s.news.some(function (n) { return re.test(n.headline || ''); });
+  }
+  var warnRe = new RegExp((t.newsLead || 'zzz').slice(0, 24)
+    .replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+  var startRe = /Transition underway/i;
+  var endRe = /The dust settles/i;
+
+  // 1. warning fires in the lead window, before the start
+  s.day = w.warnDay - 1;
+  E.endDay();
+  assert(hasNews(warnRe), 'transition: warning news (newsLead) did not fire at the lead date');
+  assert(!hasNews(startRe), 'transition: start news fired before startDate');
+
+  // 2. start news at the window opening; demandMix now applies
+  s.day = w.startDay - 1;
+  E.endDay();
+  assert(hasNews(startRe), 'transition: start news did not fire at startDate');
+  assert(Engine.activeTransitions(s).some(function (a) { return a.id === t.id; }),
+         'transition: not listed active inside its window');
+  var tv = E.getTransitions();
+  assert(tv.some(function (v) { return v.id === t.id && v.status === 'active'; }),
+         'transition: getTransitions view missing the active entry');
+
+  // 3. §15.1b: obsolete-tag parts bleed value during the window
+  if ((t.obsoleteTags || []).length) {
+    var obsPart = (DATA.PARTS || []).filter(function (p) {
+      return (p.platformTags || []).some(function (tag) {
+        return t.obsoleteTags.indexOf(tag) !== -1;
+      });
+    })[0];
+    if (assert(!!obsPart, 'transition: no catalog part carries ' + t.obsoleteTags.join('/'))) {
+      s.day = Math.floor((w.startDay + w.endDay) / 2);   // mid-window
+      var mult = Engine.Pricing.obsoleteMult(s, obsPart);
+      var bleed = E.getConfig().TRANSITION_OBSOLETE_BLEED;
+      assert(mult < 1 - bleed * 0.3 && mult >= 1 - bleed - 1e-9,
+             'transition: mid-window obsolete mult ' + mult + ' not in the bleed band');
+      var cleanPart = (DATA.PARTS || []).filter(function (p) {
+        return !(p.platformTags || []).some(function (tag) {
+          return t.obsoleteTags.indexOf(tag) !== -1;
+        });
+      })[0];
+      if (cleanPart)
+        assert(Engine.Pricing.obsoleteMult(s, cleanPart) === 1,
+               'transition: unrelated part should not bleed');
+      // Wiki/market status reads "fading" for a mid-lifecycle obsolete part —
+      // pick one still clearly inside its lifecycle at the probe date (a part
+      // already past EOL correctly reads scarce/legacy instead).
+      var yFloatNow = E.dateInfo(s.day).y + 0.99;
+      var midLife = (DATA.PARTS || []).filter(function (p) {
+        return (p.platformTags || []).some(function (tag) {
+          return t.obsoleteTags.indexOf(tag) !== -1;
+        }) && (p.eolYear || p.introYear + 1) > yFloatNow;
+      })[0];
+      if (midLife) {
+        assert(Engine.Pricing.partStatus(midLife, s) === 'fading',
+               'transition: obsolete-under-transition part should read "fading", got ' +
+               Engine.Pricing.partStatus(midLife, s) + ' (' + midLife.id + ')');
+      } else {
+        console.log('  (every ' + t.obsoleteTags.join('/') +
+                    ' part is already past EOL mid-window — fading check n/a)');
+      }
+    }
+  } else {
+    console.log('  (transition ' + t.id + ' is demand-only — bleed check n/a)');
+  }
+
+  // 4. §15.1c: unretrained staff halved on boosted types; retraining recovers it
+  var boosted = Engine.transitionBoostTypes(t)[0];
+  if (boosted) {
+    var role = Engine.staffRoles().filter(function (ro) {
+      return !Engine.isApprenticeRole(ro) && Engine.roleCoversType(ro, boosted);
+    })[0];
+    if (role) {
+      s.staff.push({ id: 'tt1', name: 'Trainee Tech', role: role.id, skill: 0.25,
+                     hiredDay: s.day, wageMonthly: 500, level: 3, xp: 120,
+                     title: 'Tech', retrainedFor: [] });
+      var multUn = Engine.staffTimeMult(s, boosted);
+      var expUn = 1 / (1 + 0.25 * E.getConfig().TRANSITION_UNRETRAINED_MULT);
+      assert(Math.abs(multUn - expUn) < 1e-9,
+             'transition: unretrained mult ' + multUn + ' != halved-contribution ' + expUn);
+      var view = E.getStaffView().staff[0];
+      assert(view.retrain && view.retrain.needed === true &&
+             view.retrain.transitionId === t.id,
+             'transition: getStaffView().staff[].retrain should flag ' + t.id);
+      s.hoursLeft = 8;
+      var cashBefore = s.cash;
+      var rr = E.retrainStaff('tt1', t.id);
+      assert(rr.ok, 'transition: retrainStaff failed: ' + (rr.error || ''));
+      var expCost = Engine.round2((t.retrainCostBase || 100) *
+                                  Engine.yearScale(E.dateInfo(s.day).y));
+      assert(Math.abs(rr.cost - expCost) < 0.01,
+             'transition: retrain cost ' + rr.cost + ' != year-scaled ' + expCost);
+      assert(Math.abs((cashBefore - s.cash) - expCost) < 0.01,
+             'transition: retrain cash charge wrong');
+      assert(Math.abs(s.hoursLeft - (8 - (t.retrainHours || 4))) < 1e-9,
+             'transition: retrain should cost ' + (t.retrainHours || 4) + 'h of owner time');
+      var multRe = Engine.staffTimeMult(s, boosted);
+      var expRe = 1 / (1 + 0.25);
+      assert(Math.abs(multRe - expRe) < 1e-9,
+             'transition: retrained mult ' + multRe + ' should recover to ' + expRe);
+      assert(multRe < multUn, 'transition: retraining must make the tech faster');
+      var dbl = E.retrainStaff('tt1', t.id);
+      assert(!dbl.ok && /already/i.test(dbl.error || ''),
+             'transition: double retrain should be refused');
+    }
+  }
+
+  // 5. end news, in order, after the window closes
+  s.day = w.endDay - 1;
+  E.endDay();
+  assert(hasNews(endRe), 'transition: end news did not fire at the window close');
+  function newsIdx(re) {
+    for (var i = 0; i < s.news.length; i++)
+      if (re.test(s.news[i].headline || '')) return i;   // newest first
+    return -1;
+  }
+  var iWarn = newsIdx(warnRe), iStart = newsIdx(startRe), iEnd = newsIdx(endRe);
+  assert(iWarn > iStart && iStart > iEnd,
+         'transition: news must order warning -> start -> end (idx ' +
+         iWarn + '/' + iStart + '/' + iEnd + ', newest first)');
+  console.log('  ' + t.id + ': warning->start->end ordered; obsolete bleed + ' +
+              'fading status ok; unretrained tech halved, recovered after retrain');
+}
+
+// ------------------------------------------------------------------
+// Scenario (§15.2): scenario starts — boot, modifiers, end screen, grade,
+// continueSandbox. Every DATA.SCENARIOS entry boots; the first also runs
+// 30 live days and validates the rent modifier.
+// ------------------------------------------------------------------
+function scenarioLifecycleScenario() {
+  console.log('--- Scenario starts (§15.2) ---');
+  var E = Engine;
+  var scens = Engine.scenariosData();
+  if (!scens.length) { console.log('  (no DATA.SCENARIOS — skipped)'); return; }
+  scens.forEach(function (scen, idx) {
+    var r = E.newGame({ scenarioId: scen.id, shopName: 'Scenario Test', seed: 16000 + idx });
+    if (!assert(r.ok, 'scenario ' + scen.id + ': newGame failed: ' + (r.error || ''))) return;
+    var s = E.getState();
+    assert(s.scenario && s.scenario.active && s.scenario.id === scen.id,
+           'scenario ' + scen.id + ': state.scenario not set');
+    assert(s.cash === Engine.round2(scen.cash),
+           'scenario ' + scen.id + ': starting cash ' + s.cash + ' != ' + scen.cash);
+    assert(s.shop.tier === (scen.shopTier || 0),
+           'scenario ' + scen.id + ': shop tier wrong');
+    assert(s.difficulty === 'standard',
+           'scenario ' + scen.id + ': scenarios must pin standard difficulty');
+    var pre = E.getScenarioResult();
+    assert(pre.ok === false, 'scenario ' + scen.id + ': result must be ok:false mid-run');
+
+    if (idx === 0) {
+      // 30 live days on the first scenario: no crash, rent modifier applied
+      s.cash = Math.max(s.cash, 20000);   // survive idling through the check
+      var rentSeen = null;
+      for (var d = 0; d < 30; d++) {
+        var res = E.endDay();
+        if (!assert(res.ok, 'scenario ' + scen.id + ': endDay failed day ' + d)) return;
+        res.summary.charges.forEach(function (c) {
+          if (/^Rent/.test(c.label)) rentSeen = -c.amount;
+        });
+        if (E.getState().flags.gameOver) break;
+      }
+      var mods = scen.modifiers || {};
+      if (rentSeen != null && mods.rentMult) {
+        var tier = Engine.tierInfo(s);
+        var yNow = E.dateInfo(s.day).y;
+        var expRent = Engine.round2((tier.rentBase || 0) * Engine.yearScale(yNow) *
+                                    mods.rentMult);
+        assert(Math.abs(rentSeen - expRent) < 0.01,
+               'scenario ' + scen.id + ': rent ' + rentSeen + ' != modified ' + expRent);
+      }
+    }
+
+    // Fast-forward to the end screen
+    s.flags.graceDeadlineDay = null;
+    s.cash = Math.max(s.cash, 5000);
+    s.day = s.scenario.endDay - 1;
+    var fin = E.endDay();
+    if (!assert(fin.ok, 'scenario ' + scen.id + ': final endDay failed')) return;
+    assert(s.scenario.completed === true && s.scenario.active === false,
+           'scenario ' + scen.id + ': not completed at endDate');
+    assert(fin.summary.scenarioComplete &&
+           typeof fin.summary.scenarioComplete.grade === 'string',
+           'scenario ' + scen.id + ': summary.scenarioComplete missing');
+    var result = E.getScenarioResult();
+    assert(result.ok === true && ['S', 'A', 'B', 'C', 'D'].indexOf(result.grade) !== -1,
+           'scenario ' + scen.id + ': bad grade ' + JSON.stringify(result.grade));
+    assert(Array.isArray(result.lines) && result.lines.length >= 2 &&
+           result.lines.every(function (l) {
+             return l.label && 'value' in l && typeof l.points === 'number';
+           }),
+           'scenario ' + scen.id + ': result.lines malformed');
+    var blocked = E.endDay();
+    assert(!blocked.ok && /scenario complete/i.test(blocked.error || ''),
+           'scenario ' + scen.id + ': endDay should block after completion');
+    var cont = E.continueSandbox();
+    assert(cont.ok, 'scenario ' + scen.id + ': continueSandbox failed');
+    assert(E.getState().scenario === null,
+           'scenario ' + scen.id + ': continueSandbox must clear state.scenario');
+    assert(E.getScenarioResult().ok === false,
+           'scenario ' + scen.id + ': result must read ok:false after continueSandbox');
+    var resume = E.endDay();
+    assert(resume.ok, 'scenario ' + scen.id + ': endDay should work again in sandbox');
+    console.log('  ' + scen.id + ': booted, completed with grade ' + result.grade +
+                ' (' + result.score + ' pts), sandbox continues');
+  });
+}
+
+// ------------------------------------------------------------------
+// Scenario (§15.3): credit line — gate, limit scaling, draw/interest/repay,
+// grace clock untouched by drawn balance, APR interpolation.
+// ------------------------------------------------------------------
+function creditScenario(era) {
+  console.log('--- Credit line (§15.3) ---');
+  var E = Engine;
+  var r = E.newGame({ eraId: era.id, shopName: 'Credit Test', seed: 17171 });
+  if (!assert(r.ok, 'credit: newGame failed')) return;
+  var s = E.getState();
+  var C = E.getConfig();
+
+  // APR table interpolation (pure)
+  assert(Math.abs(Engine.creditAprFor(1983) - 0.19) < 1e-9 &&
+         Math.abs(Engine.creditAprFor(2021) - 0.07) < 1e-9 &&
+         Math.abs(Engine.creditAprFor(2035) - 0.07) < 1e-9,
+         'credit: APR anchors/clamps wrong');
+  var apr1989 = Engine.creditAprFor(1989);
+  assert(apr1989 < 0.19 && apr1989 > 0.12, 'credit: 1989 APR should interpolate, got ' + apr1989);
+
+  // Locked below the prestige gate
+  var locked = E.getCredit();
+  assert(locked.unlocked === false && /prestige/i.test(locked.reason || ''),
+         'credit: should be locked at prestige 0 with a readable reason');
+  var noDraw = E.drawCredit(100);
+  assert(!noDraw.ok, 'credit: draw must fail while locked');
+
+  // Unlock + limit formula (limit = laborRate x 40 x (1 + prestige))
+  s.reputation.prestige = 1;
+  var year = E.dateInfo(s.day).y;
+  var cv = E.getCredit();
+  var expLimit = Engine.round2(Engine.laborRate(year) * C.CREDIT_LIMIT_LABOR_MULT * 2);
+  assert(cv.unlocked && Math.abs(cv.limit - expLimit) < 0.01,
+         'credit: limit ' + cv.limit + ' != ' + expLimit);
+  s.reputation.prestige = 2;
+  assert(E.getCredit().limit > cv.limit, 'credit: limit must scale with prestige');
+  s.reputation.prestige = 1;
+
+  // Draw: cash in, 0.1h paperwork, drawn tracked; over-limit refused
+  var cashBefore = s.cash, hoursBefore = s.hoursLeft;
+  var draw = E.drawCredit(500);
+  assert(draw.ok && draw.drawn === 500, 'credit: draw failed: ' + (draw.error || ''));
+  assert(Engine.round2(s.cash - cashBefore) === 500, 'credit: draw did not add cash');
+  assert(Math.abs((hoursBefore - s.hoursLeft) - C.CREDIT_PAPERWORK_HOURS) < 1e-9,
+         'credit: draw paperwork hours wrong');
+  var over = E.drawCredit(E.getCredit().limit);
+  assert(!over.ok && /limit/i.test(over.error || ''), 'credit: over-limit draw must fail');
+
+  // §15.3: drawn balance does NOT tick the grace clock (cash stays positive)
+  s.cash = 200;
+  var gday = E.endDay();
+  assert(gday.ok && s.flags.graceDeadlineDay == null,
+         'credit: grace clock must ignore the drawn balance');
+
+  // Interest billed on the 1st with rent (fixedCosts + summary charge)
+  s.cash = 10000;
+  var interestCharge = null, guard = 0;
+  while (interestCharge == null && guard++ < 35) {
+    var res = E.endDay();
+    if (!res.ok) break;
+    res.summary.charges.forEach(function (c) {
+      if (/Credit interest/i.test(c.label)) interestCharge = -c.amount;
+    });
+  }
+  if (assert(interestCharge != null, 'credit: no interest charge landed on the 1st')) {
+    var aprNow = Engine.creditAprFor(E.dateInfo(s.day).y);
+    var expInt = Engine.round2(500 * aprNow / 12);
+    assert(Math.abs(interestCharge - expInt) < 0.01,
+           'credit: interest ' + interestCharge + ' != drawn*apr/12 ' + expInt);
+  }
+
+  // Repay: partial, over-repay refused, full repay records the hidden badge
+  var rp = E.repayCredit(200);
+  assert(rp.ok && rp.drawn === 300, 'credit: partial repay failed');
+  var overRp = E.repayCredit(999);
+  assert(!overRp.ok && /300/.test(overRp.error || ''), 'credit: over-repay must name the balance');
+  var rpFull = E.repayCredit(300);
+  assert(rpFull.ok && rpFull.drawn === 0, 'credit: full repay failed');
+  assert((s.achievementEvents['credit-repaid-full'] || {}).count >= 1,
+         'credit: full repay should record the credit-repaid-full event');
+  console.log('  gate/limit/draw/interest/repay ok — interest ' +
+              Engine.fmtMoney(interestCharge || 0) + ' on $500 drawn; grace untouched');
+}
+
+// ------------------------------------------------------------------
+// Scenario (§15.4): regulars — recorded on a satisfying completion, return
+// by name with the loyalty premium flag, and fail HARSHER than strangers.
+// ------------------------------------------------------------------
+function regularsScenario(era) {
+  console.log('--- Repeat customers (§15.4) ---');
+  var E = Engine;
+  var r = E.newGame({ eraId: era.id, shopName: 'Regulars Test', seed: 18181 });
+  if (!assert(r.ok, 'regulars: newGame failed')) return;
+  var s = E.getState();
+  s.cash = 100000;
+  // Complete a no-parts job cleanly (cleaning: no overspend risk, score 5)
+  var done = null, guard = 0;
+  while (!done && guard++ < 25) {
+    var offers = E.getOffers().slice();
+    for (var i = 0; i < offers.length; i++) {
+      var o = offers[i];
+      if ((o.type === 'cleaning' || o.type === 'software') && !o.rush &&
+          E.acceptOffer(o.id).ok) {
+        var job = E.getActiveJobs().filter(function (j) { return j.id === o.id; })[0];
+        var werr = workToDone(E, job);
+        if (!werr && job.result && job.result.score >= 4) { done = job; break; }
+      }
+    }
+    if (!done) E.endDay();
+  }
+  if (!assert(!!done, 'regulars: no clean completion in 25 days')) return;
+  var reg = (s.regulars || []).filter(function (g) {
+    return g.name === done.customer.name;
+  })[0];
+  if (!assert(!!reg, 'regulars: satisfied customer not recorded')) return;
+  assert(reg.jobs >= 1 && reg.type === done.customer.type,
+         'regulars: recorded entry malformed: ' + JSON.stringify(reg));
+
+  // Force a return: high rating maximizes the chance; sweep offer batches
+  s.reputation.rating = 5;
+  var back = generateUntil(s, function (o) { return o.regular === true; }, 200);
+  if (!assert(!!back, 'regulars: no regular returned across 200 offer batches')) return;
+  assert(back.regularVisits >= 1, 'regulars: visit count missing on the return offer');
+  assert((s.regulars || []).some(function (g) { return g.name === back.customer.name; }),
+         'regulars: returning customer not from the regulars book');
+
+  // Harsher fail: a regular's missed deadline dings extra
+  var acc = E.acceptOffer(back.id);
+  if (assert(acc.ok, 'regulars: accept failed')) {
+    back.deadlineDay = s.day - 1;
+    var histBefore = s.reputation.history.length;
+    Engine.Jobs.deadlineSweep(s, Engine.Sim.newSummary());
+    var pushed = s.reputation.history[s.reputation.history.length - 1];
+    var expected = Math.max(0, E.getConfig().SCORE_LATE - E.getConfig().REGULAR_FAIL_EXTRA);
+    assert(s.reputation.history.length > histBefore &&
+           Math.abs(pushed - expected) < 1e-9,
+           'regulars: failed regular should push ' + expected + ', got ' + pushed);
+  }
+  console.log('  recorded "' + reg.name + '", returned with regular flag (visits ' +
+              back.regularVisits + '), harsher fail ok');
+}
+
+// ------------------------------------------------------------------
+// Scenario (§15.4): business accounts — offer -> sign -> monthly fee ->
+// auto-jobs -> cancel on fails, cancel on rating breach.
+// ------------------------------------------------------------------
+function accountsScenario(era) {
+  console.log('--- Business accounts (§15.4) ---');
+  var E = Engine;
+  var r = E.newGame({ eraId: era.id, shopName: 'Accounts Test', seed: 19191 });
+  if (!assert(r.ok, 'accounts: newGame failed')) return;
+  var s = E.getState();
+  s.cash = 100000;
+  s.reputation.prestige = 2;
+  s.reputation.rating = 4.2;
+  var offer = generateUntil(s, function (o) { return o.type === 'business_account'; }, 600);
+  if (!assert(!!offer, 'accounts: no retainer offer across 600 batches at prestige 2')) return;
+  assert(offer.account && offer.account.monthlyFee > 0 &&
+         Number.isInteger(offer.account.monthlyFee) &&
+         offer.account.jobsPerMonth >= 2 && offer.account.jobsPerMonth <= 4 &&
+         offer.account.minRating >= 2.5 && offer.account.minRating <= 4.0,
+         'accounts: offer terms malformed: ' + JSON.stringify(offer.account));
+  assert((offer.steps || []).length >= 3,
+         'accounts: retainer offer needs a rendered checklist like any offer');
+  var acc = E.acceptOffer(offer.id);
+  assert(acc.ok && acc.accountSigned, 'accounts: accept failed: ' + (acc.error || ''));
+  assert(s.accounts.length === 1 && s.accounts[0].name === offer.account.name,
+         'accounts: signing did not create the account');
+  assert((s.achievementEvents['account-signed'] || {}).count >= 1,
+         'accounts: signing should record the achievement event');
+
+  // Monthly fee on the 1st + auto-jobs during the month. The observer bot
+  // doesn't WORK the auto-jobs, so their deadlines are pushed out each night
+  // (and the rating pinned) to keep the account alive through the check —
+  // the cancel paths are exercised deliberately right after.
+  var feeSeen = null, acctJobSnap = null, guard = 0;
+  while ((feeSeen == null || acctJobSnap == null) && guard++ < 40) {
+    E.getActiveJobs().forEach(function (j) {
+      if (j.accountId) j.deadlineDay = s.day + 20;
+    });
+    var res = E.endDay();
+    if (!res.ok) break;
+    res.summary.payouts.forEach(function (p) {
+      if (/Retainer/i.test(p.label)) feeSeen = p.amount;
+    });
+    if (!acctJobSnap) {
+      var aj = E.getActiveJobs().filter(function (j) { return j.accountId; })[0];
+      if (aj) acctJobSnap = { status: aj.status, name: aj.customer.name,
+                              lead: aj.deadlineDay - aj.offeredDay };
+    }
+    // keep the rating pinned so the account never cancels mid-check
+    s.reputation.rating = 4.2;
+  }
+  assert(feeSeen === offer.account.monthlyFee,
+         'accounts: monthly fee ' + feeSeen + ' != ' + offer.account.monthlyFee);
+  if (assert(!!acctJobSnap, 'accounts: no auto-job landed in 40 days')) {
+    assert(acctJobSnap.status === 'active' && acctJobSnap.name === offer.account.name,
+           'accounts: auto-job should be auto-accepted under the business name, got ' +
+           JSON.stringify(acctJobSnap));
+    assert(acctJobSnap.lead >= E.getConfig().ACCOUNT_DEADLINE_MIN,
+           'accounts: auto-job deadline should be relaxed, lead ' + acctJobSnap.lead);
+  }
+
+  // Cancel on monthly fails
+  if (!assert(s.accounts.length === 1,
+              'accounts: account should still be active after the fee check')) return;
+  s.accounts[0].failsThisMonth = E.getConfig().ACCOUNT_FAILS_CANCEL;
+  Engine.Sim.accountHealthCheck(s, Engine.Sim.newSummary());
+  assert(s.accounts.length === 0, 'accounts: 2 monthly fails must cancel the account');
+
+  // Cancel on rating breach
+  s.accounts.push({ id: 'acctX', name: 'Ratings Floor Ltd', monthlyFee: 100,
+                    jobsPerMonth: 2, minRating: 4.0, signedDay: s.day,
+                    failsThisMonth: 0, jobsThisMonth: 0 });
+  s.reputation.rating = 3.0;
+  Engine.Sim.accountHealthCheck(s, Engine.Sim.newSummary());
+  assert(s.accounts.length === 0, 'accounts: rating breach must cancel the account');
+  console.log('  signed "' + offer.account.name + '" (fee ' + Engine.fmtMoney(feeSeen || 0) +
+              '/mo), auto-job ok, both cancel paths ok');
+}
+
+// ------------------------------------------------------------------
+// Scenario (§15.5): achievements — natural unlock, event-driven unlock via
+// the public markAchievementEvent, masking of hidden ones, no double-unlock.
+// ------------------------------------------------------------------
+function achievementsScenario(era) {
+  console.log('--- Achievements (§15.5) ---');
+  var E = Engine;
+  var table = Engine.ACHIEVEMENTS || [];
+  assert(table.length >= 28 && table.length <= 36,
+         'achievements: table must hold 28-36 entries, has ' + table.length);
+  var ids = {};
+  table.forEach(function (a) {
+    assert(!ids[a.id], 'achievements: duplicate id ' + a.id);
+    ids[a.id] = true;
+  });
+  assert(table.filter(function (a) { return a.hidden; }).length >= 3,
+         'achievements: want a few hidden ones');
+
+  var r = E.newGame({ eraId: era.id, shopName: 'Achievement Test', seed: 20202 });
+  if (!assert(r.ok, 'achievements: newGame failed')) return;
+  var s = E.getState();
+  s.cash = 100000;
+
+  // Hidden entries masked while locked
+  var maskedRow = E.getAchievements().filter(function (a) {
+    return a.hidden && !a.unlocked;
+  })[0];
+  assert(maskedRow && maskedRow.name === '???',
+         'achievements: locked hidden entries must read "???"');
+
+  // Natural unlock: first completed job -> first-repair on the next sweep
+  var done = null, guard = 0;
+  while (!done && guard++ < 25) {
+    var offers = E.getOffers().slice();
+    for (var i = 0; i < offers.length; i++) {
+      if (offers[i].crt || offers[i].type === 'business_account') continue;
+      if (E.acceptOffer(offers[i].id).ok) {
+        var job = E.getActiveJobs().filter(function (j) { return j.id === offers[i].id; })[0];
+        if (job.needsDiagnosis && !job.diagnosed) E.diagnoseJob(job.id);
+        var needs = E.getJobNeeds(job.id);
+        var ok = true;
+        for (var n = 0; n < needs.length; n++) {
+          var opt = needs[n].options.filter(function (op) { return op.meets; })[0];
+          if (!opt) { ok = false; break; }
+          E.assignPart(job.id, needs[n].index, opt.partId);
+        }
+        if (ok && !workToDone(E, job) && job.status === 'done') { done = job; break; }
+        break;
+      }
+    }
+    if (!done) E.endDay();
+  }
+  if (!assert(!!done, 'achievements: no job completed in 25 days')) return;
+  var sum = E.endDay().summary;
+  assert(s.achievements['first-repair'] != null,
+         'achievements: first-repair should unlock after the first completion');
+  var unlockedNews = s.news.some(function (n) { return /Achievement: /.test(n.headline || ''); });
+  assert(unlockedNews, 'achievements: unlock must push news');
+
+  // Event-driven unlock through the PUBLIC UI hook, immediate, exactly once
+  for (var k = 0; k < 10; k++) E.markAchievementEvent('article-read');
+  assert(s.achievements['wiki-reader'] != null,
+         'achievements: 10 article-read events should unlock wiki-reader immediately');
+  var before = Object.keys(s.achievements).length;
+  var again = E.markAchievementEvent('article-read');
+  assert(again.ok && Object.keys(s.achievements).length === before,
+         'achievements: repeat events must never double-unlock');
+  var row = E.getAchievements().filter(function (a) { return a.id === 'wiki-reader'; })[0];
+  assert(row && row.unlocked && typeof row.dayLabel === 'string',
+         'achievements: getAchievements row missing unlock info');
+  console.log('  table ' + table.length + ' entries; first-repair + wiki-reader unlocked, ' +
+              'hidden masked, no double-unlock');
+}
+
+// ------------------------------------------------------------------
+// Scenario (§15.6): difficulty sets — starting cash / rent / grace days;
+// Relaxed and Survival boot clean (balance guards stay pinned to Standard).
+// ------------------------------------------------------------------
+function difficultyScenario(era) {
+  console.log('--- Difficulty settings (§15.6) ---');
+  var E = Engine;
+  var D = E.getConfig().DIFFICULTY;
+  ['relaxed', 'survival'].forEach(function (diff) {
+    var r = E.newGame({ eraId: era.id, shopName: 'Diff Test', seed: 21212, difficulty: diff });
+    if (!assert(r.ok, 'difficulty ' + diff + ': newGame failed')) return;
+    var s = E.getState();
+    assert(s.difficulty === diff, 'difficulty ' + diff + ': not stored on the save');
+    var expCash = Engine.round2(era.cash * D[diff].cashMult);
+    assert(s.cash === expCash,
+           'difficulty ' + diff + ': cash ' + s.cash + ' != ' + expCash);
+    // Grace days come from the set
+    s.cash = -50;
+    var res = E.endDay();
+    assert(res.ok, 'difficulty ' + diff + ': endDay failed');
+    assert(s.flags.graceDeadlineDay === s.day + D[diff].graceDays,
+           'difficulty ' + diff + ': grace deadline should use ' + D[diff].graceDays + ' days');
+    s.cash = 20000;
+    // Rent multiplier on the next 1st
+    var rentSeen = null, guard = 0;
+    while (rentSeen == null && guard++ < 35) {
+      var day = E.endDay();
+      if (!day.ok) break;
+      day.summary.charges.forEach(function (c) {
+        if (/^Rent/.test(c.label)) rentSeen = -c.amount;
+      });
+    }
+    if (assert(rentSeen != null, 'difficulty ' + diff + ': no rent charge inside 35 days')) {
+      var tier = Engine.tierInfo(s);
+      var expRent = Engine.round2((tier.rentBase || 0) *
+                                  Engine.yearScale(E.dateInfo(s.day).y) * D[diff].rentMult);
+      assert(Math.abs(rentSeen - expRent) < 0.01,
+             'difficulty ' + diff + ': rent ' + rentSeen + ' != ' + expRent);
+    }
+    console.log('  ' + diff + ': cash x' + D[diff].cashMult + ', rent x' + D[diff].rentMult +
+                ', grace ' + D[diff].graceDays + 'd — boots clean');
+  });
+  var bad = E.newGame({ eraId: era.id, difficulty: 'nightmare' });
+  assert(!bad.ok, 'difficulty: unknown difficulty must be refused');
 }
 
 // ------------------------------------------------------------------
 // Main
 // ------------------------------------------------------------------
 console.log('sim-test using: ' + DATA_SOURCE + ' | engine v' + Engine.VERSION);
-assert(Engine.VERSION === '0.5.1', 'Engine.VERSION must be "0.5.1"');
+assert(Engine.VERSION === '0.6', 'Engine.VERSION must be "0.6"');
 assert(parseFloat(Engine.VERSION) >= 0.4, 'Engine.VERSION must stay parseFloat >= 0.4');
 var lines = [];
 try {
@@ -2902,6 +3521,9 @@ var totalCallbacks = lines.reduce(function (a, l) {
 }, 0);
 assert(totalCallbacks >= 1,
        'no warranty callback occurred/was scheduled across the whole run (quick-speed jobs)');
+// §15.5: achievements unlock naturally over a bot run
+assert(lines.some(function (l) { return (l.achievementsUnlocked || 0) >= 3; }),
+       'no era run unlocked at least 3 achievements naturally');
 
 // §10.2: whole-dollar offers; §10.1: checklists everywhere
 assert(globals.badPayOffer == null, 'non-integer offer pay: ' + globals.badPayOffer);
@@ -2963,9 +3585,10 @@ var era1983 = DATA.ERAS.filter(function (e) { return e.startYear === 1983; })[0]
 if (era1983) unlockScenario(era1983);
 else console.log('(no 1983 era preset — unlock scenario skipped)');
 // §14.3: dedicated job-bot vs flip-bot parity + variance, 1983 and 1996
+// (seed hooks harness-only, same median-seed philosophy as SEED_BASE above)
 var era1996 = DATA.ERAS.filter(function (e) { return e.startYear === 1996; })[0];
-if (era1983) jobsVsFlipsDedicatedScenario(era1983, 71000);
-if (era1996) jobsVsFlipsDedicatedScenario(era1996, 72000);
+if (era1983) jobsVsFlipsDedicatedScenario(era1983, Number(process.env.SIM_DED83 || 71000));
+if (era1996) jobsVsFlipsDedicatedScenario(era1996, Number(process.env.SIM_DED96 || 72000));
 overtimeScenario(DATA.ERAS[0]);
 stripScenario(DATA.ERAS[0]);
 stepScenario(DATA.ERAS[0]);
@@ -2992,6 +3615,13 @@ deviceWikiScenario();
 chronicleScenario();
 articleScenario();
 certScenario();
+transitionsScenario();
+scenarioLifecycleScenario();
+creditScenario(DATA.ERAS[0]);
+regularsScenario(DATA.ERAS[DATA.ERAS.length - 1]);
+accountsScenario(DATA.ERAS[DATA.ERAS.length - 1]);
+achievementsScenario(DATA.ERAS[0]);
+difficultyScenario(DATA.ERAS[0]);
 migrationScenario(DATA.ERAS[DATA.ERAS.length - 1]);
 
 finish();

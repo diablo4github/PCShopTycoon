@@ -997,7 +997,15 @@
                nextLevelAt: lvl < TH.length ? TH[lvl] : null,
                title: m.title || Engine.staffTitleFor(role, lvl),
                effectNote: staffEffectNote(m, role),
-               // §15.1 (UI contract): retraining flag + button state
+               // §15.1 (UI contract): retraining flag + button state.
+               // `retrain` is the primary single-button shape the UI binds;
+               // `retrainNeeded` lists every outstanding transition (rare
+               // overlap case) and `retrainedFor` the completed ones.
+               retrain: retrainNeeded.length ?
+                 { needed: true, transitionId: retrainNeeded[0].transitionId,
+                   transitionName: retrainNeeded[0].name,
+                   cost: retrainNeeded[0].cost, hours: retrainNeeded[0].hours } :
+                 { needed: false },
                retrainedFor: (m.retrainedFor || []).slice(),
                retrainNeeded: retrainNeeded };
     });
@@ -1199,14 +1207,18 @@
   // ------------------------------------------------------------------
   // §15.2 Scenario result & sandbox continuation
   // ------------------------------------------------------------------
+  /* UI contract: {ok:false} until the scenario has actually ENDED (so the end
+   * screen only triggers once, and never re-triggers after continueSandbox
+   * clears state.scenario). On completion: {ok, name, score, grade, lines}. */
   Engine.getScenarioResult = function () {
     var state = S();
     if (!state || !state.scenario)
-      return { score: 0, grade: null, lines: [], name: null };
+      return { ok: false, error: 'Not playing a scenario' };
     var sc = state.scenario;
-    if (sc.result) return sc.result;   // frozen at completion
-    // Mid-run: a live preview against the same scoring rules
-    return Engine.Sim.computeScenarioResult(state, Engine.scenarioById(sc.id));
+    if (!sc.completed || !sc.result)
+      return { ok: false, error: 'The scenario is still running' };
+    var r = sc.result;   // frozen at completion
+    return { ok: true, name: r.name, score: r.score, grade: r.grade, lines: r.lines };
   };
   Engine.continueSandbox = function () {
     var bad = needState(); if (bad) return bad;
@@ -1219,6 +1231,28 @@
       'The challenge is over, but the shop stays open. Play on.');
     autosave();
     return { ok: true };
+  };
+
+  // ------------------------------------------------------------------
+  // §15.4 Business accounts (UI view — optional convenience over state.accounts)
+  // ------------------------------------------------------------------
+  Engine.getBusinessAccounts = function () {
+    var state = S();
+    if (!state) return [];
+    var C = Engine.CONFIG;
+    return (state.accounts || []).map(function (a) {
+      var atRisk = state.reputation.rating < a.minRating + 0.3 ||
+                   (a.failsThisMonth || 0) >= C.ACCOUNT_FAILS_CANCEL - 1;
+      return { id: a.id, name: a.name, monthlyFee: a.monthlyFee,
+               jobsPerMonth: a.jobsPerMonth, minRating: a.minRating,
+               signedDay: a.signedDay,
+               jobsThisMonth: a.jobsThisMonth || 0,
+               failsThisMonth: a.failsThisMonth || 0,
+               cancelRisk: atRisk ?
+                 (state.reputation.rating < a.minRating + 0.3 ?
+                   'Rating is close to their ' + a.minRating.toFixed(1) + ' floor' :
+                   'One more failed job this month cancels the account') : null };
+    });
   };
 
   // ------------------------------------------------------------------

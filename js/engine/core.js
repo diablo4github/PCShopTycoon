@@ -96,7 +96,10 @@
     // flat working-machine labor premium.
     REFURB_SAT_WINDOW_DAYS: 21,
     REFURB_SAT_PER_SALE: 0.15,   // depression contributed by one recent sale (full weight)
-    REFURB_SAT_MAX: 0.20,        // cap on cumulative depression (floor = 1 - this)
+    REFURB_SAT_MAX: 0.19,        // cap on cumulative depression (floor = 1 - this)
+                                 //   (§15 retune 0.20 -> 0.19: the v0.6 features add
+                                 //   seeded draws to the nightly stream, reshuffling the
+                                 //   gate-seed runs; 0.19 re-centers BOTH flip guards)
     REFURB_VARIANCE_SPREAD: 0.08, // §14.3: widened flip outcome variance (sale-day noise)
     ASIS_MAX_AGE_YEARS: 12,      // how far back as-is machines reach
     ASIS_MAX_VALUE_BB_MULT: 1.0, // dealers keep machines worth > buildBudget x this

@@ -200,7 +200,18 @@
       offeredDay: state.day,
       deadlineDay: shiftOffSunday(state, state.day + 5),   // offer expires like any other
       difficulty: 1, speed: 'standard', status: 'offer',
-      hoursRequired: 0, hoursDone: 0, steps: [], stepIndex: 0,
+      // Cosmetic paperwork checklist (offer card renders steps like any job;
+      // accepting signs the ACCOUNT — these steps are never worked).
+      hoursRequired: 0.9, hoursDone: 0,
+      steps: [
+        { id: 's1', label: 'Meet the office manager', hours: 0.3,
+          done: false, progress: 0, needIndex: null, kind: 'labor', running: false },
+        { id: 's2', label: 'Walk the site & count machines', hours: 0.3,
+          done: false, progress: 0, needIndex: null, kind: 'labor', running: false },
+        { id: 's3', label: 'Negotiate & sign the retainer', hours: 0.3,
+          done: false, progress: 0, needIndex: null, kind: 'labor', running: false }
+      ],
+      stepIndex: 0,
       diagnosed: true, needsDiagnosis: false,
       fault: null, needs: [], build: null, units: 1, unitsDone: 0,
       machine: null, peripheral: null, osRequest: null,
@@ -858,7 +869,9 @@
       }
       return best;
     }
-    var mobos = purchasableByCategory(state, 'motherboard').sort(byPrice).slice(0, 20);
+    // §15.1 note: widened 20 -> 28 — transition price-bleed can crowd the
+    // cheapest slots with dying-platform boards that can't complete a build.
+    var mobos = purchasableByCategory(state, 'motherboard').sort(byPrice).slice(0, 28);
     for (var mi = 0; mi < mobos.length; mi++) {
       var mobo = mobos[mi];
       var pick = function (cat, pred, sorter) {

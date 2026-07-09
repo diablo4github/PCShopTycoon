@@ -80,6 +80,50 @@
     return mult;
   };
 
+  /* §15.1: accelerated decay for parts on a dying platform. For every
+   * transition whose obsoleteTags intersect the part's platformTags, value
+   * bleeds linearly over the window toward (1 - TRANSITION_OBSOLETE_BLEED),
+   * and STAYS there after the window closes — the old platform never recovers
+   * its price (the §5.2 post-EOL legacy/scarcity ramp still applies on top,
+   * years later). Deterministic from DATA + state.day; no bookkeeping. */
+  Pricing.obsoleteMult = function (state, part) {
+    if (!state || !part) return 1;
+    var list = Engine.transitionsData ? Engine.transitionsData() : [];
+    if (!list.length) return 1;
+    var tags = part.platformTags || [];
+    if (!tags.length) return 1;
+    var C = Engine.CONFIG;
+    var mult = 1;
+    for (var i = 0; i < list.length; i++) {
+      var t = list[i];
+      var obs = t.obsoleteTags || [];
+      if (!obs.length) continue;
+      var hit = false;
+      for (var j = 0; j < obs.length; j++)
+        if (tags.indexOf(obs[j]) !== -1) { hit = true; break; }
+      if (!hit) continue;
+      var w = Engine.transitionWindow(t, state);
+      if (state.day < w.startDay) continue;
+      var progress = Engine.clamp(
+        (state.day - w.startDay) / Math.max(1, w.endDay - w.startDay), 0, 1);
+      mult *= 1 - C.TRANSITION_OBSOLETE_BLEED * progress;
+    }
+    return mult;
+  };
+  // Is this part on a platform an ACTIVE transition is killing right now?
+  // (Drives the §15.1 market/wiki "fading" status.)
+  Pricing.obsoleteUnderTransition = function (state, part) {
+    if (!state || !part) return false;
+    var actives = Engine.activeTransitions ? Engine.activeTransitions(state) : [];
+    var tags = part.platformTags || [];
+    for (var i = 0; i < actives.length; i++) {
+      var obs = actives[i].obsoleteTags || [];
+      for (var j = 0; j < obs.length; j++)
+        if (tags.indexOf(obs[j]) !== -1) return true;
+    }
+    return false;
+  };
+
   /* Market price of a part today.
    * opts.buy: apply prestige buy discount (1 - 0.02*prestigeTier).
    * Returns a positive number, or 0 if the part is not yet released. */
@@ -90,7 +134,8 @@
     var age = Pricing.ageCurve(part, yearNow);
     if (age <= 0) return 0;
     var noise = state.market.noise[part.id] || 1;
-    var p = part.basePrice * age * Pricing.eventMult(state, part) * noise;
+    var p = part.basePrice * age * Pricing.eventMult(state, part) * noise *
+            Pricing.obsoleteMult(state, part);   // §15.1
     if (opts && opts.buy) {
       p *= (1 - Engine.CONFIG.PRESTIGE_BUY_DISCOUNT * (state.reputation.prestige || 0));
     }
@@ -173,7 +218,9 @@
         tags: (part.platformTags || []).slice(),
         perfLabel: perfLabel(part),
         scarce: yearNow > (part.eolYear || part.introYear + 1),
-        isNew: introAgeDays >= 0 && introAgeDays < C.NEW_BADGE_DAYS
+        isNew: introAgeDays >= 0 && introAgeDays < C.NEW_BADGE_DAYS,
+        // §15.1 (UI contract): lifecycle status incl. transition-driven "fading"
+        status: Pricing.partStatus(part, state)
       });
     }
     var catOrder = ['cpu', 'motherboard', 'ram', 'storage', 'gpu', 'psu', 'case',
@@ -217,7 +264,11 @@
     var eol = part.eolYear || part.introYear + 1;
     if (y <= eol) {
       var L = Math.max(1, eol - part.introYear);
-      return y >= part.introYear + 0.75 * L ? 'fading' : 'current';
+      if (y >= part.introYear + 0.75 * L) return 'fading';
+      // §15.1: a platform an active transition is killing reads "fading"
+      // even mid-lifecycle — the market knows the writing is on the wall.
+      if (Pricing.obsoleteUnderTransition(state, part)) return 'fading';
+      return 'current';
     }
     return isLegacy(part) ? 'scarce' : 'legacy';
   };

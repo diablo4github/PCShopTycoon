@@ -17,9 +17,11 @@
    * UI-local (non-game) state
    * ------------------------------------------------------------------ */
   UI.state = {
-    screen: 'newgame',        // 'newgame' | 'main' | 'gameover'
+    screen: 'newgame',        // 'newgame' | 'main' | 'gameover' | 'scenario'
     activeTab: 'offers',
     selectedEra: null,        // new-game screen selection
+    selectedScenario: null,   // §15.2 new-game scenario selection (mutually exclusive with era)
+    difficulty: 'standard',   // §15.6 sandbox difficulty: 'relaxed' | 'standard' | 'survival'
     shopName: '',             // new-game screen input value
     marketCat: 'all',         // Parts Market category filter
     marketSearch: '',         // Parts Market search text
@@ -78,6 +80,31 @@
       typeof Engine.getState === 'function');
   };
 
+  /** §15.6 — display label for a stored difficulty id ('' for absent /
+   * unknown, so pre-v0.6 saves and engines show nothing). */
+  UI.difficultyLabel = function (d) {
+    if (d === 'relaxed') return 'Relaxed';
+    if (d === 'standard') return 'Standard';
+    if (d === 'survival') return 'Survival';
+    return '';
+  };
+
+  /** §15.2 — display name for state.scenario: prefer an engine-provided
+   * name, else look the id up in DATA.SCENARIOS, else a generic label. */
+  UI.scenarioName = function (sc) {
+    if (!sc) return '';
+    if (sc.name) return String(sc.name);
+    try {
+      var list = window.DATA && DATA.SCENARIOS;
+      if (Array.isArray(list)) {
+        for (var i = 0; i < list.length; i++) {
+          if (list[i] && list[i].id === sc.id) return String(list[i].name || sc.id);
+        }
+      }
+    } catch (e) { /* ignore */ }
+    return String(sc.id || 'Scenario');
+  };
+
   /** Run an Engine call, converting thrown exceptions into {ok:false}. */
   UI.tryCall = function (fn) {
     try { return fn(); }
@@ -110,6 +137,7 @@
    */
   UI.act = function (fn, okMsg) {
     var before = null;
+    var achBefore = UI.achievementSnapshot(); // §15.5 (null if API absent)
     if (UI.engineReady()) {
       try {
         var st0 = Engine.getState();
@@ -127,7 +155,45 @@
         }
       } catch (e2) { /* ignore */ }
     }
+    if (res && res.ok !== false) UI.toastNewAchievements(achBefore);
     return UI.api(res, okMsg);
+  };
+
+  /* ------------------------------------------------------------------ *
+   * §15.5 — achievement-unlock toasts. Any UI.act mutation (finishing a
+   * job, buying a bench…) can unlock one; overnight unlocks arrive via
+   * summary.achievements in the morning modal instead. The table is ~30
+   * entries, so a before/after snapshot per action is cheap.
+   * ------------------------------------------------------------------ */
+
+  /** Set-like map of currently-unlocked achievement ids, or null when the
+   * engine has not shipped getAchievements yet. */
+  UI.achievementSnapshot = function () {
+    if (!(window.Engine && typeof Engine.getAchievements === 'function')) return null;
+    try {
+      var list = Engine.getAchievements() || [];
+      var ids = {};
+      for (var i = 0; i < list.length; i++) {
+        if (list[i] && list[i].unlocked) ids[list[i].id] = true;
+      }
+      return ids;
+    } catch (e) { return null; }
+  };
+
+  /** Toast every achievement unlocked since `beforeIds` (a snapshot). */
+  UI.toastNewAchievements = function (beforeIds) {
+    if (!beforeIds) return;
+    if (!(window.Engine && typeof Engine.getAchievements === 'function')) return;
+    try {
+      var list = Engine.getAchievements() || [];
+      for (var i = 0; i < list.length; i++) {
+        var a = list[i];
+        if (a && a.unlocked && !beforeIds[a.id]) {
+          UI.toast('🏆 Achievement unlocked: ' + (a.name || a.id), 'success', 6000);
+          if (UI.audio && UI.audio.sfx) UI.audio.sfx('complete');
+        }
+      }
+    } catch (e) { /* never let celebration break the action */ }
   };
 
   /** Spawn the §9.9 floating deltas / pip pulse for a cash & hours change. */
@@ -437,7 +503,7 @@
 
   UI.showScreen = function (name) {
     UI.state.screen = name;
-    ['newgame', 'main', 'gameover'].forEach(function (n) {
+    ['newgame', 'main', 'gameover', 'scenario'].forEach(function (n) {
       var el = document.getElementById('screen-' + n);
       if (el) el.hidden = (n !== name);
     });
@@ -482,6 +548,33 @@
         grace = ' <span class="grace" title="Get cash positive before the grace period ends">' + left + 'd grace</span>';
       }
       cashEl.innerHTML = UI.esc(UI.fm(st.cash)) + grace;
+      /* §15.3 — the tooltip discloses drawn credit so a healthy-looking cash
+       * number never hides a loan. */
+      var cashTip = 'Cash on hand';
+      if (window.Engine && typeof Engine.getCredit === 'function') {
+        try {
+          var cr = Engine.getCredit();
+          if (cr && (Number(cr.drawn) || 0) > 0) {
+            cashTip += ' — includes ' + UI.fm(cr.drawn) + ' drawn on your credit line (interest accrues monthly)';
+          }
+        } catch (eCr) { /* ignore */ }
+      }
+      cashEl.title = cashTip;
+    }
+
+    /* §15.2 — scenario countdown chip ("Y2K Rush — 214 days left"). */
+    var scEl = byId('hdr-scenario');
+    if (scEl) {
+      var scTxt = '';
+      var sc = st.scenario;
+      if (sc && sc.active !== false && sc.endDay !== null && sc.endDay !== undefined) {
+        var daysLeft = Math.max(0, Number(sc.endDay) - (Number(st.day) || 0));
+        scTxt = UI.scenarioName(sc) + ' — ' +
+          (daysLeft <= 0 ? 'final day' : daysLeft + ' day' + (daysLeft === 1 ? '' : 's') + ' left');
+        scEl.classList.toggle('urgent', daysLeft <= 30);
+      }
+      scEl.textContent = scTxt;
+      scEl.hidden = !scTxt;
     }
 
     var hoursEl = byId('hdr-hours');
@@ -504,7 +597,13 @@
     var presEl = byId('hdr-prestige');
     if (presEl) { presEl.textContent = presLabel; presEl.hidden = !presLabel; }
     var tierEl = byId('hdr-tier');
-    if (tierEl) { tierEl.textContent = tierName; tierEl.hidden = !tierName; }
+    if (tierEl) {
+      tierEl.textContent = tierName;
+      tierEl.hidden = !tierName;
+      /* §15.6 — surface the run's difficulty on the tier tooltip. */
+      var diffLabel = UI.difficultyLabel(st.difficulty);
+      tierEl.title = 'Shop tier' + (diffLabel ? ' — Difficulty: ' + diffLabel : '');
+    }
 
     var endBtn = byId('btn-endday');
     if (endBtn) endBtn.disabled = !!(st.flags && st.flags.gameOver);
@@ -596,6 +695,19 @@
       UI.showScreen('gameover');
       if (UI.tutorial && UI.tutorial.skip) UI.tutorial.skip(); // don't coach-mark a screen that's gone
       return;
+    }
+
+    /* §15.2 — scenario finished (bankruptcy above still wins): show the
+     * completion screen instead of the main game until the player picks
+     * New Game or Continue as sandbox. */
+    if (UI.screens && UI.screens.scenarioEndResult) {
+      var scRes = UI.screens.scenarioEndResult(st);
+      if (scRes) {
+        UI.screens.renderScenarioEnd(scRes, st);
+        UI.showScreen('scenario');
+        if (UI.tutorial && UI.tutorial.skip) UI.tutorial.skip();
+        return;
+      }
     }
 
     var di = null;

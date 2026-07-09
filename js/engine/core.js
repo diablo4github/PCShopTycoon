@@ -274,14 +274,58 @@
     CERT_PAY_MULT_CEIL: 1.6,        // combined cert pay mult never exceeds this
     CERT_CALLBACK_MULT_FLOOR: 0.4,  // combined cert callback mult never drops below this
     CERT_PRESTIGE_BONUS_CAP: 2,     // extra prestige tiers a full cert roster can grant
-    CERT_RELIABILITY_BONUS_CAP: 15  // extra "avg reliability" points certs can add
+    CERT_RELIABILITY_BONUS_CAP: 15, // extra "avg reliability" points certs can add
+
+    // §15.1 era transitions (DATA.TRANSITIONS drives which/when)
+    TRANSITION_WARN_LEAD_DAYS: 60,  // newsLead fires this many days before start
+    TRANSITION_OBSOLETE_BLEED: 0.5, // obsolete-tag parts lose up to this fraction of
+                                    // value, ramping over the window (permanent after)
+    TRANSITION_UNRETRAINED_MULT: 0.5, // staff contribution mult on boosted types until retrained
+    // §15.2 scenario grading: score thresholds for S/A/B/C (else D). Data
+    // scoring weights should be tuned so a solid run lands ~500-900 points.
+    SCENARIO_GRADES: [{ grade: 'S', min: 900 }, { grade: 'A', min: 700 },
+                      { grade: 'B', min: 500 }, { grade: 'C', min: 300 }],
+    // §15.3 credit line
+    CREDIT_PRESTIGE_MIN: 1,
+    CREDIT_LIMIT_LABOR_MULT: 40,    // limit = laborRate(year) x this x (1 + prestige)
+    CREDIT_APR_TABLE: { 1983: 0.19, 1995: 0.12, 2010: 0.08, 2021: 0.07 },  // interpolated
+    CREDIT_PAPERWORK_HOURS: 0.1,    // per draw/repay operation (overtime rules)
+    // §15.4 repeat customers
+    REGULAR_SCORE_MIN: 4,           // completion score that earns a spot in state.regulars
+    REGULARS_CAP: 30,
+    REGULAR_PAY_MULT: 1.10,         // loyalty premium on a returning regular's job
+    REGULAR_FAIL_EXTRA: 0.3,        // extra score reduction when a regular's job fails
+    REGULAR_CHANCE_BASE: 0.10,      // per-offer chance a regular returns, at rating 3...
+    REGULAR_CHANCE_PER_STAR: 0.06,  // ...plus this per rating point above 3, capped
+    REGULAR_CHANCE_MAX: 0.35,
+    REGULAR_TASTE_BONUS: 15,        // regulars' persistent taste bonusPct
+    // §15.4 business accounts
+    ACCOUNT_PRESTIGE_MIN: 2,
+    ACCOUNT_OFFER_CHANCE: 0.04,     // per night when eligible (~monthly)
+    ACCOUNT_MAX_ACTIVE: 3,
+    ACCOUNT_FEE_LABOR_MULT: 6,      // monthlyFee = laborRate(year) x this (whole $)
+    ACCOUNT_JOBS_MIN: 2, ACCOUNT_JOBS_MAX: 4,   // auto-jobs per month
+    ACCOUNT_MIN_RATING_DELTA: 0.7,  // minRating = clamp(rating - this, floor, cap)
+    ACCOUNT_MIN_RATING_FLOOR: 2.5, ACCOUNT_MIN_RATING_CAP: 4.0,
+    ACCOUNT_FAILS_CANCEL: 2,        // failed account jobs in a month -> cancel
+    ACCOUNT_CANCEL_SCORE: 1.5,      // rep hit pushed when an account cancels
+    ACCOUNT_DEADLINE_MIN: 5, ACCOUNT_DEADLINE_MAX: 10,  // relaxed deadlines
+    // §15.6 difficulty multiplier sets (sandbox eras; scenarios pin standard).
+    // Balance guards stay pinned to standard.
+    DIFFICULTY: {
+      relaxed:  { cashMult: 1.3, rentMult: 0.85, payMult: 1.1,  graceDays: 21,
+                  negEventMult: 0.7 },
+      standard: { cashMult: 1.0, rentMult: 1.0,  payMult: 1.0,  graceDays: 14,
+                  negEventMult: 1.0 },
+      survival: { cashMult: 0.8, rentMult: 1.15, payMult: 0.95, graceDays: 10,
+                  negEventMult: 1.3 }
+    }
   };
 
   // ------------------------------------------------------------------
   // Live state reference (set by api.js newGame/importSave)
   // ------------------------------------------------------------------
-  Engine.VERSION = '0.5.1';      // §14: parseFloat-compatible with the UI's >=0.4 gate;
-                                  // NO save-shape change — state.version stays 6
+  Engine.VERSION = '0.6';        // §15: parseFloat-compatible with the UI's >=0.4 gate
   Engine._state = null;
   Engine.getData = function () { return root.DATA || {}; };
 
@@ -556,6 +600,9 @@
       return { ok: false, error: 'Too exhausted — call it a day' };
     }
     state.hoursLeft = Engine.round1(state.hoursLeft - cost);   // §14.8: 0.1h grid
+    // §15.5: hitting the overtime floor exactly is achievement-worthy
+    if (state.hoursLeft <= -cap + 1e-9 && Engine.recordAchievementEvent)
+      Engine.recordAchievementEvent(state, 'overtime-floor');
     return { ok: true };
   };
   // Hours still spendable today including the overtime allowance.
@@ -645,13 +692,28 @@
   Engine.staffTimeMult = function (state, jobType) {
     var C = Engine.CONFIG;
     if (!state.staff || !state.staff.length) return 1;
+    // §15.1: during an active transition, staff who haven't retrained for it
+    // contribute at half effect on the job types the transition boosts.
+    var penaltyIds = [];
+    var actives = Engine.activeTransitions(state);
+    for (var a = 0; a < actives.length; a++) {
+      if (Engine.transitionBoostTypes(actives[a]).indexOf(jobType) !== -1)
+        penaltyIds.push(actives[a].id);
+    }
     var contribs = [];
     for (var i = 0; i < state.staff.length; i++) {
       var st = state.staff[i];
       var role = Engine.staffRoleById(st.role);
       if (!role) continue;
-      if (isApprenticeRole(role)) contribs.push(st.skill * C.APPRENTICE_EFFECT);
-      else if (roleCoversType(role, jobType)) contribs.push(st.skill);
+      var eff = null;
+      if (isApprenticeRole(role)) eff = st.skill * C.APPRENTICE_EFFECT;
+      else if (roleCoversType(role, jobType)) eff = st.skill;
+      if (eff == null) continue;
+      for (var p = 0; p < penaltyIds.length; p++) {
+        if ((st.retrainedFor || []).indexOf(penaltyIds[p]) === -1)
+          eff *= C.TRANSITION_UNRETRAINED_MULT;
+      }
+      contribs.push(eff);
     }
     if (!contribs.length) return 1;
     contribs.sort(function (a, b) { return b - a; });
@@ -886,4 +948,240 @@
     state.reputation.rating = Engine.round2(sum / h.length);
     return score;
   };
+
+  // ------------------------------------------------------------------
+  // §15.1 Era transitions — helpers over DATA.TRANSITIONS (tolerates the
+  // table being absent while the DATA workstream authors it).
+  // ------------------------------------------------------------------
+  Engine.transitionsData = function () {
+    var t = Engine.getData().TRANSITIONS;
+    return Array.isArray(t) ? t : [];
+  };
+  Engine.transitionById = function (id) {
+    var list = Engine.transitionsData();
+    for (var i = 0; i < list.length; i++) if (list[i].id === id) return list[i];
+    return null;
+  };
+  // {startDay, endDay, warnDay} in the state's day-index space.
+  Engine.transitionWindow = function (t, state) {
+    var startDay = Engine.dayIndexOfISO(t.startDate, state);
+    return {
+      startDay: startDay,
+      endDay: startDay + (t.durationDays || 365),
+      warnDay: startDay - Engine.CONFIG.TRANSITION_WARN_LEAD_DAYS
+    };
+  };
+  Engine.activeTransitions = function (state) {
+    if (!state) return [];
+    var out = [], list = Engine.transitionsData();
+    for (var i = 0; i < list.length; i++) {
+      var w = Engine.transitionWindow(list[i], state);
+      if (state.day >= w.startDay && state.day < w.endDay) out.push(list[i]);
+    }
+    return out;
+  };
+  // Job types this transition BOOSTS (demandMix mult > 1) — the set that
+  // gates staff retraining penalties (§15.1c).
+  Engine.transitionBoostTypes = function (t) {
+    var mix = (t && t.demandMix) || {}, out = [];
+    for (var k in mix) {
+      if (Object.prototype.hasOwnProperty.call(mix, k) && mix[k] > 1) out.push(k);
+    }
+    return out;
+  };
+
+  // ------------------------------------------------------------------
+  // §15.2 Scenarios — helpers over DATA.SCENARIOS (tolerates absence).
+  // ------------------------------------------------------------------
+  Engine.scenariosData = function () {
+    var s = Engine.getData().SCENARIOS;
+    return Array.isArray(s) ? s : [];
+  };
+  Engine.scenarioById = function (id) {
+    var list = Engine.scenariosData();
+    for (var i = 0; i < list.length; i++) if (list[i].id === id) return list[i];
+    return null;
+  };
+  // The DATA definition of the state's ACTIVE scenario (null in sandbox play,
+  // after completion, or if the table went missing).
+  Engine.currentScenario = function (state) {
+    if (!state || !state.scenario || !state.scenario.active) return null;
+    return Engine.scenarioById(state.scenario.id);
+  };
+  // §15.6: the difficulty multiplier set for this save (standard fallback).
+  Engine.difficultyFor = function (state) {
+    var D = Engine.CONFIG.DIFFICULTY;
+    return (state && D[state.difficulty]) || D.standard;
+  };
+
+  // ------------------------------------------------------------------
+  // §15.3 Credit line — era-appropriate APR from the CONFIG table, linearly
+  // interpolated between the anchor years (clamped outside the range).
+  // ------------------------------------------------------------------
+  Engine.creditAprFor = function (year) {
+    var table = Engine.CONFIG.CREDIT_APR_TABLE || {};
+    var years = Object.keys(table).map(Number).sort(function (a, b) { return a - b; });
+    if (!years.length) return 0.1;
+    if (year <= years[0]) return table[years[0]];
+    if (year >= years[years.length - 1]) return table[years[years.length - 1]];
+    for (var i = 0; i < years.length - 1; i++) {
+      if (year >= years[i] && year <= years[i + 1]) {
+        var f = (year - years[i]) / (years[i + 1] - years[i]);
+        return table[years[i]] + f * (table[years[i + 1]] - table[years[i]]);
+      }
+    }
+    return table[years[years.length - 1]];
+  };
+
+  // ------------------------------------------------------------------
+  // §15.5 Achievements — engine-defined table (no DATA dependency). Each
+  // entry: {id, name, desc, hidden?, check(state)}. Event-count-driven checks
+  // read state.achievementEvents (written via Engine.recordAchievementEvent —
+  // both engine internals and Engine.markAchievementEvent feed it).
+  // ------------------------------------------------------------------
+  Engine.recordAchievementEvent = function (state, tag) {
+    if (!state || !tag) return;
+    state.achievementEvents = state.achievementEvents || {};
+    var e = state.achievementEvents[tag] || { count: 0, lastDay: null };
+    e.count += 1;
+    e.lastDay = state.day;
+    state.achievementEvents[tag] = e;
+  };
+  function evCount(state, tag) {
+    var e = (state.achievementEvents || {})[tag];
+    return e ? e.count : 0;
+  }
+  function evLastDay(state, tag) {
+    var e = (state.achievementEvents || {})[tag];
+    return e ? e.lastDay : null;
+  }
+  Engine.ACHIEVEMENTS = [
+    { id: 'first-repair', name: 'Screwdriver Ready',
+      desc: 'Complete your first job.',
+      check: function (s) { return s.reputation.jobsCompleted >= 1; } },
+    { id: 'jobs-50', name: 'Regular Fixture',
+      desc: 'Complete 50 jobs.',
+      check: function (s) { return s.reputation.jobsCompleted >= 50; } },
+    { id: 'jobs-250', name: 'Neighborhood Institution',
+      desc: 'Complete 250 jobs.',
+      check: function (s) { return s.reputation.jobsCompleted >= 250; } },
+    { id: 'jobs-1000', name: 'A Life at the Bench',
+      desc: 'Complete 1,000 jobs.',
+      check: function (s) { return s.reputation.jobsCompleted >= 1000; } },
+    { id: 'first-flip', name: 'One Careful Owner',
+      desc: 'Sell your first refurbished machine.',
+      check: function (s) { return s.ledger.lifetime.refurbsSold >= 1; } },
+    { id: 'flips-25', name: 'Used-Market Mogul',
+      desc: 'Sell 25 refurbished machines.',
+      check: function (s) { return s.ledger.lifetime.refurbsSold >= 25; } },
+    { id: 'first-build', name: 'It POSTs!',
+      desc: 'Deliver your first custom build.',
+      check: function (s) { return s.ledger.lifetime.buildsDelivered >= 1; } },
+    { id: 'builds-50', name: 'Boutique Builder',
+      desc: 'Deliver 50 custom builds.',
+      check: function (s) { return s.ledger.lifetime.buildsDelivered >= 50; } },
+    { id: 'first-sli', name: 'Double Vision',
+      desc: 'Deliver a build with a matched multi-GPU pair.',
+      check: function (s) { return evCount(s, 'sli-build') >= 1; } },
+    { id: 'first-device', name: 'Beyond the Beige Box',
+      desc: 'Complete a device repair (Apple, phone, or tablet).',
+      check: function (s) { return evCount(s, 'device-repair') >= 1; } },
+    { id: 'first-strip', name: 'Organ Donor',
+      desc: 'Strip a machine for parts.',
+      check: function (s) { return evCount(s, 'strip') >= 1; } },
+    { id: 'first-cert', name: 'Framed on the Wall',
+      desc: 'Earn a certification.',
+      check: function (s) { return ((s.training || {}).certsEarned || []).length >= 1; } },
+    { id: 'certs-5', name: 'Alphabet Soup',
+      desc: 'Earn five certifications.',
+      check: function (s) { return ((s.training || {}).certsEarned || []).length >= 5; } },
+    { id: 'l5-employee', name: 'Master and Apprentice',
+      desc: 'Grow an employee to level 5.',
+      check: function (s) {
+        return (s.staff || []).some(function (m) { return (m.level || 1) >= 5; });
+      } },
+    { id: 'full-crew', name: 'Full House',
+      desc: 'Employ six staff at once.',
+      check: function (s) { return (s.staff || []).length >= 6; } },
+    { id: 'revenue-100k', name: 'Six Figures',
+      desc: 'Bank $100,000 of lifetime revenue.',
+      check: function (s) { return s.ledger.lifetime.revenue >= 100000; } },
+    { id: 'revenue-1m', name: 'The Million-Dollar Bench',
+      desc: 'Bank $1,000,000 of lifetime revenue.',
+      check: function (s) { return s.ledger.lifetime.revenue >= 1000000; } },
+    { id: 'cash-50k', name: 'Rainy-Day Fund',
+      desc: 'Hold $50,000 cash at once.',
+      check: function (s) { return s.cash >= 50000; } },
+    { id: 'rating-5-50', name: 'Five Stars, No Notes',
+      desc: 'Hold a 5.0 rating with at least 50 jobs completed.',
+      check: function (s) {
+        return s.reputation.jobsCompleted >= 50 && s.reputation.rating >= 4.95;
+      } },
+    { id: 'prestige-2', name: 'Well-Reviewed',
+      desc: 'Reach prestige tier 2.',
+      check: function (s) { return s.reputation.prestige >= 2; } },
+    { id: 'prestige-4', name: 'Legendary',
+      desc: 'Reach the top prestige tier.',
+      check: function (s) { return s.reputation.prestige >= 4; } },
+    { id: 'superstore', name: 'Superstore',
+      desc: 'Upgrade to the top shop tier.',
+      check: function (s) { return s.shop.tier >= 3; } },
+    { id: 'no-callbacks-30', name: 'Built to Last',
+      desc: '30 straight days without a warranty callback (20+ jobs done).',
+      check: function (s) {
+        if (s.day < 30 || s.reputation.jobsCompleted < 20) return false;
+        var last = evLastDay(s, 'callback-arrived');
+        return last == null || s.day - last >= 30;
+      } },
+    { id: 'gpu-hoarder', name: 'I Was Here First',
+      desc: 'Hold 10+ graphics cards in stock during a GPU price spike.',
+      check: function (s) {
+        var spike = (s.market.activeEvents || []).some(function (ev) {
+          return (ev.effects || []).some(function (ef) {
+            return (ef.priceMult || 1) > 1.3 &&
+                   (!ef.categories || ef.categories.indexOf('gpu') !== -1);
+          });
+        });
+        if (!spike) return false;
+        var gpus = 0;
+        for (var i = 0; i < (s.inventory || []).length; i++) {
+          var p = Engine.partById(s.inventory[i].partId);
+          if (p && p.category === 'gpu') gpus += s.inventory[i].qty;
+        }
+        return gpus >= 10;
+      } },
+    { id: 'transition-retrained', name: 'Ahead of the Curve',
+      desc: 'Ride out a platform transition with every tech retrained.',
+      check: function (s) { return evCount(s, 'transition-retrained') >= 1; } },
+    { id: 'scenario-complete', name: 'Challenge Accepted',
+      desc: 'Complete any scenario.',
+      check: function (s) { return evCount(s, 'scenario-complete') >= 1; } },
+    { id: 'scenario-s', name: 'Flawless Run',
+      desc: 'Earn an S grade on a scenario.',
+      check: function (s) { return evCount(s, 'scenario-grade-S') >= 1; } },
+    { id: 'wiki-reader', name: 'Student of History',
+      desc: 'Read 10 Wiki articles.',
+      check: function (s) { return evCount(s, 'article-read') >= 10; } },
+    { id: 'regular-10', name: 'The Usual, Please',
+      desc: 'Serve the same regular customer 10 times.',
+      check: function (s) {
+        return (s.regulars || []).some(function (r) { return (r.jobs || 0) >= 10; });
+      } },
+    { id: 'account-signed', name: 'On Retainer',
+      desc: 'Sign your first business account.',
+      check: function (s) { return evCount(s, 'account-signed') >= 1; } },
+    // Hidden ones — fun to stumble into; getAchievements masks them as "???".
+    { id: 'crt-bite', name: 'The Tube Bites Back', hidden: true,
+      desc: 'Get bitten by a CRT you should not have opened.',
+      check: function (s) { return evCount(s, 'crt-injury') >= 1; } },
+    { id: 'night-owl', name: 'Closing Time? Never Heard of It', hidden: true,
+      desc: 'Work yourself all the way to the overtime floor.',
+      check: function (s) { return evCount(s, 'overtime-floor') >= 1; } },
+    { id: 'comeback', name: 'Back from the Brink', hidden: true,
+      desc: 'Recover from a negative bank balance.',
+      check: function (s) { return evCount(s, 'grace-recovered') >= 1; } },
+    { id: 'credit-clean', name: 'Paid in Full', hidden: true,
+      desc: 'Draw on the credit line and pay every cent back.',
+      check: function (s) { return evCount(s, 'credit-repaid-full') >= 1; } }
+  ];
 })(typeof window !== 'undefined' ? window : globalThis);

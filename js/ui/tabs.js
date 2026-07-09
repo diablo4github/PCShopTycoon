@@ -474,6 +474,35 @@
         UI.act(function () { return Engine.startCertification(certId); }, 'Enrolled — study hours in the Shop tab to complete it');
         break;
       }
+      case 'retrain': { /* §15.1 — transition retraining (owner time + cost) */
+        if (!has('retrainStaff')) { UI.toast('Retraining is not available yet', 'info'); break; }
+        var rtId = el.getAttribute('data-id');
+        var rtTrans = el.getAttribute('data-transition') || undefined;
+        var rtr = UI.act(function () { return Engine.retrainStaff(rtId, rtTrans); });
+        if (rtr && rtr.ok !== false) {
+          UI.toast('Retrained — back to full speed on the new platform' +
+            (rtr.cost ? ' (' + fm(rtr.cost) + ')' : ''), 'success', 5000);
+        }
+        break;
+      }
+
+      /* ---- §15.3 credit line (Ledger) ---- */
+      case 'credit-draw': {
+        var drawEl = document.getElementById('credit-draw-amt');
+        var drawAmt = drawEl ? parseFloat(drawEl.value) : NaN;
+        if (!isFinite(drawAmt) || drawAmt <= 0) { UI.toast('Enter a positive amount to draw', 'info'); break; }
+        var cdr = UI.act(function () { return Engine.drawCredit(drawAmt); });
+        if (cdr && cdr.ok !== false) UI.toast('Drew ' + fm(drawAmt) + ' on the credit line — 0.1h of paperwork', 'success');
+        break;
+      }
+      case 'credit-repay': {
+        var repEl = document.getElementById('credit-repay-amt');
+        var repAmt = repEl ? parseFloat(repEl.value) : NaN;
+        if (!isFinite(repAmt) || repAmt <= 0) { UI.toast('Enter a positive amount to repay', 'info'); break; }
+        var crr = UI.act(function () { return Engine.repayCredit(repAmt); });
+        if (crr && crr.ok !== false) UI.toast('Repaid ' + fm(repAmt) + ' — 0.1h of paperwork', 'success');
+        break;
+      }
       case 'fire': { /* §10.7 + §11.5 (veterans hurt twice as much) */
         var sid = el.getAttribute('data-id');
         var sname = el.getAttribute('data-name') || 'this employee';
@@ -725,11 +754,15 @@
     }
     var html = '<h2 class="section-title">Job Offers <span class="muted small">(' + offers.length + ' waiting — unanswered offers expire after a few days)</span></h2><div class="cards">';
     offers.forEach(function (j) {
+      /* §15.4 — business-account retainers get their own card variant */
+      var acct = accountInfoOf(j);
+      if (acct) { html += accountOfferCardHTML(j, acct, st); return; }
+
       var due = dueText(j, st);
       html += '<div class="card job-card">' +
         '<div class="card-title">' + esc(j.title) +
           (j.rush ? ' <span class="badge b-rush">RUSH</span>' : '') + '</div>' +
-        '<div class="meta-row">' + typeChip(j) + UI.wrenches(j.difficulty) + tasteChip(j) + osChip(j) + '</div>' +
+        '<div class="meta-row">' + typeChip(j) + UI.wrenches(j.difficulty) + regularChip(j) + tasteChip(j) + osChip(j) + '</div>' +
         (j.blurb ? '<div class="blurb">&ldquo;' + esc(j.blurb) + '&rdquo;</div>' : '') +
         '<div class="meta-row">' + customerLine(j) + '</div>' +
         '<div class="meta-row flex-between">' +
@@ -743,6 +776,60 @@
       '</div>';
     });
     panel.innerHTML = html + '</div>';
+  }
+
+  /* §15.4 — "Regular · 3rd visit" chip on offers from returning customers.
+   * Flag is job.regular; the visit count field is feature-detected
+   * (regularVisits preferred; visits/visitCount tolerated). */
+  function ordinal(n) {
+    var v = n % 100;
+    if (v >= 11 && v <= 13) return n + 'th';
+    var d = n % 10;
+    return n + (d === 1 ? 'st' : (d === 2 ? 'nd' : (d === 3 ? 'rd' : 'th')));
+  }
+  function regularChip(j) {
+    if (!j || !j.regular) return '';
+    var visits = Number(
+      j.regularVisits !== undefined ? j.regularVisits :
+      (j.visitCount !== undefined ? j.visitCount :
+       (j.visits !== undefined ? j.visits : NaN)));
+    var txt = 'Regular' + (isFinite(visits) && visits > 0 ? ' · ' + ordinal(Math.round(visits)) + ' visit' : '');
+    return '<span class="chip chip-regular" title="A satisfied customer coming back — loyalty pays a +10% premium, but letting a regular down stings extra">↻ ' +
+      esc(txt) + '</span>';
+  }
+
+  /* §15.4 — business-account offer detection: the engine may hang the
+   * retainer terms off job.account / job.businessAccount, or type the job
+   * itself. Absent all of these, the offer renders as a normal card. */
+  function accountInfoOf(j) {
+    if (!j) return null;
+    if (j.account && typeof j.account === 'object') return j.account;
+    if (j.businessAccount && typeof j.businessAccount === 'object') return j.businessAccount;
+    if (j.type === 'account' || j.type === 'business_account') return j;
+    return null;
+  }
+
+  function accountOfferCardHTML(j, acct, st) {
+    var due = dueText(j, st);
+    var fee = acct.monthlyFee !== undefined && acct.monthlyFee !== null ? acct.monthlyFee : j.pay;
+    return '<div class="card job-card account-card">' +
+      '<div class="card-title">' + esc(j.title || ((acct.name || 'Local business') + ' — service retainer')) +
+        ' <span class="badge b-account">BUSINESS ACCOUNT</span></div>' +
+      (j.blurb ? '<div class="blurb">&ldquo;' + esc(j.blurb) + '&rdquo;</div>' : '') +
+      '<div class="meta-row small">' +
+        (fee !== undefined && fee !== null ? '<span class="chip">Retainer <b class="num">' + esc(fm(fee)) + '</b>/month</span>' : '') +
+        (acct.jobsPerMonth ? '<span class="chip">' + esc(acct.jobsPerMonth) + ' service job' + (Number(acct.jobsPerMonth) === 1 ? '' : 's') + '/month, auto-accepted</span>' : '') +
+        (acct.minRating ? '<span class="chip chip-risk" title="The account cancels — with a reputation hit — if your rating drops below this or you fail two of their jobs in a month">Keep rating ≥ ' + esc(acct.minRating) + '</span>' : '') +
+      '</div>' +
+      '<div class="meta-row flex-between">' +
+        '<span class="muted small">Their service jobs come with relaxed deadlines — steady money for steady work.</span>' +
+        '<span class="' + (due.urgent ? 'due-soon' : 'muted') + '">' + esc(due.txt) + '</span>' +
+      '</div>' +
+      '<div class="job-actions">' +
+        '<button type="button" class="btn btn-primary btn-sm" data-action="accept" data-job="' + j.id + '">Sign the account</button>' +
+        '<button type="button" class="btn btn-sm" data-action="decline" data-job="' + j.id + '">Decline</button>' +
+      '</div>' +
+    '</div>';
   }
 
   /* ================================================================== *
@@ -838,7 +925,7 @@
 
     /* meta row */
     h += '<div class="meta-row">' + typeChip(j) + UI.wrenches(j.difficulty) +
-      customerLine(j) + tasteChip(j) +
+      customerLine(j) + regularChip(j) + tasteChip(j) +
       '<span class="pay num">' + (j.pay !== null && j.pay !== undefined
         ? (j.type === 'callback' ? 'Warranty — no pay' : fm(j.pay))
         : 'Market-priced at sale') + '</span>' +
@@ -1978,6 +2065,14 @@
     var a = tryCall(function () { return Engine.getArticle(id); });
     if (!a || a.ok === false) { UI.toast((a && a.error) || 'That article is still locked', 'error'); return; }
     markArticleSeen(id);
+    /* §15.5 — the Wiki-reader achievement counts article opens engine-side.
+     * Snapshot-diff so an unlock on this very read still toasts (tolerates
+     * a void return, which UI.act would misread as an error). */
+    if (has('markAchievementEvent')) {
+      var achBefore = UI.achievementSnapshot();
+      tryCall(function () { return Engine.markAchievementEvent('article-read'); });
+      UI.toastNewAchievements(achBefore);
+    }
     var html = '<div class="article">' +
       '<div class="article-meta">' +
         '<span class="chip">' + esc(articleCatLabel(a.category)) + '</span>' +

@@ -761,9 +761,25 @@
     var rep = state.reputation;
     var F = FLAVOR();
 
-    // Era-gated weighted type pool (§5.4)
+    // Era-gated weighted type pool (§5.4). §15.1/§15.2: active-transition
+    // demandMix and scenario jobWeightMult multiply the base weights.
     var pool = [];
-    function add(type, subtype, w) { if (w > 0) pool.push({ type: type, subtype: subtype, w: w }); }
+    function typeWeightMult(type) {
+      var m = 1;
+      var actives = Engine.activeTransitions(state);
+      for (var ti = 0; ti < actives.length; ti++) {
+        var mix = actives[ti].demandMix || {};
+        if (mix[type] != null && mix[type] > 0) m *= mix[type];
+      }
+      var scen = Engine.currentScenario(state);
+      var jm = scen && scen.modifiers && scen.modifiers.jobWeightMult;
+      if (jm && jm[type] != null && jm[type] > 0) m *= jm[type];
+      return m;
+    }
+    function add(type, subtype, w) {
+      w *= typeWeightMult(type);
+      if (w > 0) pool.push({ type: type, subtype: subtype, w: w });
+    }
     var faultCats = repairFaultCategories(state);
     if (faultCats.length) add('repair', null, 10);
     var upgCats = ['ram', 'storage', 'gpu'].filter(function (c) {
@@ -1214,6 +1230,12 @@
       job.pay = Math.round(basePay(state, 'contract', payHours, job.difficulty));
     } else {
       job.pay = Math.round(job.pay);   // builds: budget, whole dollars (§10.2)
+    }
+    // §15.6: difficulty pay multiplier on labor-priced jobs (builds excluded —
+    // build pay IS the parts budget, scaling it would break the §7 margin band).
+    if (!isBuildJob(job)) {
+      var diffSet = Engine.difficultyFor(state);
+      if (diffSet.payMult !== 1) job.pay = Math.round(job.pay * diffSet.payMult);
     }
 
     // §9.2: customer type first (era + affinity gated), then a fitting blurb —

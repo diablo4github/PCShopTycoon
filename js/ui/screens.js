@@ -1,11 +1,12 @@
 /* ==========================================================================
  * Circuit & Solder: PC Shop Tycoon — js/ui/screens.js
- * New Game screen (era cards + shop name), Morning Summary modal,
- * Game Over screen.
+ * New Game screen (era cards + §15.2 scenario cards + §15.6 difficulty),
+ * Morning Summary modal, Game Over screen, §15.2 scenario-complete screen.
  *
  * Per SPEC requirement, the new-game screen is the ONLY place the UI reads
- * DATA directly (DATA.ERAS + DATA.FLAVOR.shopNameSuggestions); everything
- * else renders through Engine view APIs.
+ * DATA directly (DATA.ERAS + DATA.SCENARIOS + DATA.FLAVOR name suggestions);
+ * everything else renders through Engine view APIs. All §15 engine calls
+ * are feature-detected — the engine agent builds concurrently.
  * ========================================================================== */
 (function () {
   'use strict';
@@ -46,6 +47,34 @@
         }
       });
     }
+
+    /* §15.2 — scenario completion screen: New Game or Continue as sandbox. */
+    var sce = document.getElementById('screen-scenario');
+    if (sce) {
+      sce.addEventListener('click', function (e) {
+        var t = e.target;
+        if (!t || !t.closest) return;
+        if (t.closest('[data-action="new-game"]')) {
+          S.renderNewGame();
+          UI.showScreen('newgame');
+        } else if (t.closest('[data-action="continue-sandbox"]')) {
+          if (!(window.Engine && typeof Engine.continueSandbox === 'function')) {
+            UI.toast('Sandbox continuation is not available yet', 'info');
+            return;
+          }
+          var r = UI.tryCall(function () { return Engine.continueSandbox(); });
+          if (!r || r.ok === false) {
+            UI.toast((r && r.error) || 'Could not continue as a sandbox game', 'error');
+            return;
+          }
+          UI.toast('Scenario complete — the shop stays open, sandbox rules from here on.', 'success', 5000);
+          UI.state.activeTab = 'offers';
+          UI.showScreen('main');
+          UI.switchTab('offers');
+          UI.refresh();
+        }
+      });
+    }
   };
 
   function onNewGameClick(e) {
@@ -57,6 +86,14 @@
 
     if (action === 'pick-era') {
       UI.state.selectedEra = el.getAttribute('data-era');
+      UI.state.selectedScenario = null;          // §15.2 mutually exclusive
+      S.renderNewGame();
+    } else if (action === 'pick-scenario') {     // §15.2
+      UI.state.selectedScenario = el.getAttribute('data-scenario');
+      S.renderNewGame();
+    } else if (action === 'pick-difficulty') {   // §15.6
+      var d = el.getAttribute('data-difficulty');
+      if (d === 'relaxed' || d === 'standard' || d === 'survival') UI.state.difficulty = d;
       S.renderNewGame();
     } else if (action === 'suggest') {
       UI.state.shopName = el.getAttribute('data-name') || '';
@@ -119,11 +156,12 @@
       '</div>';
     }
 
-    /* era cards */
+    /* era cards (deselected while a scenario is picked — §15.2) */
+    var scenarioPicked = !!UI.state.selectedScenario;
     if (eras.length) {
       h += '<h2 class="section-title">Choose your starting era</h2><div class="era-grid">';
       eras.forEach(function (era) {
-        var sel = UI.state.selectedEra === era.id;
+        var sel = !scenarioPicked && UI.state.selectedEra === era.id;
         h += '<button type="button" class="era-card' + (sel ? ' selected' : '') + '" data-action="pick-era" data-era="' + esc(era.id) + '">' +
           '<h3>' + esc(era.name) + '</h3>' +
           (era.blurb ? '<div class="era-blurb">' + esc(era.blurb) + '</div>' : '') +
@@ -139,6 +177,31 @@
       h += '</div>';
     }
 
+    /* §15.2 — scenario cards (curated, scored challenges) */
+    var scenarios = (window.DATA && Array.isArray(DATA.SCENARIOS)) ? DATA.SCENARIOS : [];
+    if (scenarios.length) {
+      h += '<h2 class="section-title">Scenarios <span class="muted small">— curated, scored challenges with a fixed clock</span></h2>' +
+        '<div class="era-grid scenario-grid">';
+      scenarios.forEach(function (sc) {
+        if (!sc || !sc.id) return;
+        var sel = UI.state.selectedScenario === sc.id;
+        h += '<button type="button" class="era-card scenario-card' + (sel ? ' selected' : '') +
+          '" data-action="pick-scenario" data-scenario="' + esc(sc.id) + '">' +
+          '<h3>' + esc(sc.name || sc.id) + ' <span class="badge b-scenario">SCENARIO</span></h3>' +
+          '<div class="scenario-dates">' + esc(fmtDateRange(sc.startDate, sc.endDate)) + '</div>' +
+          (sc.blurb ? '<div class="era-blurb">' + esc(sc.blurb) + '</div>' : '') +
+          '<div class="era-facts">' +
+            (sc.cash !== undefined && sc.cash !== null ? '<span>Starting cash <b>' + esc(fm(sc.cash)) + '</b></span>' : '') +
+          '</div>' +
+          (sc.difficultyNote ? '<div class="era-callout">' + esc(sc.difficultyNote) + '</div>' : '') +
+          '</button>';
+      });
+      h += '</div>';
+      if (!(ready && window.Engine && typeof Engine.getScenarioResult === 'function')) {
+        h += '<p class="muted small">Scenario support is still being wired up — sandbox eras are fully playable now.</p>';
+      }
+    }
+
     /* shop name + start */
     h += '<div class="ng-form">' +
       '<div class="field"><label for="ng-shopname">Name your shop</label>' +
@@ -151,6 +214,20 @@
       });
       h += '</div>';
     }
+    /* §15.6 — difficulty (sandbox eras only; scenarios fix their own). */
+    if (!scenarioPicked) {
+      h += '<div class="ng-difficulty"><h3 class="sub-title">Difficulty</h3><div class="diff-row">' +
+        diffCard('relaxed', 'Relaxed',
+          'More starting cash (+30%), cheaper rent, better pay, 21 days of grace, gentler events.') +
+        diffCard('standard', 'Standard',
+          'The balanced baseline the shop was tuned around. 14 days of grace.') +
+        diffCard('survival', 'Survival',
+          'Less cash (−20%), pricier rent, thinner pay, only 10 days of grace, harsher events.') +
+        '</div></div>';
+    } else {
+      h += '<div class="ng-difficulty"><p class="muted small">Scenarios set their own difficulty — see the card\'s note.</p></div>';
+    }
+
     /* §13.5 — guided tour toggle (default ON the first time this browser
      * ever plays; OFF once a tour has been completed or skipped). */
     h += '<div class="ng-tutorial-toggle">' +
@@ -165,6 +242,27 @@
     el.innerHTML = h + '</div>';
   };
 
+  /** §15.6 — one selectable difficulty card. */
+  function diffCard(id, label, blurb) {
+    var sel = (UI.state.difficulty || 'standard') === id;
+    return '<button type="button" class="diff-card' + (sel ? ' selected' : '') +
+      '" data-action="pick-difficulty" data-difficulty="' + esc(id) + '">' +
+      '<b>' + esc(label) + '</b><span class="muted small">' + esc(blurb) + '</span></button>';
+  }
+
+  /** §15.2 — "Jun 1998 – Mar 2000" from two ISO dates (best effort). */
+  var MONTHS_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  function fmtIsoMonth(iso) {
+    var m = /^(\d{4})-(\d{2})/.exec(String(iso || ''));
+    if (!m) return String(iso || '');
+    var mi = parseInt(m[2], 10) - 1;
+    return (MONTHS_SHORT[mi] || m[2]) + ' ' + m[1];
+  }
+  function fmtDateRange(a, b) {
+    if (!a && !b) return '';
+    return fmtIsoMonth(a) + ' – ' + fmtIsoMonth(b);
+  }
+
   function defaultShopName() {
     try {
       if (window.DATA && DATA.FLAVOR && Array.isArray(DATA.FLAVOR.shopNameSuggestions) && DATA.FLAVOR.shopNameSuggestions.length) {
@@ -176,11 +274,27 @@
 
   function startGame() {
     if (!UI.engineReady()) { UI.toast('Engine not loaded yet', 'error'); return; }
-    var eraId = UI.state.selectedEra;
-    if (!eraId) { UI.toast('Pick a starting era first', 'info'); return; }
     var name = (UI.state.shopName || '').replace(/^\s+|\s+$/g, '') || defaultShopName();
+    var scenarioId = UI.state.selectedScenario;
 
-    var r = UI.tryCall(function () { return Engine.newGame({ eraId: eraId, shopName: name }); });
+    var r;
+    if (scenarioId) {
+      /* §15.2 — scenario start. Feature-gate on getScenarioResult: if the
+       * engine's scenario path has not landed, keep the sandbox playable
+       * instead of sending newGame an option it cannot honor. */
+      if (typeof Engine.getScenarioResult !== 'function') {
+        UI.toast('Scenario support is still being wired up — pick an era for now', 'info', 5000);
+        return;
+      }
+      r = UI.tryCall(function () { return Engine.newGame({ scenarioId: scenarioId, shopName: name }); });
+    } else {
+      var eraId = UI.state.selectedEra;
+      if (!eraId) { UI.toast('Pick a starting era first', 'info'); return; }
+      /* §15.6 — difficulty rides along; pre-v0.6 engines ignore it. */
+      r = UI.tryCall(function () {
+        return Engine.newGame({ eraId: eraId, shopName: name, difficulty: UI.state.difficulty || 'standard' });
+      });
+    }
     if (!r || r.ok === false) {
       UI.toast((r && r.error) || 'Could not start a new game', 'error');
       return;
@@ -262,6 +376,14 @@
     h += moneySection('Charges', summary.charges);
     h += moneySection('Payouts', summary.payouts);
 
+    /* §15.5 — overnight achievement unlocks (strings or {name} objects). */
+    var achItems = [];
+    (Array.isArray(summary.achievements) ? summary.achievements : []).forEach(function (a) {
+      var label = (typeof a === 'string') ? a : (a && (a.name || a.label || a.id)) || '';
+      if (label) achItems.push('🏆 ' + label);
+    });
+    h += listSection('Achievements unlocked', achItems);
+
     if (summary.gameOver) {
       h += '<div class="sum-grace">The shop could not recover. This is the end of the road.</div>';
     }
@@ -318,6 +440,13 @@
       return;
     }
 
+    /* §15.6 — show the run's difficulty when the save carries one. */
+    var goDiff = '';
+    try {
+      var goSt = Engine.getState();
+      goDiff = UI.difficultyLabel(goSt && goSt.difficulty);
+    } catch (eD) { /* ignore */ }
+
     var lt = s.lifetime || {};
     el.innerHTML = '<div class="go-wrap"><div class="go-card">' +
       '<h1>Game Over</h1>' +
@@ -326,6 +455,7 @@
         (s.dateStr ? '<span class="muted">' + esc(s.dateStr) + '</span> &nbsp; ' : '') +
         UI.starsHTML(s.rating) +
         (s.prestigeLabel ? ' <span class="chip">' + esc(s.prestigeLabel) + '</span>' : '') +
+        (goDiff ? ' <span class="chip" title="Difficulty this run was played on">' + esc(goDiff) + '</span>' : '') +
       '</div>' +
       '<div class="kv">' +
         goCell('Days played', s.daysPlayed !== undefined ? s.daysPlayed : (lt.daysPlayed || 0)) +
@@ -345,5 +475,75 @@
   function goCell(k, v) {
     return '<div class="cell"><div class="k">' + esc(k) + '</div><div class="v">' + esc(v) + '</div></div>';
   }
+
+  /* ------------------------------------------------------------------ *
+   * §15.2 — Scenario completion screen
+   * ------------------------------------------------------------------ */
+
+  /**
+   * Returns the Engine.getScenarioResult() payload when the current run's
+   * scenario has finished (and the engine can prove it), else null.
+   * Called from UI.refresh — bankruptcy (gameOver) is checked before this,
+   * so "bankrupt before the end = normal game over" holds. Tolerant of the
+   * exact ended-flag shape the engine ships: active:false / ended / done,
+   * or the day moving strictly past endDay. continueSandbox() clears
+   * scenario state, which makes this return null again.
+   */
+  S.scenarioEndResult = function (st) {
+    if (!st || !st.scenario) return null;
+    if (!(window.Engine && typeof Engine.getScenarioResult === 'function')) return null;
+    var sc = st.scenario;
+    if (sc.sandbox === true || sc.continued === true) return null; // continued as sandbox
+    var ended = sc.active === false || sc.ended === true || sc.done === true ||
+      (sc.endDay !== null && sc.endDay !== undefined && (Number(st.day) || 0) > Number(sc.endDay));
+    if (!ended) return null;
+    var r = UI.tryCall(function () { return Engine.getScenarioResult(); });
+    if (!r || r.ok === false) return null;
+    if (r.grade === undefined && r.score === undefined) return null;
+    return r;
+  };
+
+  S.renderScenarioEnd = function (res, st) {
+    var el = document.getElementById('screen-scenario');
+    if (!el || !res) return;
+
+    var grade = String(res.grade || '—').toUpperCase();
+    var gradeCls = /^[SABCD]$/.test(grade) ? grade.toLowerCase() : 'none';
+    var name = res.name || UI.scenarioName(st && st.scenario) || 'Scenario';
+    var diff = UI.difficultyLabel(st && st.difficulty);
+    var canSandbox = !!(window.Engine && typeof Engine.continueSandbox === 'function');
+
+    var lines = Array.isArray(res.lines) ? res.lines : [];
+    var linesHTML = '';
+    if (lines.length) {
+      linesHTML = '<table class="score-lines">';
+      lines.forEach(function (l) {
+        if (!l) return;
+        linesHTML += '<tr><td>' + esc(l.label || '') + '</td>' +
+          '<td class="num">' + esc(l.value !== undefined && l.value !== null ? l.value : '') + '</td>' +
+          '<td class="num pts">' + (l.points !== undefined && l.points !== null
+            ? (Number(l.points) >= 0 ? '+' : '') + esc(l.points) + ' pts' : '') + '</td></tr>';
+      });
+      linesHTML += '</table>';
+    } else {
+      linesHTML = '<p class="muted small">No score breakdown available.</p>';
+    }
+
+    el.innerHTML = '<div class="go-wrap"><div class="go-card scenario-end">' +
+      '<div class="sc-grade grade-' + gradeCls + '" aria-label="Grade ' + esc(grade) + '">' + esc(grade) + '</div>' +
+      '<h1>' + esc(name) + ' — complete</h1>' +
+      '<div class="go-meta">' +
+        '<span class="sc-score">Score: <b class="num">' + esc(res.score !== undefined && res.score !== null ? res.score : '—') + '</b></span>' +
+        (diff ? ' <span class="chip" title="Difficulty this run was played on">' + esc(diff) + '</span>' : '') +
+      '</div>' +
+      linesHTML +
+      '<div class="go-actions">' +
+        '<button type="button" class="btn btn-primary btn-lg" data-action="new-game">New Game</button>' +
+        (canSandbox
+          ? ' <button type="button" class="btn btn-lg" data-action="continue-sandbox" title="Keep this save going with the scenario clock removed">Keep playing (sandbox)</button>'
+          : '') +
+      '</div>' +
+      '</div></div>';
+  };
 
 })();

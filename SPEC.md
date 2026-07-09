@@ -1431,3 +1431,16 @@ container — the user must never have to zoom the browser to reach an option.
   1366×768 laptop viewport, that every part option in a build with many slots (and every
   option in a long picker) is reachable by scrolling — no browser zoom required.
 - Keep it keyboard-accessible (scroll regions focusable / options reachable by keyboard).
+
+## 14.10 Long chips clip off the card (UI) — BUG
+The OS-request chip (`.chip-os`) and any long-content chip overflow their card and get
+clipped, because the base `.chip` rule is `white-space: nowrap` (css ~L400) — a full
+sentence like "Install Digital Research CP/M-86 — any compatible OS acceptable" runs past
+the card's right edge. Fix: long-content chips (OS request, taste label, unlock badges,
+vs-original cue, anything that can hold a phrase) must WRAP inside the card
+(`white-space: normal`, `max-width: 100%`, break long tokens as needed) with a sensible
+radius when multi-line (a full 999px pill radius looks broken wrapped — use a smaller
+radius or a note style). Keep genuinely short pills (type, status, difficulty) as nowrap.
+Ensure the chip container (`.meta-row`) wraps its chips to new lines rather than
+overflowing. Verify no clipping on offer AND workbench cards across the four era skins,
+at 80–130% UI scale, and with the longest real labels in the catalog.

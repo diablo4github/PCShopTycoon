@@ -27,25 +27,53 @@
   Engine.newGame = function (opts) {
     opts = opts || {};
     var DATA = Engine.getData();
-    var eras = DATA.ERAS || [];
-    var era = null;
-    for (var i = 0; i < eras.length; i++) if (eras[i].id === opts.eraId) era = eras[i];
-    if (!era) return err('Unknown era: ' + opts.eraId);
     if (!DATA.PARTS || !DATA.PARTS.length) return err('No parts catalog loaded');
+    var eras = DATA.ERAS || [];
+    var era = null, scen = null, i;
+
+    // §15.2: scenario starts are curated alternatives to the sandbox eras
+    if (opts.scenarioId) {
+      scen = Engine.scenarioById(opts.scenarioId);
+      if (!scen) return err('Unknown scenario: ' + opts.scenarioId);
+      // Cosmetic era anchor (skin/labels): the latest era at/before the start
+      var scenYear = Number(String(scen.startDate).slice(0, 4)) || 1996;
+      for (i = 0; i < eras.length; i++) {
+        if (eras[i].startYear <= scenYear &&
+            (!era || eras[i].startYear > era.startYear)) era = eras[i];
+      }
+      if (!era) era = eras[0];
+      if (!era) return err('No era data loaded');
+    } else {
+      for (i = 0; i < eras.length; i++) if (eras[i].id === opts.eraId) era = eras[i];
+      if (!era) return err('Unknown era: ' + opts.eraId);
+    }
+
+    // §15.6: difficulty (sandbox only — scenarios pin their own balance)
+    var difficulty = 'standard';
+    if (!scen && opts.difficulty != null) {
+      if (!Engine.CONFIG.DIFFICULTY[opts.difficulty])
+        return err('Unknown difficulty: ' + opts.difficulty);
+      difficulty = String(opts.difficulty);
+    }
+    var diffSet = Engine.CONFIG.DIFFICULTY[difficulty];
+
+    var startDate = scen ? scen.startDate : era.startDate;
+    var startCash = scen ? scen.cash : Engine.round2(era.cash * diffSet.cashMult);
+    var startTier = scen ? (scen.shopTier || 0) : (era.shopTier || 0);
 
     var seed = (opts.seed != null ? Number(opts.seed) : (Date.now() % 2147483647)) | 0;
     if (!isFinite(seed)) seed = 42;
     var startDi = null;
     var state = {
-      version: 6,
+      version: 7,
       seed: seed, rngState: seed | 0,
       shopName: String(opts.shopName ||
         ((DATA.FLAVOR && DATA.FLAVOR.shopNameSuggestions) ?
           DATA.FLAVOR.shopNameSuggestions[0] : 'Circuit & Solder')),
       eraId: era.id,
-      startDate: era.startDate,
+      startDate: startDate,
       day: 0,
-      cash: Engine.round2(era.cash),
+      cash: Engine.round2(startCash),
       hoursLeft: Engine.CONFIG.HOURS_PER_DAY, hoursPerDay: Engine.CONFIG.HOURS_PER_DAY,
       supplyRunDoneToday: false,
       customBuildsUnlocked: !!era.customBuildsUnlocked,
@@ -54,7 +82,7 @@
                     history: [Engine.CONFIG.RATING_SEED, Engine.CONFIG.RATING_SEED,
                               Engine.CONFIG.RATING_SEED],
                     prestige: 0, jobsCompleted: 0, jobsFailed: 0, callbacks: 0 },
-      shop: { tier: era.shopTier || 0, equipment: ['repair-bench'], insurance: false },
+      shop: { tier: startTier, equipment: ['repair-bench'], insurance: false },
       inventory: [],
       jobs: { offers: [], active: [], completedRecent: [], nextId: 1 },
       asIsMarket: [],
@@ -65,7 +93,8 @@
         months: [],
         lifetime: { revenue: 0, partsCost: 0, fixedCosts: 0, other: 0,
                     jobsCompleted: 0, jobsFailed: 0, buildsDelivered: 0,
-                    refurbsSold: 0, daysPlayed: 0 }
+                    refurbsSold: 0, daysPlayed: 0,
+                    contractsFailed: 0, graceDays: 0 }   // §15.2 scoring stats
       },
       workedToday: [], declinesToday: 0, lastContractDay: null, injuryDaysLeft: 0,
       // §10.7 staff (+§11.5 level-up queue for morning summaries)
@@ -73,10 +102,39 @@
       staffNextId: 1, levelUpsToday: [],
       // §13.4 certifications; §13.2 one-time article-unlock news dedup
       training: { certsEarned: [], studying: null }, certsEarnedToday: [],
-      articlesSeen: []
+      articlesSeen: [],
+      // §15: credit line, regulars, business accounts, achievements,
+      // difficulty, scenario, transition-news dedup
+      credit: { drawn: 0 },
+      regulars: [],
+      accounts: [],
+      achievements: {},
+      achievementEvents: {},
+      difficulty: difficulty,
+      scenario: null,
+      transitionsFired: {}
     };
     Engine._state = state;
     startDi = Engine.dateInfo(0, state);
+    if (scen) {
+      state.scenario = { id: scen.id, endDay: Engine.dayIndexOfISO(scen.endDate, state),
+                         active: true, completed: false, result: null };
+      // Scenario-era shops start past the build unlock when the date says so
+      var unlockISO = DATA.CUSTOM_BUILD_UNLOCK_DATE || '1989-09-01';
+      if (String(startDate) >= unlockISO) state.customBuildsUnlocked = true;
+    }
+    // §15.1: transitions fully in the past at day 0 are lived history — mark
+    // them fired so a late-era start isn't spammed with old news. A transition
+    // ACTIVE at day 0 keeps started=false so the first night fires its start
+    // news once (useful context); its stale pre-start warning is suppressed.
+    (Engine.transitionsData() || []).forEach(function (t) {
+      var w = Engine.transitionWindow(t, state);
+      if (state.day >= w.endDay) {
+        state.transitionsFired[t.id] = { warned: true, started: true, ended: true };
+      } else if (state.day >= w.startDay) {
+        state.transitionsFired[t.id] = { warned: true, started: false, ended: false };
+      }
+    });
     state.ledger.months.push({
       ym: startDi.y + '-' + (startDi.m < 10 ? '0' : '') + startDi.m,
       revenue: 0, partsCost: 0, fixedCosts: 0, other: 0, net: 0
@@ -105,6 +163,11 @@
   Engine.endDay = function () {
     var bad = needLive(); if (bad) return bad;
     var state = S();
+    // §15.2: a completed scenario freezes the run at its end screen until the
+    // player starts a new game or explicitly continues in sandbox.
+    if (state.scenario && state.scenario.completed && !state.scenario.active)
+      return err('Scenario complete — check your results, then start a new game ' +
+                 'or continue in sandbox');
     var summary = Engine.Sim.newSummary();
     var startDay = state.day;
 
@@ -305,11 +368,49 @@
     }
     return obj;
   }
+  // v6 -> v7 migration (§15): credit line, regulars, business accounts,
+  // achievements, difficulty, scenario slot, transition-news dedup, staff
+  // retraining lists, and the two new lifetime scoring counters — all default
+  // in. Never rejects a valid v6 save.
+  function migrateV6toV7(obj) {
+    obj.version = 7;
+    if (!obj.credit || typeof obj.credit !== 'object') obj.credit = { drawn: 0 };
+    if (typeof obj.credit.drawn !== 'number' || !isFinite(obj.credit.drawn))
+      obj.credit.drawn = 0;
+    if (!Array.isArray(obj.regulars)) obj.regulars = [];
+    if (!Array.isArray(obj.accounts)) obj.accounts = [];
+    if (!obj.achievements || typeof obj.achievements !== 'object') obj.achievements = {};
+    if (!obj.achievementEvents || typeof obj.achievementEvents !== 'object')
+      obj.achievementEvents = {};
+    if (!Engine.CONFIG.DIFFICULTY[obj.difficulty]) obj.difficulty = 'standard';
+    if (obj.scenario === undefined) obj.scenario = null;
+    if (obj.ledger && obj.ledger.lifetime) {
+      if (obj.ledger.lifetime.contractsFailed == null) obj.ledger.lifetime.contractsFailed = 0;
+      if (obj.ledger.lifetime.graceDays == null) obj.ledger.lifetime.graceDays = 0;
+    }
+    (obj.staff || []).forEach(function (m) {
+      if (m && !Array.isArray(m.retrainedFor)) m.retrainedFor = [];
+    });
+    // §15.1: transition news already in the past is lived history — mark it
+    // fired (same pattern as the §13.2 articlesSeen backfill).
+    if (!obj.transitionsFired || typeof obj.transitionsFired !== 'object') {
+      obj.transitionsFired = {};
+      (Engine.transitionsData() || []).forEach(function (t) {
+        var w = Engine.transitionWindow(t, obj);
+        if (obj.day >= w.endDay) {
+          obj.transitionsFired[t.id] = { warned: true, started: true, ended: true };
+        } else if (obj.day >= w.startDay) {
+          obj.transitionsFired[t.id] = { warned: true, started: false, ended: false };
+        }
+      });
+    }
+    return obj;
+  }
   Engine.importSave = function (str) {
     var obj;
     try { obj = JSON.parse(String(str)); }
     catch (e) { return err('Not valid save JSON'); }
-    if (!obj || [1, 2, 3, 4, 5, 6].indexOf(obj.version) === -1)
+    if (!obj || [1, 2, 3, 4, 5, 6, 7].indexOf(obj.version) === -1)
       return err('Unsupported save version');
     var required = ['seed', 'rngState', 'eraId', 'startDate', 'day', 'cash',
                     'hoursLeft', 'flags', 'reputation', 'shop', 'inventory',
@@ -322,6 +423,7 @@
     if (obj.version === 3) migrateV3toV4(obj);
     if (obj.version === 4) migrateV4toV5(obj);
     if (obj.version === 5) migrateV5toV6(obj);
+    if (obj.version === 6) migrateV6toV7(obj);
     Engine._state = obj;
     return { ok: true };
   };
@@ -871,10 +973,21 @@
     var slots = C.STAFF_SLOTS[Engine.clamp(state.shop.tier, 0, C.STAFF_SLOTS.length - 1)] || 0;
     var total = 0;
     var TH = C.STAFF_LEVEL_THRESHOLDS;
+    // §15.1: active transitions each member still needs retraining for
+    var actives = Engine.activeTransitions(state);
+    var yearNow = Engine.currentYear(state);
     var staff = (state.staff || []).map(function (m) {
       total += m.wageMonthly || 0;
       var role = Engine.staffRoleById(m.role);
       var lvl = m.level || 1;
+      var retrainNeeded = actives.filter(function (t) {
+        return (m.retrainedFor || []).indexOf(t.id) === -1;
+      }).map(function (t) {
+        return { transitionId: t.id, name: t.name || t.id,
+                 cost: Engine.round2((t.retrainCostBase || 100) * Engine.yearScale(yearNow)),
+                 hours: Engine.round1(t.retrainHours || 4),
+                 boostTypes: Engine.transitionBoostTypes(t) };
+      });
       return { id: m.id, name: m.name, role: m.role,
                roleName: role ? role.name : m.role,
                desc: role ? (role.desc || '') : '',
@@ -883,7 +996,10 @@
                level: lvl, xp: m.xp || 0,
                nextLevelAt: lvl < TH.length ? TH[lvl] : null,
                title: m.title || Engine.staffTitleFor(role, lvl),
-               effectNote: staffEffectNote(m, role) };
+               effectNote: staffEffectNote(m, role),
+               // §15.1 (UI contract): retraining flag + button state
+               retrainedFor: (m.retrainedFor || []).slice(),
+               retrainNeeded: retrainNeeded };
     });
     var candidates = (state.staffMarket || []).map(function (c) {
       var role = Engine.staffRoleById(c.role);
@@ -925,7 +1041,8 @@
                        level: lvl,
                        xp: cand.xp != null ? cand.xp :
                            Engine.CONFIG.STAFF_LEVEL_THRESHOLDS[lvl - 1],
-                       title: cand.title || Engine.staffTitleFor(role, lvl) });
+                       title: cand.title || Engine.staffTitleFor(role, lvl),
+                       retrainedFor: [] });   // §15.1
     Engine.pushNews(state, 'system', 'Hired: ' + cand.name,
       'Joins the shop as ' + (cand.title || (role ? role.name : cand.role)) +
       ' at ' + Engine.fmtMoney(cand.wageMonthly) + '/month.');
@@ -951,6 +1068,189 @@
     Engine.pushNews(state, 'system', 'Let go: ' + member.name,
       'Two weeks severance paid (' + Engine.fmtMoney(severance) + '). Word gets around.');
     return { ok: true, severance: severance };
+  };
+
+  // ------------------------------------------------------------------
+  // §15.1 Staff retraining — until retrained for an active transition, a
+  // tech's time-bonus contribution is halved on the transition's boosted
+  // job types (see Engine.staffTimeMult). Year-scaled cost + owner hours.
+  // ------------------------------------------------------------------
+  Engine.retrainStaff = function (staffId, transitionId) {
+    var bad = needLive(); if (bad) return bad;
+    var state = S();
+    var member = null;
+    for (var i = 0; i < (state.staff || []).length; i++) {
+      if (String(state.staff[i].id) === String(staffId)) { member = state.staff[i]; break; }
+    }
+    if (!member) return err('No such staff member');
+    var t = Engine.transitionById(transitionId);
+    if (!t) return err('Unknown transition: ' + transitionId);
+    var w = Engine.transitionWindow(t, state);
+    if (state.day < w.warnDay)
+      return err('Too early — the training courses for that shift don’t exist yet');
+    if (state.day >= w.endDay)
+      return err('That transition is over — the market already moved on');
+    member.retrainedFor = member.retrainedFor || [];
+    if (member.retrainedFor.indexOf(t.id) !== -1)
+      return err(member.name + ' is already retrained for ' + (t.name || t.id));
+    var year = Engine.currentYear(state);
+    var cost = Engine.round2((t.retrainCostBase || 100) * Engine.yearScale(year));
+    if (state.cash < cost)
+      return err('Not enough cash (' + Engine.fmtMoney(cost) + ' needed)');
+    var hours = Engine.round1(t.retrainHours || 4);
+    var sp = Engine.spendHours(state, hours);   // owner time, overtime rules (§9.4)
+    if (!sp.ok) return sp;
+    Engine.addCash(state, -cost);
+    if (cost > 0) Engine.ledgerAdd(state, 'other', cost);
+    member.retrainedFor.push(t.id);
+    Engine.pushNews(state, 'system', 'Retrained: ' + member.name,
+      member.name + ' is now up to speed on ' + (t.name || t.id) + ' work (' +
+      Engine.fmtMoney(cost) + ', ' + hours + 'h of your time).');
+    return { ok: true, cost: cost, hoursSpent: hours };
+  };
+
+  // §15.1 (UI contract): transition windows for header chips / staff panel.
+  Engine.getTransitions = function () {
+    var state = S();
+    if (!state) return [];
+    return Engine.transitionsData().map(function (t) {
+      var w = Engine.transitionWindow(t, state);
+      var status = state.day < w.warnDay ? 'future' :
+                   state.day < w.startDay ? 'warned' :
+                   state.day < w.endDay ? 'active' : 'ended';
+      return { id: t.id, name: t.name || t.id, status: status,
+               body: t.body || '', newsLead: t.newsLead || '',
+               daysUntilStart: Math.max(0, w.startDay - state.day),
+               daysLeft: Math.max(0, w.endDay - state.day),
+               boostTypes: Engine.transitionBoostTypes(t),
+               obsoleteTags: (t.obsoleteTags || []).slice() };
+    }).filter(function (v) { return v.status === 'warned' || v.status === 'active'; });
+  };
+
+  // ------------------------------------------------------------------
+  // §15.3 Credit line — prestige-gated, era-appropriate APR, interest billed
+  // with the rent. Drawn balance is a liability, never negative cash.
+  // ------------------------------------------------------------------
+  Engine.getCredit = function () {
+    var state = S();
+    var C = Engine.CONFIG;
+    if (!state) return { unlocked: false, limit: 0, drawn: 0, apr: 0,
+                         monthlyInterest: 0, reason: 'No game in progress' };
+    var credit = state.credit || { drawn: 0 };
+    var year = Engine.currentYear(state);
+    var prestige = state.reputation.prestige || 0;
+    var unlocked = prestige >= C.CREDIT_PRESTIGE_MIN;
+    var limit = unlocked ?
+      Engine.round2(Engine.laborRate(year) * C.CREDIT_LIMIT_LABOR_MULT * (1 + prestige)) : 0;
+    var apr = Engine.creditAprFor(year);
+    return {
+      unlocked: unlocked,
+      limit: limit,
+      drawn: Engine.round2(credit.drawn || 0),
+      apr: Math.round(apr * 1000) / 1000,
+      monthlyInterest: Engine.round2((credit.drawn || 0) * apr / 12),
+      reason: unlocked ? null :
+        'Banks want a reputation first — reach prestige tier ' +
+        C.CREDIT_PRESTIGE_MIN + ' (' +
+        C.PRESTIGE_TIERS[C.CREDIT_PRESTIGE_MIN].label + ')'
+    };
+  };
+  Engine.drawCredit = function (amount) {
+    var bad = needLive(); if (bad) return bad;
+    var state = S();
+    var view = Engine.getCredit();
+    if (!view.unlocked) return err(view.reason || 'Credit line locked');
+    amount = Engine.round2(Number(amount));
+    if (!(amount > 0)) return err('Enter a positive amount to draw');
+    if (view.drawn + amount > view.limit + 1e-9)
+      return err('That would exceed the credit limit (' + Engine.fmtMoney(view.limit) +
+                 ', ' + Engine.fmtMoney(view.limit - view.drawn) + ' available)');
+    var sp = Engine.spendHours(state, Engine.CONFIG.CREDIT_PAPERWORK_HOURS);
+    if (!sp.ok) return sp;   // 0.1h of paperwork (§15.3)
+    state.credit = state.credit || { drawn: 0 };
+    state.credit.drawn = Engine.round2(state.credit.drawn + amount);
+    Engine.addCash(state, amount);
+    return { ok: true, drawn: state.credit.drawn,
+             hoursSpent: Engine.CONFIG.CREDIT_PAPERWORK_HOURS };
+  };
+  Engine.repayCredit = function (amount) {
+    var bad = needLive(); if (bad) return bad;
+    var state = S();
+    var credit = state.credit || { drawn: 0 };
+    amount = Engine.round2(Number(amount));
+    if (!(amount > 0)) return err('Enter a positive amount to repay');
+    if (amount > credit.drawn + 1e-9)
+      return err('Only ' + Engine.fmtMoney(credit.drawn) + ' is drawn');
+    if (state.cash < amount)
+      return err('Not enough cash to repay ' + Engine.fmtMoney(amount));
+    var sp = Engine.spendHours(state, Engine.CONFIG.CREDIT_PAPERWORK_HOURS);
+    if (!sp.ok) return sp;   // 0.1h of paperwork (§15.3)
+    state.credit = credit;
+    credit.drawn = Engine.round2(credit.drawn - amount);
+    Engine.addCash(state, -amount);
+    if (credit.drawn <= 0) {
+      credit.drawn = 0;
+      Engine.recordAchievementEvent(state, 'credit-repaid-full');   // §15.5
+    }
+    return { ok: true, drawn: credit.drawn,
+             hoursSpent: Engine.CONFIG.CREDIT_PAPERWORK_HOURS };
+  };
+
+  // ------------------------------------------------------------------
+  // §15.2 Scenario result & sandbox continuation
+  // ------------------------------------------------------------------
+  Engine.getScenarioResult = function () {
+    var state = S();
+    if (!state || !state.scenario)
+      return { score: 0, grade: null, lines: [], name: null };
+    var sc = state.scenario;
+    if (sc.result) return sc.result;   // frozen at completion
+    // Mid-run: a live preview against the same scoring rules
+    return Engine.Sim.computeScenarioResult(state, Engine.scenarioById(sc.id));
+  };
+  Engine.continueSandbox = function () {
+    var bad = needState(); if (bad) return bad;
+    var state = S();
+    if (!state.scenario) return err('Not playing a scenario');
+    if (!state.scenario.completed)
+      return err('The scenario is still running — see it through first');
+    state.scenario = null;   // clears the countdown/end screen; save continues
+    Engine.pushNews(state, 'system', 'Sandbox mode',
+      'The challenge is over, but the shop stays open. Play on.');
+    autosave();
+    return { ok: true };
+  };
+
+  // ------------------------------------------------------------------
+  // §15.5 Achievements
+  // ------------------------------------------------------------------
+  Engine.getAchievements = function () {
+    var state = S();
+    var table = Engine.ACHIEVEMENTS || [];
+    return table.map(function (a) {
+      var day = state && state.achievements ? state.achievements[a.id] : null;
+      var unlocked = day != null;
+      var masked = !!a.hidden && !unlocked;
+      return {
+        id: a.id,
+        name: masked ? '???' : a.name,
+        desc: masked ? 'A hidden achievement — you’ll know it when it happens.' : a.desc,
+        unlocked: unlocked,
+        hidden: !!a.hidden,
+        dayLabel: unlocked && state ? Engine.dateInfo(day, state).label : null
+      };
+    });
+  };
+  /* §15.5: the UI reports UI-side events (e.g. opening a Wiki article) here;
+   * engine internals record theirs via Engine.recordAchievementEvent. Runs an
+   * immediate sweep so event-gated unlocks toast right away. */
+  Engine.markAchievementEvent = function (tag) {
+    var bad = needState(); if (bad) return bad;
+    if (!tag || typeof tag !== 'string') return err('Bad achievement event tag');
+    var state = S();
+    Engine.recordAchievementEvent(state, tag);
+    var unlocked = Engine.Sim.checkAchievements(state, null);
+    return { ok: true, unlocked: unlocked };
   };
 
   // §11.6: burn an hour purely to advance running wait steps (overtime applies).

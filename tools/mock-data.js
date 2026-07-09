@@ -480,6 +480,54 @@
       jobVolumeMult: 1.0 }
   ];
 
+  // §15.1 — two mock transitions: one with obsoleteTags (price bleed +
+  // retraining), one demand-only with an EMPTY obsoleteTags array (the
+  // mobile-squeeze shape the engine must handle cleanly).
+  DATA.TRANSITIONS = [
+    { id: 'mock-16bit', name: 'The Mock 16-bit Changeover',
+      startDate: '1986-09-01', durationDays: 400,
+      newsLead: 'Mock warning: the 8088 is on its way out',
+      body: 'Mock transition: 8088 parts bleed value; upgrades boom.',
+      obsoleteTags: ['SKT-8088'],
+      demandMix: { upgrade: 1.4, repair: 0.9 },
+      retrainHours: 3, retrainCostBase: 100 },
+    { id: 'mock-soft-shift', name: 'The Mock Software Shift',
+      startDate: '1996-08-05', durationDays: 200,
+      newsLead: 'Mock warning: a software wave approaches',
+      body: 'Mock demand-only transition (no obsolete platform).',
+      obsoleteTags: [],
+      demandMix: { software: 1.5 },
+      retrainHours: 2, retrainCostBase: 80 }
+  ];
+
+  // §15.2 — two mock scenarios inside the mock catalog's year coverage.
+  DATA.SCENARIOS = [
+    { id: 'mock-rush', name: 'Mock Rush',
+      startDate: '1996-06-03', endDate: '1997-06-02',
+      cash: 8000, shopTier: 0,
+      blurb: 'Mock: a software flood with slightly hot rent.',
+      difficultyNote: 'Standard mock',
+      modifiers: { jobWeightMult: { software: 1.5 }, rentMult: 1.2, offerMult: 1.2 },
+      scoring: { cashWeight: 0.02, ratingWeight: 40,
+                 bonus: [
+                   { stat: 'jobsCompleted', threshold: 10, points: 100,
+                     label: 'Ten jobs through the bench' },
+                   { stat: 'graceDays', threshold: 0, points: 100,
+                     label: 'Never went red' }
+                 ] } },
+    { id: 'mock-survivor', name: 'Mock Survivor',
+      startDate: '1997-01-06', endDate: '1997-12-01',
+      cash: 6000, shopTier: 0,
+      blurb: 'Mock: slumping offers under heavy rent.',
+      difficultyNote: 'Hard mock',
+      modifiers: { rentMult: 1.4, offerMult: 0.8 },
+      scoring: { cashWeight: 0.02, ratingWeight: 50,
+                 bonus: [
+                   { stat: 'jobsFailed', threshold: 2, points: 120,
+                     label: 'Kept the failures down' }
+                 ] } }
+  ];
+
   DATA.RANDOM_EVENT_TEMPLATES = [
     { id: 'tariff', weight: 2, minYear: 1983, maxYear: 2100,
       headlines: ['New import tariffs announced on computer components'],
@@ -514,6 +562,10 @@
   DATA.FLAVOR = {
     firstNames: ['Pat', 'Alex', 'Sam', 'Dana', 'Chris', 'Robin', 'Lee', 'Morgan'],
     lastNames: ['Nguyen', 'Smith', 'Garcia', 'Okafor', 'Kim', 'Rossi', 'Novak', 'Baker'],
+    // §15.4 business-account name pool (mock)
+    businessNames: ['Mock Realty Group', 'Testware Legal LLP', 'Stub & Sons Printing',
+                    'Fixture Dental Associates', 'Placeholder Travel Bureau',
+                    'Sample Street Accounting'],
     customerTypes: [
       { id: 'home', label: 'Home user' },
       { id: 'smallbiz', label: 'Small business' },

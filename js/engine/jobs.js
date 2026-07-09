@@ -73,15 +73,178 @@
       1, cap);
     if (state.jobs.offers.length >= C.OFFER_BUSY_THRESHOLD)
       count = Math.floor(count / 2);   // walk-ins see a busy shop
+    // §15.2: scenario offer-volume modifier
+    var scen = Engine.currentScenario(state);
+    if (scen && scen.modifiers && scen.modifiers.offerMult > 0)
+      count = Math.max(0, Math.round(count * scen.modifiers.offerMult));
     var made = [];
     for (var n = 0; n < count; n++) {
       var job = makeOffer(state);
       if (!job) continue;
+      maybeRegularReturn(state, job);   // §15.4: a satisfied regular comes back
       state.jobs.offers.push(job);
       made.push(job.title);
     }
+    // §15.4: rare business-account retainer offers at prestige >= 2
+    var acct = maybeAccountOffer(state);
+    if (acct) { state.jobs.offers.push(acct); made.push(acct.title); }
     if (summary) summary.newOffers = summary.newOffers.concat(made);
     return made;
+  };
+
+  // ------------------------------------------------------------------
+  // §15.4 Repeat customers — satisfied customers come back by name.
+  // ------------------------------------------------------------------
+  /* Chance a given fresh offer is actually a returning regular; scales with
+   * the shop's rating. Only fires for job shapes a walk-in regular fits
+   * (never contracts — those are institutions, not people). */
+  function maybeRegularReturn(state, job) {
+    var C = CFG();
+    var regs = state.regulars || [];
+    if (!regs.length) return;
+    if (job.type === 'contract' || job.type === 'refurb') return;
+    var chance = Engine.clamp(
+      C.REGULAR_CHANCE_BASE +
+      C.REGULAR_CHANCE_PER_STAR * (state.reputation.rating - 3),
+      0, C.REGULAR_CHANCE_MAX);
+    if (!Engine.chance(chance)) return;
+    var reg = Engine.pick(regs);
+    if (!reg) return;
+    job.customer = { name: reg.name, type: reg.type || job.customer.type };
+    job.regular = true;
+    job.regularVisits = reg.jobs || 1;       // UI chip: how many times they've been in
+    job.pay = Math.round((job.pay || 0) * C.REGULAR_PAY_MULT);   // loyalty premium
+    reg.lastDay = state.day;
+    // §15.4: their taste stays consistent visit to visit (the IBM loyalist
+    // keeps coming back for IBM). Category rides the job when one applies.
+    if (reg.tasteBrand) {
+      var cat = tasteCategoryFor(job);
+      job.taste = {
+        brand: reg.tasteBrand, category: cat || null,
+        bonusPct: C.REGULAR_TASTE_BONUS,
+        label: 'Swears by ' + reg.tasteBrand +
+               (cat ? ' ' + (TASTE_PLURAL[cat] || cat) : ' gear')
+      };
+    }
+  }
+  /* Record/refresh a regular after a satisfying completion (score >= 4). */
+  function rememberRegular(state, job, score) {
+    var C = CFG();
+    if (score < C.REGULAR_SCORE_MIN) return;
+    if (!job.customer || !job.customer.name) return;
+    if (job.type === 'refurb' || job.type === 'callback') return;
+    if (job.accountId) return;   // account jobs belong to the business, not a person
+    state.regulars = state.regulars || [];
+    var reg = null;
+    for (var i = 0; i < state.regulars.length; i++) {
+      if (state.regulars[i].name === job.customer.name) { reg = state.regulars[i]; break; }
+    }
+    if (!reg) {
+      reg = { name: job.customer.name, type: job.customer.type || 'home',
+              lastDay: state.day, jobs: 0, tasteBrand: null };
+      state.regulars.push(reg);
+    }
+    reg.jobs = (reg.jobs || 0) + 1;
+    reg.lastDay = state.day;
+    if (!reg.tasteBrand && job.taste && job.taste.brand)
+      reg.tasteBrand = job.taste.brand;   // first observed taste sticks
+    // Cap: evict the regular who hasn't been in the longest
+    while (state.regulars.length > C.REGULARS_CAP) {
+      var oldest = 0;
+      for (var o = 1; o < state.regulars.length; o++)
+        if (state.regulars[o].lastDay < state.regulars[oldest].lastDay) oldest = o;
+      state.regulars.splice(oldest, 1);
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // §15.4 Business accounts — retainer offers, monthly fees, auto-jobs.
+  // ------------------------------------------------------------------
+  function businessNameFor(state) {
+    var F = FLAVOR();
+    var pool = F.businessNames;
+    if (Array.isArray(pool) && pool.length) {
+      // Prefer a name not already under contract
+      var taken = (state.accounts || []).map(function (a) { return a.name; });
+      var fresh = pool.filter(function (n) { return taken.indexOf(n) === -1; });
+      var name = Engine.pick(fresh.length ? fresh : pool);
+      if (name) return name;
+    }
+    // Fallback while DATA's business pool is in flight
+    var last = Engine.pick(F.lastNames || ['Meridian']) || 'Meridian';
+    return last + ' & Associates';
+  }
+  function maybeAccountOffer(state) {
+    var C = CFG();
+    if (state.reputation.prestige < C.ACCOUNT_PRESTIGE_MIN) return null;
+    if ((state.accounts || []).length >= C.ACCOUNT_MAX_ACTIVE) return null;
+    if (state.jobs.offers.some(function (o) { return o.type === 'business_account'; }))
+      return null;   // one retainer on the table at a time
+    if (!Engine.chance(C.ACCOUNT_OFFER_CHANCE)) return null;
+    var year = Engine.currentYear(state);
+    var name = businessNameFor(state);
+    var fee = Math.round(Engine.laborRate(year) * C.ACCOUNT_FEE_LABOR_MULT);
+    var jobsPerMonth = Engine.randInt(C.ACCOUNT_JOBS_MIN, C.ACCOUNT_JOBS_MAX);
+    var minRating = Engine.round2(Engine.clamp(
+      Math.round((state.reputation.rating - C.ACCOUNT_MIN_RATING_DELTA) * 10) / 10,
+      C.ACCOUNT_MIN_RATING_FLOOR, C.ACCOUNT_MIN_RATING_CAP));
+    return {
+      id: state.jobs.nextId++,
+      type: 'business_account', subtype: null, rush: false,
+      title: 'Business account: ' + name,
+      blurb: '"We need a shop we can call. ' + jobsPerMonth +
+             ' service visits a month, retainer paid on the 1st."',
+      customer: { name: name, type: 'smallbiz' },
+      taste: null,
+      pay: fee,                                  // shown as the monthly fee
+      offeredDay: state.day,
+      deadlineDay: shiftOffSunday(state, state.day + 5),   // offer expires like any other
+      difficulty: 1, speed: 'standard', status: 'offer',
+      hoursRequired: 0, hoursDone: 0, steps: [], stepIndex: 0,
+      diagnosed: true, needsDiagnosis: false,
+      fault: null, needs: [], build: null, units: 1, unitsDone: 0,
+      machine: null, peripheral: null, osRequest: null,
+      device: null, deviceModern: false, devicePartsCost: 0, devicePayBase: null,
+      drTier: 0, crt: false, budgetAsk: false, result: null,
+      // §15.4 account terms (UI contract)
+      account: { name: name, monthlyFee: fee, jobsPerMonth: jobsPerMonth,
+                 minRating: minRating }
+    };
+  }
+  /* §15.4: nightly auto-jobs for active business accounts — 2-4 service jobs
+   * a month, auto-accepted straight onto the bench with relaxed deadlines.
+   * Retainer work bypasses the workstation cap (you took their money). */
+  var ACCOUNT_JOB_TYPES = ['repair', 'software', 'upgrade', 'cleaning', 'peripheral'];
+  Jobs.generateAccountJobs = function (state, summary) {
+    var C = CFG();
+    var accounts = state.accounts || [];
+    for (var i = 0; i < accounts.length; i++) {
+      var acct = accounts[i];
+      if ((acct.jobsThisMonth || 0) >= acct.jobsPerMonth) continue;
+      if (!Engine.chance(acct.jobsPerMonth / 24)) continue;   // ~jobsPerMonth per ~24 open days
+      var job = null, tries = 0;
+      while (!job && tries++ < 8) {
+        var cand = makeOffer(state);
+        if (cand && ACCOUNT_JOB_TYPES.indexOf(cand.type) !== -1 && !cand.rush) job = cand;
+      }
+      if (!job) continue;
+      job.customer = { name: acct.name, type: 'smallbiz' };
+      job.accountId = acct.id;
+      job.regular = false; job.regularVisits = null;
+      job.taste = null;                       // businesses buy on spec, not fandom
+      job.title = job.title + ' (' + acct.name + ')';
+      job.deadlineDay = shiftOffSunday(state,
+        state.day + Engine.randInt(C.ACCOUNT_DEADLINE_MIN, C.ACCOUNT_DEADLINE_MAX));
+      job.status = 'active';
+      state.jobs.active.push(job);            // auto-accepted retainer work
+      acct.jobsThisMonth = (acct.jobsThisMonth || 0) + 1;
+      if (summary) {
+        summary.accountJobs = summary.accountJobs || [];
+        summary.accountJobs.push(job.title);
+      }
+      Engine.pushNews(state, 'job', 'Service visit: ' + acct.name,
+        job.title + ' — on the bench under the retainer.');
+    }
   };
 
   // §9.2: era-gated customer types, intersected with CUSTOMER_JOB_AFFINITY for
@@ -1464,6 +1627,25 @@
   Jobs.acceptOffer = function (state, jobId) {
     var job = Jobs.findOffer(state, jobId);
     if (!job) return err('Offer not found');
+    // §15.4: accepting a retainer signs the ACCOUNT — no bench job is created,
+    // so the workstation cap doesn't apply.
+    if (job.type === 'business_account') {
+      removeFrom(state.jobs.offers, job);
+      state.accounts = state.accounts || [];
+      state.accounts.push({
+        id: 'acct' + job.id, name: job.account.name,
+        monthlyFee: job.account.monthlyFee,
+        jobsPerMonth: job.account.jobsPerMonth,
+        minRating: job.account.minRating,
+        signedDay: state.day, failsThisMonth: 0, jobsThisMonth: 0
+      });
+      Engine.recordAchievementEvent(state, 'account-signed');
+      Engine.pushNews(state, 'money', 'Account signed: ' + job.account.name,
+        Engine.fmtMoney(job.account.monthlyFee) + '/month on retainer, ' +
+        job.account.jobsPerMonth + ' service visits — keep the rating above ' +
+        job.account.minRating.toFixed(1) + ' and don’t miss their deadlines.');
+      return { ok: true, accountSigned: true };
+    }
     var slots = Engine.tierInfo(state).workstationSlots;
     var activeNonRefurb = state.jobs.active.filter(function (j) { return j.type !== 'refurb'; });
     if (activeNonRefurb.length >= slots * CFG().HARD_CAP_SLOTS_MULT)
@@ -2269,6 +2451,7 @@
       Engine.ledgerAdd(state, 'other', medical - covered);
       state.hoursLeft = 0;
       state.injuryDaysLeft = C.INJURY_DAYS;
+      Engine.recordAchievementEvent(state, 'crt-injury');   // §15.5 hidden badge
       Engine.pushNews(state, 'mishap', 'CRT discharge injury!',
         'The tube bit back. Medical bill ' + Engine.fmtMoney(medical) +
         (covered ? ' (insurance covered ' + Engine.fmtMoney(covered) + ')' : '') +
@@ -2339,6 +2522,9 @@
     if (spend < 0.1 - 1e-9) return err('Not enough time for a work session');
 
     state.hoursLeft = Engine.round1(state.hoursLeft - spend);
+    // §15.5: hitting the overtime floor exactly is achievement-worthy
+    if (state.hoursLeft <= -C.overtimeCap + 1e-9)
+      Engine.recordAchievementEvent(state, 'overtime-floor');
     advanceSteps(state, job, spend / m);   // also recomputes hoursDone
     Engine.accrueStaffXp(state, job.type, spend);   // §11.5
     Jobs.tickWaits(state, spend, job.id);           // §11.6 parallel waits
@@ -2573,6 +2759,25 @@
     state.reputation.jobsCompleted++;
     state.ledger.lifetime.jobsCompleted++;
 
+    // §15.4: satisfied customers become regulars (score >= 4)
+    rememberRegular(state, job, score);
+    // §15.5: achievement event hooks tied to completion shapes
+    if (job.type === 'device_repair')
+      Engine.recordAchievementEvent(state, 'device-repair');
+    if (isBuildJob(job) && job.build) {
+      var gpuIds = (job.build.parts && job.build.parts.gpu || [])
+        .filter(function (id) { return id != null; });
+      var tagCounts = {}, sawPair = false;
+      for (var gi = 0; gi < gpuIds.length; gi++) {
+        var gp = Engine.partById(gpuIds[gi]);
+        if (gp && gp.sliTag) {
+          tagCounts[gp.sliTag] = (tagCounts[gp.sliTag] || 0) + 1;
+          if (tagCounts[gp.sliTag] >= 2) sawPair = true;
+        }
+      }
+      if (sawPair) Engine.recordAchievementEvent(state, 'sli-build');
+    }
+
     // Warranty callback roll — §10.2 risk matrix: base + perDiff x difficulty
     // (ESD setup softens the difficulty term), x reliability x test-bench.
     if (job.type !== 'callback' && !drFailed) {
@@ -2603,6 +2808,32 @@
   }
   Jobs.completeJob = completeJob;
 
+  /* §15.4: shared fail bookkeeping — regulars fail HARSHER (extra score
+   * reduction), account-job fails count toward the account's monthly cancel
+   * threshold, and contract fails feed the §15.2 contractsFailed counter. */
+  function recordJobFailure(state, job, baseFailScore) {
+    var C = CFG();
+    var score = baseFailScore;
+    if (job.regular) score = Math.max(0, score - C.REGULAR_FAIL_EXTRA);
+    Engine.pushScore(state, score);
+    state.reputation.jobsFailed++;
+    state.ledger.lifetime.jobsFailed++;
+    if (job.type === 'contract') {
+      state.ledger.lifetime.contractsFailed =
+        (state.ledger.lifetime.contractsFailed || 0) + 1;
+    }
+    if (job.accountId && Array.isArray(state.accounts)) {
+      for (var i = 0; i < state.accounts.length; i++) {
+        if (state.accounts[i].id === job.accountId) {
+          state.accounts[i].failsThisMonth = (state.accounts[i].failsThisMonth || 0) + 1;
+          break;
+        }
+      }
+    }
+    return score;
+  }
+  Jobs.recordJobFailure = recordJobFailure;
+
   Jobs.abandonJob = function (state, jobId) {
     var job = Jobs.findActive(state, jobId);
     if (!job) return err('Job not active');
@@ -2616,9 +2847,7 @@
         'Stripped for parts — recovered ' + Engine.fmtMoney(scrap) + '.');
       return { ok: true, scrapped: scrap };
     }
-    Engine.pushScore(state, CFG().SCORE_ABANDON);
-    state.reputation.jobsFailed++;
-    state.ledger.lifetime.jobsFailed++;
+    recordJobFailure(state, job, CFG().SCORE_ABANDON);   // §15.4 harsher for regulars
     Engine.pushNews(state, 'job', 'Job abandoned: ' + job.title,
       job.customer.name + ' will not be recommending the shop.');
     return { ok: true };
@@ -2632,11 +2861,12 @@
       job = state.jobs.active[i];
       if (job.deadlineDay != null && state.day > job.deadlineDay && job.status === 'active') {
         state.jobs.active.splice(i, 1);
-        Engine.pushScore(state, C.SCORE_LATE);
-        state.reputation.jobsFailed++;
-        state.ledger.lifetime.jobsFailed++;
+        var failScore = recordJobFailure(state, job, C.SCORE_LATE);   // §15.4
         job.status = 'done';
-        job.result = { onTime: false, score: C.SCORE_LATE, payout: 0, notes: ['Missed the deadline'] };
+        job.result = { onTime: false, score: failScore, payout: 0,
+                       notes: job.regular ?
+                         ['Missed the deadline', 'A loyal regular, let down'] :
+                         ['Missed the deadline'] };
         Engine.pushNews(state, 'job', 'Deadline missed: ' + job.title,
           job.customer.name + ' took their machine elsewhere.');
         summary.expired.push(job.title + ' (deadline missed)');
@@ -2910,6 +3140,7 @@
       recovered.push(pid);
     }
     removeFrom(state.jobs.active, job);
+    Engine.recordAchievementEvent(state, 'strip');   // §15.5
     Engine.pushNews(state, 'job', 'Stripped for parts: ' + job.machine.name,
       recovered.length + ' part' + (recovered.length === 1 ? '' : 's') +
       ' recovered into inventory' +

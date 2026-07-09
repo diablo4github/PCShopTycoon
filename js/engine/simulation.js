@@ -16,7 +16,10 @@
              graceWarning: null, gameOver: false,
              overtimeNote: null,
              levelUps: [],               // §11.5 staff level-ups since last morning
-             certsEarned: [] };          // §13.4 certifications completed since last morning
+             certsEarned: [],            // §13.4 certifications completed since last morning
+             achievements: [],           // §15.5 achievements unlocked since last morning
+             accountJobs: [],            // §15.4 auto-accepted retainer jobs overnight
+             scenarioComplete: null };   // §15.2 {grade, score, name} when a scenario ends
   };
 
   /* Run ONE calendar night. Steps numbered per SPEC §5.3. */
@@ -69,6 +72,8 @@
     // 2c. §13.2 Milestone Wiki articles: one-time news the first time the
     // calendar crosses an article's unlock point.
     Sim.articleUnlockCheck(state);
+    // 2d. §15.1 Era transitions: warning -> start -> end news bookkeeping.
+    Sim.updateTransitions(state);
 
     // 3. Nightly price noise + history
     Engine.Pricing.nightlyUpdate(state);
@@ -91,6 +96,8 @@
     // 7. New offers — §10.6: the shop is closed on Sunday, no offer batch
     var di = Engine.dateInfo(state.day, state);
     if (!di.isSunday) Engine.Jobs.generateOffers(state, summary);
+    // 7b. §15.4: business-account auto-jobs land on open days too
+    if (!di.isSunday) Engine.Jobs.generateAccountJobs(state, summary);
 
     // 8. Monthly billing on the 1st
     if (di.isFirstOfMonth) Sim.monthlyBilling(state, summary, di);
@@ -103,6 +110,16 @@
 
     // 11. Prestige recompute (never demotes)
     Sim.prestigeRecompute(state);
+
+    // 12. §15.4: an account walks if the rolling rating breaches its floor or
+    // the shop failed too many of its jobs this month.
+    Sim.accountHealthCheck(state, summary);
+
+    // 13. §15.2: scenario end-date check (a completion, NOT a game over)
+    Sim.scenarioCheck(state, summary);
+
+    // 14. §15.5: achievements sweep (unlocks surface in the morning summary)
+    Sim.checkAchievements(state, summary);
   };
 
   // ------------------------------------------------------------------
@@ -149,9 +166,12 @@
       }
     }
 
-    // Random events: ~4%/template/night, era-gated, max 2 active random events
+    // Random events: ~4%/template/night, era-gated, max 2 active random events.
+    // §15.6: difficulty scales the firing chance of NEGATIVE templates only
+    // (price spikes / demand slumps); positive ones fire at the same rate.
     var year = Engine.currentYear(state);
     var templates = DATA.RANDOM_EVENT_TEMPLATES || [];
+    var negMult = Engine.difficultyFor(state).negEventMult || 1;
     for (i = 0; i < templates.length; i++) {
       var t = templates[i];
       var activeRandom = state.market.activeEvents.filter(function (e) {
@@ -159,9 +179,22 @@
       }).length;
       if (activeRandom >= C.MAX_RANDOM_EVENTS) break;
       if (year < (t.minYear || 0) || year > (t.maxYear || 9999)) continue;
-      if (!Engine.chance(C.RANDOM_EVENT_NIGHTLY_CHANCE * (t.weight || 1) / 2)) continue;
+      var chance = C.RANDOM_EVENT_NIGHTLY_CHANCE * (t.weight || 1) / 2;
+      if (negMult !== 1 && Sim.isNegativeEventTemplate(t)) chance *= negMult;
+      if (!Engine.chance(chance)) continue;
       Sim.fireRandomEvent(state, t);
     }
+  };
+  // §15.6 heuristic: an event template is "negative" when it slumps job volume
+  // or spikes prices (harder buying). Tunable-free, works on any template shape.
+  Sim.isNegativeEventTemplate = function (t) {
+    if (!t) return false;
+    if ((t.jobVolumeMult || 1) < 1) return true;
+    return (t.effects || []).some(function (ef) {
+      var pm = ef && ef.priceMult;
+      if (Array.isArray(pm)) pm = (pm[0] + pm[1]) / 2;
+      return (pm || 1) > 1;
+    });
   };
 
   function copyEffect(ef) {
@@ -215,7 +248,12 @@
       Engine.ledgerAdd(state, 'fixedCosts', amount);
       summary.charges.push({ label: label, amount: -amount });
     }
-    charge('Rent (' + tier.name + ')', (tier.rentBase || 0) * scale);
+    // §15.6 difficulty + §15.2 scenario rent modifiers stack multiplicatively
+    var rentMult = Engine.difficultyFor(state).rentMult || 1;
+    var scen = Engine.currentScenario(state);
+    if (scen && scen.modifiers && scen.modifiers.rentMult > 0)
+      rentMult *= scen.modifiers.rentMult;
+    charge('Rent (' + tier.name + ')', (tier.rentBase || 0) * scale * rentMult);
     charge('Utilities', (tier.utilitiesBase || 0) * scale);
     if (state.shop.insurance) {
       charge('Insurance premium',
@@ -235,6 +273,29 @@
       charge('Wages — ' + member.name + ' (' +
              (member.title || (role ? role.name : member.role)) + ')',
              member.wageMonthly);
+    }
+    // §15.3: interest on the drawn credit balance, billed with the rent.
+    // Interest CAN drag cash negative, but the drawn balance itself never
+    // touches the grace clock (see graceCheck — it only reads state.cash).
+    var credit = state.credit || { drawn: 0 };
+    if (credit.drawn > 0) {
+      var apr = Engine.creditAprFor(year);
+      charge('Credit interest (' + Math.round(apr * 100) + '% APR on ' +
+             Engine.fmtMoney(credit.drawn) + ')',
+             credit.drawn * apr / 12);
+    }
+    // §15.4: business-account retainers pay on the 1st (revenue), and each
+    // account's monthly job/fail counters reset for the new month.
+    for (var a = 0; a < (state.accounts || []).length; a++) {
+      var acct = state.accounts[a];
+      var fee = Engine.round2(acct.monthlyFee || 0);
+      if (fee > 0) {
+        Engine.addCash(state, fee);
+        Engine.ledgerAdd(state, 'revenue', fee);
+        summary.payouts.push({ label: 'Retainer — ' + acct.name, amount: fee });
+      }
+      acct.jobsThisMonth = 0;
+      acct.failsThisMonth = 0;
     }
   };
 
@@ -334,13 +395,18 @@
   // Grace / bankruptcy (§5.3 step 10)
   // ------------------------------------------------------------------
   Sim.graceCheck = function (state, summary) {
-    var C = CFG();
     var f = state.flags;
+    // §15.6: grace length comes from the difficulty set (14 at Standard).
+    // §15.3: drawn credit is a LIABILITY, not negative cash — only state.cash
+    // below zero ticks this clock (interest can drag it there, though).
+    var graceDays = Engine.difficultyFor(state).graceDays || CFG().GRACE_DAYS;
     if (state.cash < 0) {
+      // §15.2: scenario scoring counts every day spent in the red
+      state.ledger.lifetime.graceDays = (state.ledger.lifetime.graceDays || 0) + 1;
       if (f.graceDeadlineDay == null) {
-        f.graceDeadlineDay = state.day + C.GRACE_DAYS;
+        f.graceDeadlineDay = state.day + graceDays;
         Engine.pushNews(state, 'money', 'The account is overdrawn',
-          'Creditors give you ' + C.GRACE_DAYS + ' days to get back in the black.');
+          'Creditors give you ' + graceDays + ' days to get back in the black.');
       }
       if (state.day > f.graceDeadlineDay) {
         f.gameOver = true;
@@ -355,6 +421,7 @@
         (daysLeft === 1 ? '' : 's') + ' to recover';
     } else if (f.graceDeadlineDay != null) {
       f.graceDeadlineDay = null;
+      Engine.recordAchievementEvent(state, 'grace-recovered');   // §15.5
       Engine.pushNews(state, 'money', 'Back in the black',
         'The creditors relax. Keep it that way.');
     }
@@ -392,5 +459,179 @@
         effects: [], jobVolumeMult: C.PRESS_BOOST_MULT
       });
     }
+  };
+
+  // ------------------------------------------------------------------
+  // §15.1 Era transitions — warning/start/end news bookkeeping. The economic
+  // effects (demandMix weights, obsolete-tag price bleed, staff penalty) are
+  // computed LIVE from the date everywhere else; state.transitionsFired only
+  // dedups the news so each fires exactly once per save.
+  // ------------------------------------------------------------------
+  Sim.updateTransitions = function (state) {
+    var list = Engine.transitionsData();
+    if (!list.length) return;
+    state.transitionsFired = state.transitionsFired || {};
+    for (var i = 0; i < list.length; i++) {
+      var t = list[i];
+      var w = Engine.transitionWindow(t, state);
+      var rec = state.transitionsFired[t.id] ||
+                { warned: false, started: false, ended: false };
+      if (!rec.warned && state.day >= w.warnDay) {
+        // A late warning after the start would read backwards — skip it then.
+        if (state.day < w.startDay && t.newsLead) {
+          Engine.pushNews(state, 'event', t.newsLead,
+            'Industry chatter says a platform shift is coming. Staff will need ' +
+            'retraining, and stock on the old standard will bleed value once it lands.');
+        }
+        rec.warned = true;
+      }
+      if (!rec.started && state.day >= w.startDay && state.day < w.endDay) {
+        Engine.pushNews(state, 'event', 'Transition underway: ' + (t.name || t.id),
+          (t.body || '') + (Engine.transitionBoostTypes(t).length ?
+            ' Retrain the crew — unretrained techs work the hot job types at half effect.' : ''));
+        rec.started = true;
+        rec.warned = true;
+      }
+      if (!rec.ended && state.day >= w.endDay) {
+        Engine.pushNews(state, 'event', 'The dust settles: ' + (t.name || t.id),
+          'The market has moved on. The new platform is simply how things are now.');
+        rec.ended = true;
+        rec.started = true;
+        rec.warned = true;
+        // §15.5: rode it out with the whole crew retrained (needs a crew)
+        if ((state.staff || []).length > 0 &&
+            state.staff.every(function (m) {
+              return (m.retrainedFor || []).indexOf(t.id) !== -1;
+            })) {
+          Engine.recordAchievementEvent(state, 'transition-retrained');
+        }
+      }
+      state.transitionsFired[t.id] = rec;
+    }
+  };
+
+  // ------------------------------------------------------------------
+  // §15.4 Business accounts — nightly health check: an account cancels (with
+  // a rep hit) when the rolling rating breaches its floor or the shop failed
+  // ACCOUNT_FAILS_CANCEL of its jobs inside one month.
+  // ------------------------------------------------------------------
+  Sim.accountHealthCheck = function (state, summary) {
+    var C = CFG();
+    var accounts = state.accounts || [];
+    for (var i = accounts.length - 1; i >= 0; i--) {
+      var acct = accounts[i];
+      var reason = null;
+      if (state.reputation.rating < acct.minRating)
+        reason = 'the shop rating fell below ' + acct.minRating.toFixed(1);
+      else if ((acct.failsThisMonth || 0) >= C.ACCOUNT_FAILS_CANCEL)
+        reason = 'too many of their jobs failed this month';
+      if (!reason) continue;
+      accounts.splice(i, 1);
+      Engine.pushScore(state, C.ACCOUNT_CANCEL_SCORE);
+      Engine.pushNews(state, 'money', 'Account cancelled: ' + acct.name,
+        'They pulled the retainer — ' + reason + '. Word travels in business circles.');
+      if (summary) summary.expired.push('Business account: ' + acct.name + ' (cancelled)');
+    }
+  };
+
+  // ------------------------------------------------------------------
+  // §15.2 Scenario completion — reaching endDate ENDS the run (completion
+  // screen, not game over). The result is computed and FROZEN here so
+  // continueSandbox() can't retroactively change the grade.
+  // ------------------------------------------------------------------
+  function scenarioStatValue(state, stat) {
+    var lt = state.ledger.lifetime;
+    switch (stat) {
+      case 'cash': return state.cash;
+      case 'rating': return state.reputation.rating;
+      case 'prestige': return state.reputation.prestige;
+      case 'jobsCompleted': return lt.jobsCompleted || 0;
+      case 'jobsFailed': return lt.jobsFailed || 0;
+      case 'buildsDelivered': return lt.buildsDelivered || 0;
+      case 'refurbsSold': return lt.refurbsSold || 0;
+      case 'revenue': return lt.revenue || 0;
+      case 'contractsFailed': return lt.contractsFailed || 0;
+      case 'graceDays': return lt.graceDays || 0;
+      case 'callbacks': return state.reputation.callbacks || 0;
+      default: return 0;
+    }
+  }
+  var LOWER_IS_BETTER_STATS = ['contractsFailed', 'graceDays', 'jobsFailed', 'callbacks'];
+  /* Engine scoring contract (documented beside DATA.SCENARIOS):
+   * score = round(cash*cashWeight + rating*ratingWeight) + earned bonus pts.
+   * Lower-is-better stats earn their bonus at value <= threshold; the rest
+   * at value >= threshold. */
+  Sim.computeScenarioResult = function (state, scen) {
+    var C = CFG();
+    var scoring = (scen && scen.scoring) || {};
+    var cashPts = Math.round((state.cash || 0) * (scoring.cashWeight || 0));
+    var ratingPts = Math.round(state.reputation.rating * (scoring.ratingWeight || 0));
+    var lines = [
+      { label: 'Banked cash', value: Engine.fmtMoney(state.cash), points: cashPts },
+      { label: 'Reputation', value: state.reputation.rating.toFixed(2) + ' of 5',
+        points: ratingPts }
+    ];
+    var score = cashPts + ratingPts;
+    var bonuses = scoring.bonus || [];
+    for (var i = 0; i < bonuses.length; i++) {
+      var b = bonuses[i];
+      if (!b || !b.stat) continue;
+      var v = scenarioStatValue(state, b.stat);
+      var met = LOWER_IS_BETTER_STATS.indexOf(b.stat) !== -1 ?
+        v <= b.threshold : v >= b.threshold;
+      var pts = met ? (b.points || 0) : 0;
+      score += pts;
+      lines.push({ label: b.label || b.stat,
+                   value: met ? 'achieved' : 'missed (' + v + ')',
+                   points: pts });
+    }
+    var grade = 'D';
+    var grades = C.SCENARIO_GRADES || [];
+    for (var g = 0; g < grades.length; g++) {
+      if (score >= grades[g].min) { grade = grades[g].grade; break; }
+    }
+    return { score: score, grade: grade, lines: lines,
+             name: (scen && scen.name) || (state.scenario && state.scenario.id) || '' };
+  };
+  Sim.scenarioCheck = function (state, summary) {
+    var sc = state.scenario;
+    if (!sc || !sc.active || state.flags.gameOver) return;
+    if (state.day < sc.endDay) return;
+    var scen = Engine.scenarioById(sc.id);
+    var result = Sim.computeScenarioResult(state, scen);
+    sc.active = false;
+    sc.completed = true;
+    sc.result = result;   // frozen — sandbox play afterwards can't change it
+    Engine.recordAchievementEvent(state, 'scenario-complete');
+    Engine.recordAchievementEvent(state, 'scenario-grade-' + result.grade);
+    Engine.pushNews(state, 'system', 'Scenario complete: ' + result.name,
+      'Final grade ' + result.grade + ' (' + result.score + ' points). ' +
+      'Start a fresh game or keep the shop running in sandbox.');
+    if (summary) summary.scenarioComplete =
+      { grade: result.grade, score: result.score, name: result.name };
+  };
+
+  // ------------------------------------------------------------------
+  // §15.5 Achievements sweep — every check is state-derived (event-driven
+  // ones read the counters recorded via Engine.recordAchievementEvent), so a
+  // single sweep point can never double-unlock: state.achievements[id] guards.
+  // ------------------------------------------------------------------
+  Sim.checkAchievements = function (state, summary) {
+    if (state.flags.gameOver) return [];
+    state.achievements = state.achievements || {};
+    var table = Engine.ACHIEVEMENTS || [];
+    var unlocked = [];
+    for (var i = 0; i < table.length; i++) {
+      var a = table[i];
+      if (state.achievements[a.id] != null) continue;   // never twice
+      var hit = false;
+      try { hit = !!a.check(state); } catch (e) { hit = false; }   // never throw
+      if (!hit) continue;
+      state.achievements[a.id] = state.day;
+      unlocked.push(a.name);
+      Engine.pushNews(state, 'achievement', 'Achievement: ' + a.name, a.desc || '');
+      if (summary && summary.achievements) summary.achievements.push(a.name);
+    }
+    return unlocked;
   };
 })(typeof window !== 'undefined' ? window : globalThis);

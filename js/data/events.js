@@ -221,6 +221,90 @@
     }
   ];
 
+  // §15.1 — DATA.TRANSITIONS: dated STRUCTURAL platform-transition windows.
+  // Distinct from HISTORICAL_EVENTS (price-moving market shocks) and CHRONICLE
+  // (non-economic news): transitions carry NO priceMult/effects. Instead the engine
+  // uses obsoleteTags (parts carrying any of these platform tags bleed value faster
+  // while the window is active), demandMix (job-type generation-weight multipliers),
+  // and retrainHours/retrainCostBase (staff retraining; costBase is 1983-scale
+  // dollars, engine year-scales). newsLead is the warning headline fired ~60 days
+  // BEFORE startDate. The Win95 support wave stays a HISTORICAL_EVENT (win95-launch)
+  // on purpose — it moved prices; these move the structure of the trade.
+  DATA.TRANSITIONS = [
+    {
+      id: "sixteen-bit", name: "The 16-bit Changeover",
+      startDate: "1986-09-09", durationDays: 450,
+      newsLead: "Compaq readies a 386 machine — dealers whisper the 8088's days are numbered",
+      body: "Compaq beat IBM to the 386 and suddenly every serious buyer wants a 16-bit AT clone instead of an aging XT. The 8088 boxes that built this business are turning into trade-ins, and customers expect their shop to speak the new machines' language. Stock of first-generation boards is quietly losing its shine.",
+      obsoleteTags: ["SKT-8088", "SKT-8086", "FF-XT"],
+      demandMix: { upgrade: 1.35, repair: 1.05, peripheral: 1.1 },
+      retrainHours: 3, retrainCostBase: 90
+    },
+    {
+      id: "atx-changeover", name: "The ATX Changeover",
+      startDate: "1997-03-01", durationDays: 540,
+      newsLead: "Intel's ATX standard is coming: new cases, new power supplies, new everything",
+      body: "Intel's ATX specification rearranges the motherboard, moves the CPU away from the slots, and replaces the shock-prone AT power switch with soft power. Case and PSU makers are retooling their whole lines, and every new board that arrives expects the new layout. Shelves of AT cases and supplies are aging out fast.",
+      obsoleteTags: ["FF-AT"],
+      demandMix: { build: 1.4, upgrade: 1.2, repair: 0.95 },
+      retrainHours: 4, retrainCostBase: 150
+    },
+    {
+      id: "isa-sunset", name: "The Death of ISA",
+      startDate: "1999-07-01", durationDays: 540,
+      newsLead: "PC99 spec tells vendors to drop ISA slots — legacy cards are on notice",
+      body: "The Microsoft-Intel PC99 guidelines paint legacy ports and the venerable ISA bus as dead weight, and new boards are shipping with fewer or zero ISA slots. Every customer with a beloved ISA modem or sound card will need a PCI replacement sooner than they think. The parts drawer full of 16-bit cards is becoming a museum exhibit.",
+      obsoleteTags: ["BUS-ISA8", "BUS-ISA16", "BUS-VLB"],
+      demandMix: { upgrade: 1.3, build: 1.15, peripheral: 1.15 },
+      retrainHours: 3, retrainCostBase: 120
+    },
+    {
+      id: "pcie-shift", name: "The PCI Express Shift",
+      startDate: "2004-06-19", durationDays: 540,
+      newsLead: "Intel's new chipsets bet on PCI Express — AGP's reign is ending",
+      body: "Intel's 900-series chipsets arrive with PCI Express x16 in the slot where AGP used to live, and graphics vendors are already splitting their lines in two. Enthusiasts want the new platform now, while everyone else needs guidance on whether their AGP tower is a dead end. Card stock on the old bus is a melting asset.",
+      obsoleteTags: ["BUS-AGP"],
+      demandMix: { build: 1.35, upgrade: 1.25, repair: 0.95 },
+      retrainHours: 4, retrainCostBase: 170
+    },
+    {
+      id: "vista-churn", name: "The Vista Support Churn",
+      startDate: "2007-01-30", durationDays: 540,
+      newsLead: "Windows Vista launches this winter — brace for driver chaos and RAM upgrades",
+      body: "Vista lands with steep hardware appetites, a new driver model, and a compatibility minefield that has offices clinging to XP. Half the town wants more memory to make the new OS bearable and the other half wants it removed. Either way, the software bench is about to be the busiest corner of the shop.",
+      obsoleteTags: ["ARCH-586", "MEM-SDR"],
+      demandMix: { software: 1.5, upgrade: 1.3, cleaning: 1.1 },
+      retrainHours: 4, retrainCostBase: 180
+    },
+    {
+      id: "ssd-shift", name: "The SSD Service Shift",
+      startDate: "2012-09-01", durationDays: 540,
+      newsLead: "Solid-state drive prices are falling fast — the spinning disk's throne is wobbling",
+      body: "SSD prices have finally crossed the line where a drive swap is the single best upgrade money can buy, and word is spreading. Every sluggish laptop and desktop in town is a candidate, while the old parallel-ATA drives in the back room slide toward scrap value. Meanwhile the dying spinners keep the recovery rig humming.",
+      obsoleteTags: ["STOR-IDE"],
+      demandMix: { upgrade: 1.5, data_recovery: 1.25, repair: 0.95 },
+      retrainHours: 4, retrainCostBase: 200
+    },
+    {
+      id: "mobile-squeeze", name: "The Post-PC Squeeze",
+      startDate: "2013-06-01", durationDays: 540,
+      newsLead: "Tablet and phone sales soar as PC shipments slump — pundits declare the PC dead",
+      body: "Casual customers are drifting to tablets and phones, and the walk-in fix-my-desktop trade is thinning quarter by quarter. What's left is sharper: enthusiasts who build, businesses that depend on real machines, and a flood of cracked screens and battered handhelds looking for anyone who can fix them. Shops that adapt to devices thrive; shops that don't, fade.",
+      obsoleteTags: [],
+      demandMix: { device_repair: 1.5, enthusiast: 1.2, repair: 0.85, build: 0.9, peripheral: 0.85 },
+      retrainHours: 5, retrainCostBase: 210
+    },
+    {
+      id: "ddr5-churn", name: "The DDR5 Platform Churn",
+      startDate: "2021-11-04", durationDays: 540,
+      newsLead: "Next-gen boards arrive with DDR5 and new sockets — and eye-watering launch prices",
+      body: "Alder Lake opens the DDR5 era with a new socket, scarce and expensive memory, and a fresh round of the oldest question in the trade: upgrade the platform or ride the old one? AMD's answer lands within the year, stranding yet another generation of boards and sticks. Stock from the last cycle is depreciating while you look at it.",
+      obsoleteTags: ["MEM-DDR3", "SKT-1151", "SKT-1151V2"],
+      demandMix: { build: 1.3, upgrade: 1.15, repair: 0.95 },
+      retrainHours: 5, retrainCostBase: 240
+    }
+  ];
+
 
   // §13.1 — DATA.CHRONICLE: real, dated computing-history milestones surfaced as
   // non-market news (kind:"chronicle"). Zero price/market effect — distinct from

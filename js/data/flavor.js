@@ -284,6 +284,16 @@
       "Chips & Tips Computing", "The Blue Screen Clinic", "Kilobyte Corner", "TurboTech Services",
       "Golden Screwdriver PC", "Cache & Carry Computers", "Reboot Repair Co.", "The Soldering Iron",
       "Downtown Data Works", "Front Panel Computing", "Iron Case PC Lab", "Warm Boot Workshop"
+    ],
+    // v0.6 (§15.4): local businesses for retainer/business-account offers.
+    // Period-neutral small-town institutions — plausible clients any year 1983-2025.
+    businessNames: [
+      "Whitfield & Moss, Attorneys at Law", "Harborview Dental Group", "Lakeside Realty",
+      "Grand Avenue Printing Co.", "TriCounty Insurance Agency", "Beacon Hill Accounting",
+      "Sunrise Medical Clinic", "Miller's Hardware & Supply", "Valley Veterinary Clinic",
+      "Fairway Motors", "The Daily Courier", "Redwood Architecture Studio",
+      "Pinnacle Staffing Services", "Custom House Travel", "Northgate Public Library",
+      "Delgado Bros. Construction"
     ]
   };
 

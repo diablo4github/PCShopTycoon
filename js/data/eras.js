@@ -56,6 +56,79 @@
 
   DATA.CUSTOM_BUILD_UNLOCK_DATE = "1989-09-01";
 
+  // §15.2 — curated, scored scenario starts (exactly these 4; dates are spec-pinned).
+  // Engine scoring contract: score = round(cash * scoring.cashWeight
+  //   + rating * scoring.ratingWeight) + sum of earned bonus points.
+  // Bonus semantics: for LOWER-IS-BETTER stats ("contractsFailed", "graceDays",
+  // "jobsFailed") the bonus is earned when the final value is <= threshold; for all
+  // other stats it is earned when the final value is >= threshold. Scenarios start
+  // fresh games, so ledger.lifetime counters double as scenario counters;
+  // "contractsFailed" (failed contract-type jobs) and "graceDays" (days spent in the
+  // negative-cash grace window) are new engine-tracked counters; "prestige" and
+  // "rating" read from state.reputation.
+  DATA.SCENARIOS = [
+    {
+      id: "y2k-rush", name: "Y2K Rush",
+      startDate: "1998-06-01", endDate: "2000-03-01",
+      cash: 10000, shopTier: 1,
+      blurb: "It's June 1998 and every business in town just realized their PCs might not survive New Year's Eve. Compliance contracts and software work are raining down on any shop that can hit a deadline. Staff up, take the retainers, and don't you dare deliver late — the score rewards banked cash and a spotless contract record.",
+      difficultyNote: "Standard — deadline pressure; one failed contract kills the bonus",
+      modifiers: { jobWeightMult: { contract: 1.8, software: 1.6 }, offerMult: 1.25 },
+      scoring: {
+        cashWeight: 0.012, ratingWeight: 40,
+        bonus: [
+          { stat: "contractsFailed", threshold: 0, points: 200, label: "Every contract delivered — zero Y2K casualties" },
+          { stat: "jobsCompleted", threshold: 100, points: 100, label: "A hundred machines through the bench" }
+        ]
+      }
+    },
+    {
+      id: "dotcom-survivor", name: "Dot-com Survivor",
+      startDate: "2000-03-01", endDate: "2001-12-31",
+      cash: 9000, shopTier: 1,
+      blurb: "March 2000: the Nasdaq just peaked, and the crash is about to land on your lease. Demand is drying up, the rent was signed in boom times, and liquidators are flooding the market with barely-used gear. Run lean, keep the rating up, and outlast the winter — coming out solvent is the victory.",
+      difficultyNote: "Hard — slumping demand under boom-era rent",
+      modifiers: { jobWeightMult: { build: 0.7, contract: 0.7 }, rentMult: 1.4, offerMult: 0.8 },
+      scoring: {
+        cashWeight: 0.02, ratingWeight: 50,
+        bonus: [
+          { stat: "graceDays", threshold: 0, points: 120, label: "Never fell into the red" },
+          { stat: "prestige", threshold: 1, points: 100, label: "Grew the shop's name in a downturn" }
+        ]
+      }
+    },
+    {
+      id: "flood-trader", name: "Flood Trader",
+      startDate: "2011-08-01", endDate: "2012-12-31",
+      cash: 10000, shopTier: 0,
+      blurb: "August 2011. Monsoon season is building over Thailand, where a quarter of the world's hard drives are made — and nobody is watching the weather but you. Modest cash, a garage, and about sixty days of calm. Whatever you stock before October will be worth double after it.",
+      difficultyNote: "Standard — a market-timing puzzle; stockpile early",
+      modifiers: { jobWeightMult: { data_recovery: 1.3, upgrade: 1.2 } },
+      scoring: {
+        cashWeight: 0.015, ratingWeight: 30,
+        bonus: [
+          { stat: "refurbsSold", threshold: 12, points: 150, label: "Flipped a dozen machines through the drought" },
+          { stat: "graceDays", threshold: 0, points: 70, label: "Speculated without going broke" }
+        ]
+      }
+    },
+    {
+      id: "shortage-shop", name: "Shortage Shop",
+      startDate: "2020-03-01", endDate: "2021-12-31",
+      cash: 16000, shopTier: 1,
+      blurb: "March 2020: the world just went home, and it took every webcam, GPU, and desktop with it. Demand is historic, stock is a rumor, and customers will remember who treated them fairly. Source what you can, build what you're able, and let your reputation grow through the drought — the score weighs your name as heavily as your bank balance.",
+      difficultyNote: "Hard — historic demand, scarce parts",
+      modifiers: { jobWeightMult: { build: 1.3, software: 1.2 }, offerMult: 1.15 },
+      scoring: {
+        cashWeight: 0.01, ratingWeight: 60,
+        bonus: [
+          { stat: "buildsDelivered", threshold: 8, points: 150, label: "Delivered eight custom rigs in the great shortage" },
+          { stat: "jobsFailed", threshold: 3, points: 100, label: "Kept your promises when parts were scarce" }
+        ]
+      }
+    }
+  ];
+
   // §2.5 — shop tiers
   DATA.SHOP_TIERS = [
     {

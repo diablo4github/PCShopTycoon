@@ -824,6 +824,126 @@ if (!CERTS.some(function (c) { return c.effects && (c.effects.jobTimeMult && c.e
   warn('CERTIFICATIONS: expected a data-recovery-focused cert (§13.4 canon)');
 }
 
+// ---------------------------------------------------------------- v0.6 §15.1 TRANSITIONS
+var TAG_UNIVERSE = {};
+PARTS.forEach(function (p) { (p.platformTags || []).forEach(function (t) { TAG_UNIVERSE[t] = true; }); });
+var TRANS = DATA.TRANSITIONS || [];
+if (!Array.isArray(TRANS) || TRANS.length < 6 || TRANS.length > 9) {
+  err('TRANSITIONS: need 6-9 transition windows (§15.1), have ' + (Array.isArray(TRANS) ? TRANS.length : 'none'));
+}
+var transIds = {};
+TRANS.forEach(function (t, i) {
+  var l = 'TRANSITIONS[' + i + '] (' + (t && t.id ? t.id : '?') + ')';
+  if (!isStr(t.id) || !/^[a-z0-9-]+$/.test(t.id)) err(l + ': id must be kebab-case');
+  else {
+    if (transIds[t.id]) err(l + ': duplicate id ' + t.id);
+    transIds[t.id] = true;
+    if (histIds[t.id]) err(l + ': id collides with a HISTORICAL_EVENTS id (news keys must stay unambiguous)');
+  }
+  if (!isStr(t.name)) err(l + ': name required');
+  if (!isStr(t.newsLead) || t.newsLead.length < 20) err(l + ': newsLead warning headline required (>= 20 chars)');
+  if (!isStr(t.body) || t.body.length < 80) err(l + ': body must be a 2-3 sentence period story (>= 80 chars)');
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(t.startDate || '') || isNaN(Date.parse(t.startDate))) err(l + ': bad startDate (need real ISO YYYY-MM-DD)');
+  else {
+    var ty = Number(t.startDate.slice(0, 4));
+    if (ty < 1983 || ty > 2025) err(l + ': startDate year ' + ty + ' outside 1983-2025');
+    // the ~60-day newsLead warning must also land inside the playable range
+    if (Date.parse(t.startDate) - 60 * 86400000 < Date.parse('1983-01-01')) err(l + ': lead warning (start - 60d) falls before 1983');
+  }
+  if (!isInt(t.durationDays) || t.durationDays < 180 || t.durationDays > 540) err(l + ': durationDays must be an int in 180-540');
+  else if (!isNaN(Date.parse(t.startDate)) && Date.parse(t.startDate) + t.durationDays * 86400000 > Date.parse('2026-06-30')) {
+    err(l + ': window runs past the data horizon (mid-2026)');
+  }
+  // STRUCTURAL, not market-moving: no price/volume fields (those belong to HISTORICAL_EVENTS)
+  if (t.effects !== undefined || t.priceMult !== undefined || t.jobVolumeMult !== undefined) {
+    err(l + ': transitions are structural — no effects/priceMult/jobVolumeMult (keep market shocks in HISTORICAL_EVENTS)');
+  }
+  if (!Array.isArray(t.obsoleteTags)) err(l + ': obsoleteTags must be an array (may be empty for demand-only shifts)');
+  else t.obsoleteTags.forEach(function (tag) {
+    if (!TAG_UNIVERSE[tag]) err(l + ': obsoleteTag "' + tag + '" not found among catalog platformTags');
+  });
+  if (typeof t.demandMix !== 'object' || t.demandMix === null || !Object.keys(t.demandMix).length) {
+    err(l + ': demandMix must be a non-empty object of job-type multipliers');
+  } else Object.keys(t.demandMix).forEach(function (k) {
+    if (JOB_TYPES.indexOf(k) === -1) err(l + ': demandMix key "' + k + '" is not a job type');
+    var v = t.demandMix[k];
+    if (!isNum(v) || v <= 0 || v > 4) err(l + ': demandMix.' + k + ' must be a number in (0, 4]');
+  });
+  if (!isNum(t.retrainHours) || t.retrainHours <= 0 || t.retrainHours > 40) err(l + ': retrainHours must be in (0, 40]');
+  if (!isNum(t.retrainCostBase) || t.retrainCostBase <= 0) err(l + ': retrainCostBase (1983-scale) must be > 0');
+});
+
+// ---------------------------------------------------------------- v0.6 §15.2 SCENARIOS
+// Spec-pinned ids and dates.
+var SCEN_SPEC = {
+  'y2k-rush': { start: '1998-06-01', end: '2000-03-01' },
+  'dotcom-survivor': { start: '2000-03-01', end: '2001-12-31' },
+  'flood-trader': { start: '2011-08-01', end: '2012-12-31' },
+  'shortage-shop': { start: '2020-03-01', end: '2021-12-31' }
+};
+var SCEN_MODS = ['jobWeightMult', 'rentMult', 'offerMult'];
+var SCEN = DATA.SCENARIOS || [];
+if (!Array.isArray(SCEN) || SCEN.length !== 4) err('SCENARIOS: must be exactly the 4 spec scenarios (§15.2), have ' + (Array.isArray(SCEN) ? SCEN.length : 'none'));
+var scenSeen = {};
+SCEN.forEach(function (s, i) {
+  var l = 'SCENARIOS[' + i + '] (' + (s && s.id ? s.id : '?') + ')';
+  if (!SCEN_SPEC[s.id]) { err(l + ': id must be one of ' + Object.keys(SCEN_SPEC).join('|')); return; }
+  if (scenSeen[s.id]) err(l + ': duplicate scenario ' + s.id);
+  scenSeen[s.id] = true;
+  if (s.startDate !== SCEN_SPEC[s.id].start) err(l + ': startDate must be ' + SCEN_SPEC[s.id].start + ' (spec-pinned)');
+  if (s.endDate !== SCEN_SPEC[s.id].end) err(l + ': endDate must be ' + SCEN_SPEC[s.id].end + ' (spec-pinned)');
+  ['startDate', 'endDate'].forEach(function (k) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(s[k] || '') || isNaN(Date.parse(s[k]))) err(l + ': ' + k + ' not real ISO');
+    else {
+      var yy = Number(s[k].slice(0, 4));
+      if (yy < 1983 || yy > 2025) err(l + ': ' + k + ' year outside the 1983-2025 data range');
+    }
+  });
+  if (!isNaN(Date.parse(s.startDate)) && !isNaN(Date.parse(s.endDate)) && Date.parse(s.startDate) >= Date.parse(s.endDate)) err(l + ': startDate must precede endDate');
+  if (!isStr(s.name)) err(l + ': name required');
+  if (!isStr(s.blurb) || s.blurb.length < 60) err(l + ': blurb must sell the fantasy + hint the strategy (>= 60 chars)');
+  if (!isStr(s.difficultyNote)) err(l + ': difficultyNote required');
+  if (!isNum(s.cash) || s.cash <= 0) err(l + ': cash must be > 0');
+  if (!isInt(s.shopTier) || s.shopTier < 0 || s.shopTier >= TIERS_ARR.length) err(l + ': shopTier must index SHOP_TIERS (0-' + (TIERS_ARR.length - 1) + ')');
+  if (typeof s.modifiers !== 'object' || s.modifiers === null) err(l + ': modifiers object required (may be empty)');
+  else {
+    Object.keys(s.modifiers).forEach(function (k) { if (SCEN_MODS.indexOf(k) === -1) err(l + ': unknown modifier "' + k + '" (allowed: ' + SCEN_MODS.join('/') + ')'); });
+    var jw = s.modifiers.jobWeightMult;
+    if (jw !== undefined) {
+      if (typeof jw !== 'object' || jw === null || !Object.keys(jw).length) err(l + ': jobWeightMult must be a non-empty object');
+      else Object.keys(jw).forEach(function (k) {
+        if (JOB_TYPES.indexOf(k) === -1) err(l + ': jobWeightMult key "' + k + '" is not a job type');
+        if (!isNum(jw[k]) || jw[k] <= 0 || jw[k] > 4) err(l + ': jobWeightMult.' + k + ' must be in (0, 4]');
+      });
+    }
+    ['rentMult', 'offerMult'].forEach(function (k) {
+      if (s.modifiers[k] !== undefined && (!isNum(s.modifiers[k]) || s.modifiers[k] <= 0 || s.modifiers[k] > 4)) err(l + ': ' + k + ' must be in (0, 4]');
+    });
+  }
+  var sc = s.scoring;
+  if (typeof sc !== 'object' || sc === null) { err(l + ': scoring object required'); return; }
+  if (!isNum(sc.cashWeight) || sc.cashWeight <= 0 || sc.cashWeight > 1) err(l + ': cashWeight must be in (0, 1] (points per dollar)');
+  if (!isNum(sc.ratingWeight) || sc.ratingWeight <= 0 || sc.ratingWeight > 200) err(l + ': ratingWeight must be in (0, 200]');
+  if (!Array.isArray(sc.bonus) || !sc.bonus.length || sc.bonus.length > 4) err(l + ': scoring.bonus must have 1-4 entries');
+  else sc.bonus.forEach(function (b, j) {
+    var bl = l + ' bonus[' + j + ']';
+    if (!isStr(b.stat)) err(bl + ': stat key required');
+    if (!isNum(b.threshold) || b.threshold < 0) err(bl + ': threshold must be a number >= 0');
+    if (!isNum(b.points) || b.points <= 0 || b.points > 500) err(bl + ': points must be in (0, 500]');
+    if (!isStr(b.label)) err(bl + ': label required');
+  });
+});
+Object.keys(SCEN_SPEC).forEach(function (id) { if (!scenSeen[id]) err('SCENARIOS missing required scenario: ' + id); });
+
+// ---------------------------------------------------------------- v0.6 §15.4 business-name pool
+needLen(FL.businessNames, 15, 'businessNames (v0.6 §15.4)');
+var bizSeen = {};
+(FL.businessNames || []).forEach(function (n, i) {
+  if (!isStr(n)) err('FLAVOR.businessNames[' + i + ']: must be a non-empty string');
+  else if (bizSeen[n]) err('FLAVOR.businessNames: duplicate "' + n + '"');
+  else bizSeen[n] = true;
+});
+
 // ---------------------------------------------------------------- report
 function pad(s, n) { s = String(s); while (s.length < n) s = ' ' + s; return s; }
 console.log('=== Coverage table (parts by introYear bucket) ===');
@@ -873,6 +993,9 @@ console.log('v0.5 Education: Chronicle ' + CHRON.length + ' entries (' + (CHRON.
   chronYearsSeen.length + ' distinct years) | Articles ' + ARTS.length + ' | Period software ' + PS.length +
   ' | Certifications ' + CERTS.length + ' | tokened copy ' + (tokenedComplaints + tokenedBlurbs) +
   ' (' + tokenedComplaints + ' complaints, ' + tokenedBlurbs + ' blurbs)');
+console.log('v0.6 Long Arc: Transitions ' + TRANS.length + ' (' +
+  TRANS.map(function (t) { return t.id; }).join(', ') + ') | Scenarios ' + SCEN.length + '/4 | Business names ' +
+  ((FL.businessNames || []).length));
 
 if (warnings.length) {
   console.log('\nWARNINGS (' + warnings.length + '):');

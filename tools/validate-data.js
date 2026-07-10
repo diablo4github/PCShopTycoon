@@ -46,6 +46,22 @@ function tagsIn(part, ns) {
   }
 });
 
+// ---------------------------------------------------------------- v0.6.1 §16.2a corruption guard
+// A find/replace once turned literal "$1" into " }," inside desc strings (PLAYTEST-v0.5
+// P1.1). No string VALUE anywhere in DATA may contain the " }," artifact — the general
+// / \},/ pattern also covers the " },<digit>" and " },," variants. (A raw source scan
+// can't be used: " }," appears legitimately as an object terminator in code.)
+(function scanCorruption(node, where) {
+  if (typeof node === 'string') {
+    if (/ \},/.test(node)) err('corruption guard: ' + where + ' contains the " }," $1-replacement artifact (§16.2a)');
+    return;
+  }
+  if (Array.isArray(node)) { node.forEach(function (v, i) { scanCorruption(v, where + '[' + i + ']'); }); return; }
+  if (node && typeof node === 'object') {
+    Object.keys(node).forEach(function (k) { scanCorruption(node[k], where + '.' + k); });
+  }
+})(DATA, 'DATA');
+
 // ---------------------------------------------------------------- PARTS schema
 if (!Array.isArray(DATA.PARTS)) { err('DATA.PARTS is not an array'); }
 var PARTS = DATA.PARTS || [];
@@ -270,6 +286,30 @@ for (var y = 1983; y <= 2025; y++) {
   else sampleBuilds[y] = b;
 }
 
+// ---------------------------------------------------------------- v0.6.1 §16.4 socket consistency
+// Decision (P3, PLAYTEST-v0.5): the Pentium 60 is retagged to its historical SKT-4 with
+// a matching Socket 4 board, rather than silently extending the documented §2.2
+// "Socket 5/7 as SKT-7" merge to Socket 4 (5V Socket 4 chips never fit Socket 5/7).
+// Enforce both the specific decision and the general invariant behind it: no CPU may be
+// stranded — every CPU must share a SKT-* tag with >= 1 motherboard whose availability
+// window overlaps its own.
+var p60 = byId['cpu-pentium-60'];
+if (p60 && (p60.platformTags || []).indexOf('SKT-4') === -1) {
+  err('cpu-pentium-60 must carry SKT-4 (historical Socket 4; §16.4 decision — see PLAYTEST-v0.5 P3)');
+}
+if (p60 && !PARTS.some(function (p) { return p.category === 'motherboard' && (p.platformTags || []).indexOf('SKT-4') !== -1; })) {
+  err('SKT-4 retag requires a matching Socket 4 motherboard (§16.4)');
+}
+var allBoards = PARTS.filter(function (p) { return p.category === 'motherboard'; });
+PARTS.forEach(function (p) {
+  if (p.category !== 'cpu') return;
+  var skts = tagsIn(p, 'SKT');
+  var ok = allBoards.some(function (mb) {
+    return overlap(skts, mb.platformTags) && mb.introYear <= p.eolYear && p.introYear <= mb.eolYear;
+  });
+  if (!ok) err(p.id + ': stranded CPU — no motherboard shares a SKT tag within its availability window (§16.4)');
+});
+
 // ---------------------------------------------------------------- ERAS / SHOP_TIERS / EQUIPMENT
 var ERA_PRESETS = { era1983: 3000, era1991: 6000, era1996: 9000, era2004: 14000, era2013: 20000, era2021: 30000 };
 var ERAS = DATA.ERAS || [];
@@ -376,7 +416,9 @@ HIST.forEach(function (e) {
 });
 REQ_HIST.forEach(function (id) { if (!histIds[id]) err('HISTORICAL_EVENTS missing required event: ' + id); });
 
-var REQ_TMPL = ['tariff', 'distributor-bankruptcy', 'competitor-closes', 'competitor-opens', 'press-coverage', 'warehouse-fire-sale', 'flu-season'];
+var REQ_TMPL = ['tariff', 'distributor-bankruptcy', 'competitor-closes', 'competitor-opens', 'press-coverage', 'warehouse-fire-sale', 'flu-season',
+  // v0.6.1 §16.4 mid/late-era additions
+  'mining-noise', 'oem-recall', 'right-to-repair', 'bigbox-sale'];
 var TMPL = DATA.RANDOM_EVENT_TEMPLATES || [];
 var tmplIds = {};
 function isRange(a) { return Array.isArray(a) && a.length === 2 && isNum(a[0]) && isNum(a[1]) && a[0] <= a[1]; }
@@ -398,6 +440,13 @@ TMPL.forEach(function (t) {
   if (!t.effects.length && t.jobVolumeMult === 1.0) err(l + ': event has no effect at all');
 });
 REQ_TMPL.forEach(function (id) { if (!tmplIds[id]) err('RANDOM_EVENT_TEMPLATES missing required template: ' + id); });
+// v0.6.1 §16.4: the four new templates must stay era-gated to mid/late eras
+var TMPL_MIN_GATES = { 'mining-noise': 2013, 'oem-recall': 2000, 'right-to-repair': 2015, 'bigbox-sale': 1995 };
+TMPL.forEach(function (t) {
+  if (TMPL_MIN_GATES[t.id] !== undefined && t.minYear < TMPL_MIN_GATES[t.id]) {
+    err('TEMPLATE ' + t.id + ': minYear ' + t.minYear + ' breaks its era gate (must be >= ' + TMPL_MIN_GATES[t.id] + ', §16.4)');
+  }
+});
 
 // ---------------------------------------------------------------- flavor
 var FL = DATA.FLAVOR || {};

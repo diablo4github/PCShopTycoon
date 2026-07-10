@@ -218,6 +218,55 @@
       durationDays: [10, 21],
       effects: [],
       jobVolumeMult: 1.25
+    },
+    // v0.6.1 §16.4 — four mid/late-era templates
+    {
+      id: "mining-noise", weight: 1.5, minYear: 2014, maxYear: 2100,
+      headlines: [
+        "Neighbors fume as garage crypto mine hums through the night",
+        "City council weighs noise ordinance after mining-rig complaints",
+        "Apartment crypto rig sparks noise and power-bill dispute"
+      ],
+      body: "Every miner in town suddenly wants quieter fans, dust cleanouts, and a diagnosis for the card that started artifacting after six months at full load. The cards themselves are getting harder to source while the craze lasts.",
+      durationDays: [14, 30],
+      effects: [{ categories: ["gpu", "cooling"], priceMult: [1.05, 1.2] }],
+      jobVolumeMult: 1.15
+    },
+    {
+      id: "oem-recall", weight: 2, minYear: 2000, maxYear: 2100,
+      headlines: [
+        "Major PC maker recalls thousands of machines over faulty components",
+        "Laptop battery recall floods authorized service centers",
+        "OEM admits motherboard fault, launches repair program"
+      ],
+      body: "The authorized service centers are booked out for weeks, and everyone whose warranty lapsed is looking for an independent shop instead. Recall waves are good business for whoever answers the phone.",
+      durationDays: [21, 45],
+      effects: [],
+      jobVolumeMult: 1.3
+    },
+    {
+      id: "right-to-repair", weight: 1.5, minYear: 2016, maxYear: 2100,
+      headlines: [
+        "Right-to-repair bill hearing puts independent shops in the spotlight",
+        "TV segment champions local repair shops over throwaway tech",
+        "Right-to-repair movement makes the evening news"
+      ],
+      body: "A sympathetic news cycle about fixing instead of tossing has people digging old machines out of closets and asking whether that cracked laptop is worth saving. Independent shops are suddenly the good guys.",
+      durationDays: [10, 21],
+      effects: [],
+      jobVolumeMult: 1.25
+    },
+    {
+      id: "bigbox-sale", weight: 2, minYear: 1996, maxYear: 2100,
+      headlines: [
+        "Big-box electronics chain slashes PC prices in weekend blowout",
+        "Superstore doorbuster sale puts a budget PC in every cart",
+        "National chain runs aggressive back-to-school computer sale"
+      ],
+      body: "It's hard to sell service and upgrades while the superstore is practically giving new machines away. The silver lining: distributors cut dealer prices to match, and cheap boxes have a way of coming back broken.",
+      durationDays: [7, 14],
+      effects: [{ categories: ["cpu", "motherboard", "gpu"], priceMult: [0.88, 0.96] }],
+      jobVolumeMult: 0.8
     }
   ];
 

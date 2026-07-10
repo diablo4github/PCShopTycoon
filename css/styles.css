@@ -869,7 +869,22 @@ body.debug [data-debug] { display: inline-block !important; }
   overflow: hidden;
   border-bottom: 1px solid var(--border);
 }
+/* §16.5 — bottom gradient fade into the panel color so the strip blends
+ * into the card body and the HTML title below stays readable on every era
+ * skin (the fade tracks var(--panel-bg) per skin). Lives INSIDE the art
+ * container, so the no-art fail-soft class hides it too. */
+.era-card-art::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 34%;
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0) 0%, var(--panel-bg) 100%);
+  pointer-events: none;
+}
 .era-card-art.no-art { display: none; }
+.era-card-art.no-art::after { display: none; }
 .era-card-art img {
   display: block;
   width: 100%;
@@ -1762,3 +1777,99 @@ body.era-early .account-card { border-left-color: var(--accent); }
   overflow-wrap: break-word;
 }
 .retrain-actions { border-top: none; padding-top: 0; margin-top: 4px; }
+
+/* ==========================================================================
+   v0.6.1 additions (SPEC §16) — UI Refinement round
+   ========================================================================== */
+
+/* ---------- §16.1 sub-tab pills (the de-bloat pattern) ---------- */
+.subtab-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 4px 0 14px;
+}
+.subtab-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--panel-bg);
+  color: var(--muted);
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 4px 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color 0.1s ease, background 0.1s ease;
+}
+.subtab-pill:hover { border-color: var(--accent); color: var(--ink); }
+.subtab-pill.active {
+  background: var(--accent);
+  color: var(--accent-ink);
+  border-color: transparent;
+}
+.subtab-count {
+  display: inline-block;
+  min-width: 17px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--panel-bg-alt);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  text-align: center;
+  line-height: 15px;
+  font-variant-numeric: tabular-nums;
+}
+.subtab-pill.active .subtab-count {
+  background: rgba(255, 255, 255, 0.22);
+  border-color: transparent;
+  color: var(--accent-ink);
+}
+.subtab-count.red {
+  background: rgba(179, 53, 44, 0.14);
+  border-color: var(--bad);
+  color: var(--bad);
+}
+.subtab-pill.active .subtab-count.red { background: rgba(255, 255, 255, 0.25); color: var(--accent-ink); border-color: transparent; }
+
+/* ---------- §16.2b upgrade ROI box ---------- */
+.roi-box {
+  font-size: 12.5px;
+  background: var(--accent-soft);
+  border-left: 3px solid var(--accent);
+  border-radius: 4px;
+  padding: 7px 11px;
+  margin: 8px 0;
+  overflow-wrap: break-word;
+}
+
+/* ---------- §16.3c pre-accept parts estimate ---------- */
+.parts-est {
+  color: var(--muted);
+  background: var(--panel-bg-alt);
+  border: 1px dashed var(--border-strong);
+  border-radius: 6px;
+  padding: 2px 9px;
+  cursor: help;
+  white-space: normal;
+  overflow-wrap: break-word;
+  max-width: 100%;
+}
+
+/* ---------- §16.5 end-screen banner art ---------- */
+.go-card .end-banner {
+  /* bleed to the card edges over its 28/30px padding, rounded to match */
+  margin: -28px -30px 18px;
+  width: auto;
+  aspect-ratio: auto;
+  height: 190px;
+  border-radius: 11px 11px 0 0;
+}
+.go-card .end-banner img { width: 100%; height: 100%; object-fit: cover; object-position: center; }
+@media (max-width: 640px) {
+  .go-card .end-banner { height: 130px; }
+}

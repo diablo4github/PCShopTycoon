@@ -783,6 +783,24 @@
    * TAB: Offers
    * ================================================================== */
 
+  /* §16.1 — light type-filter buckets for the Offers pill row (a filter,
+   * not real buckets — 'all' is the default view). */
+  function offerBucketOf(j) {
+    if (accountInfoOf(j) || j.type === 'contract') return 'contracts';
+    if (j.type === 'device_repair') return 'devices';
+    if (j.type === 'build' || j.type === 'enthusiast') return 'builds';
+    return 'service';
+  }
+
+  /* §16.3c — rough pre-accept parts-cost range on upgrade offers
+   * (engine field job.partsEstimate {min,max}; absent = no line). */
+  function partsEstHTML(j) {
+    var pe = j && j.partsEstimate;
+    if (!pe || pe.min === null || pe.min === undefined || pe.max === null || pe.max === undefined) return '';
+    return '<span class="parts-est small" title="Rough cost of a qualifying part on today\'s market — parts are billed to the customer at +25% on completion">' +
+      'parts est. ' + esc(fm(pe.min)) + '–' + esc(fm(pe.max)) + ' · billed to customer +25%</span>';
+  }
+
   function renderOffers(panel) {
     var st = getState();
     if (!st) { panel.innerHTML = emptyBox('Waiting for the engine to load…'); return; }
@@ -792,13 +810,38 @@
         emptyBox('No offers today — check back tomorrow. Ending the day brings fresh customers through the door.');
       return;
     }
-    var html = '<h2 class="section-title">Job Offers <span class="muted small">(' + offers.length + ' waiting — unanswered offers expire after a few days)</span></h2><div class="cards">';
-    offers.forEach(function (j) {
+
+    /* §16.1 — filter pill row with counts; zero-count pills hide (except
+     * All) and a hidden active selection falls back to All. */
+    var counts = { service: 0, builds: 0, contracts: 0, devices: 0 };
+    offers.forEach(function (j) { counts[offerBucketOf(j)]++; });
+    var pills = [
+      { id: 'all', label: 'All', count: offers.length },
+      { id: 'service', label: 'Repairs & Service', count: counts.service, hidden: !counts.service },
+      { id: 'builds', label: 'Builds', count: counts.builds, hidden: !counts.builds },
+      { id: 'contracts', label: 'Contracts & Accounts', count: counts.contracts, hidden: !counts.contracts },
+      { id: 'devices', label: 'Devices', count: counts.devices, hidden: !counts.devices }
+    ];
+    var cur = UI.activeSubTab('offers', pills);
+
+    var html = '<h2 class="section-title">Job Offers <span class="muted small">(' + offers.length + ' waiting — unanswered offers expire after a few days)</span></h2>' +
+      UI.subTabsHTML('offers', pills);
+
+    var shown = offers.filter(function (j) { return cur === 'all' || offerBucketOf(j) === cur; });
+    if (!shown.length) {
+      html += emptyBox('No offers of this kind right now — check the other filters or end the day for fresh customers.');
+      panel.innerHTML = html;
+      return;
+    }
+
+    html += '<div class="cards">';
+    shown.forEach(function (j) {
       /* §15.4 — business-account retainers get their own card variant */
       var acct = accountInfoOf(j);
       if (acct) { html += accountOfferCardHTML(j, acct, st); return; }
 
       var due = dueText(j, st);
+      var partsEst = partsEstHTML(j);
       html += '<div class="card job-card">' +
         '<div class="card-title">' + esc(j.title) +
           (j.rush ? ' <span class="badge b-rush">RUSH</span>' : '') + '</div>' +
@@ -809,6 +852,7 @@
           '<span class="pay num">' + (j.pay !== null && j.pay !== undefined ? fm(j.pay) : 'Market-priced') + '</span>' +
           '<span class="' + (due.urgent ? 'due-soon' : 'muted') + '">' + esc(due.txt) + '</span>' +
         '</div>' +
+        (partsEst ? '<div class="meta-row">' + partsEst + '</div>' : '') +
         '<div class="job-actions">' +
           '<button type="button" class="btn btn-primary btn-sm" data-action="accept" data-job="' + j.id + '">Accept</button>' +
           '<button type="button" class="btn btn-sm" data-action="decline" data-job="' + j.id + '">Decline</button>' +
@@ -876,6 +920,51 @@
    * TAB: Workbench (active jobs + as-is market)
    * ================================================================== */
 
+  /* §16.1 — workbench sub-tab classification. Pills are LENSES over the
+   * same job list (a job may appear under several); Active is the default
+   * catch-all view, so nothing is ever unreachable. */
+  var WB_CUSTOMER_TYPES = ['repair', 'upgrade', 'software', 'cleaning', 'peripheral', 'data_recovery', 'device_repair'];
+  function wbHasUnassignedNeed(j) {
+    if (!j || !Array.isArray(j.needs)) return false;
+    for (var i = 0; i < j.needs.length; i++) {
+      var n = j.needs[i];
+      if (n && (n.filledPartIds || []).length < (n.qty || 1)) return true;
+    }
+    return false;
+  }
+  function wbByDeadline(a, b) {
+    var da = (a.deadlineDay === null || a.deadlineDay === undefined) ? Infinity : a.deadlineDay;
+    var db = (b.deadlineDay === null || b.deadlineDay === undefined) ? Infinity : b.deadlineDay;
+    return (da - db) || ((a.id || 0) - (b.id || 0));
+  }
+  function wbClassify(jobs, st) {
+    var b = { active: [], priority: [], customer: [], contracts: [], projects: [], waiting: [] };
+    jobs.forEach(function (j) {
+      if (!j) return;
+      b.active.push(j);
+      var done = j.status === 'done';
+      if (!done && (j.rush || (j.deadlineDay !== null && j.deadlineDay !== undefined && j.deadlineDay <= st.day + 1))) {
+        b.priority.push(j);
+      }
+      var isContract = j.type === 'contract' || j.subtype === 'contract_build' ||
+        j.subtype === 'contract_upgrade' || !!j.accountId;
+      if (isContract) b.contracts.push(j);
+      else if (WB_CUSTOMER_TYPES.indexOf(j.type) !== -1) b.customer.push(j);
+      if (j.type === 'refurb') b.projects.push(j);
+      if (!done && (findRunningWaitStep(j) || wbHasUnassignedNeed(j))) b.waiting.push(j);
+    });
+    Object.keys(b).forEach(function (k) { b[k].sort(wbByDeadline); });
+    return b;
+  }
+  var WB_EMPTY = {
+    active: 'The bench is clear. Accept an offer, or flip a machine from the As-Is Market under Shop Projects.',
+    priority: 'Nothing urgent — no rush work or same/next-day deadlines.',
+    customer: 'No customer jobs on the bench — accept an offer to get to work.',
+    contracts: 'No contracts or account work in progress — bigger clients arrive as your prestige grows.',
+    projects: 'No refurbs on the bench — buy a machine from the As-Is Market below and flip it.',
+    waiting: 'Nothing is waiting on a timer or a part. All clear.'
+  };
+
   function renderWorkbench(panel) {
     var st = getState();
     if (!st) { panel.innerHTML = emptyBox('Waiting for the engine to load…'); return; }
@@ -896,35 +985,29 @@
         ' — jobs beyond your slots take +50% hours</span>' : '') +
       '</div>';
 
-    if (!jobs.length) {
-      html += emptyBox('The bench is clear. Accept an offer, or flip a machine from the As-Is Market below.');
+    /* §16.1 — sub-tab pills (the external tester's exact ask) */
+    var buckets = wbClassify(jobs, st);
+    var pills = [
+      { id: 'active', label: 'Active', count: buckets.active.length, title: 'Everything on the bench, closest deadline first' },
+      { id: 'priority', label: 'Priority', count: buckets.priority.length, countCls: 'red',
+        hidden: !buckets.priority.length, title: 'Due today or tomorrow, or rush work' },
+      { id: 'customer', label: 'Customer Jobs', count: buckets.customer.length, title: 'Repairs, upgrades, software, devices and other walk-in work' },
+      { id: 'contracts', label: 'Contracts', count: buckets.contracts.length, title: 'Contract runs and business-account service jobs' },
+      { id: 'projects', label: 'Shop Projects', count: buckets.projects.length, title: 'Refurb flips — plus the As-Is Market to buy more' },
+      { id: 'waiting', label: 'Waiting', count: buckets.waiting.length, title: 'Blocked on a running timer or an unassigned part' }
+    ];
+    var cur = UI.activeSubTab('workbench', pills);
+    html += UI.subTabsHTML('workbench', pills);
+
+    var list = buckets[cur] || [];
+    if (!list.length) {
+      html += emptyBox(WB_EMPTY[cur] || 'Nothing here right now.');
     } else {
-      jobs.forEach(function (j) { html += jobCardHTML(j, st); });
+      list.forEach(function (j) { html += jobCardHTML(j, st); });
     }
 
-    /* As-Is Market */
-    html += '<h2 class="section-title">As-Is Market <span class="muted small">broken machines, sold untested — repair and flip them</span></h2>';
-    var machines = arr(tryCall(function () { return Engine.getAsIsMarket(); }));
-    if (!machines.length) {
-      html += emptyBox('Nothing listed right now — new machines turn up most mornings.');
-    } else {
-      html += '<div class="cards">';
-      machines.forEach(function (m) {
-        var age = (m.listedDay !== null && m.listedDay !== undefined) ? (st.day - m.listedDay) : null;
-        var ageTxt = age === null ? '' : (age <= 0 ? 'listed today' : 'listed ' + age + ' day' + (age === 1 ? '' : 's') + ' ago');
-        html += '<div class="card">' +
-          '<div class="card-title">' + esc(m.name) + ' <span class="muted small">(' + esc(m.year) + ')</span></div>' +
-          (m.specSummary ? '<div class="asis-spec">' + esc(m.specSummary) + '</div>' : '') +
-          (m.hint ? '<div class="blurb">&ldquo;' + esc(m.hint) + '&rdquo;</div>' : '') +
-          '<div class="meta-row"><span class="muted small">' + arr(m.partIds).length + ' parts inside • sold as-is, no returns</span>' +
-            (ageTxt ? '<span class="asis-age">' + esc(ageTxt) + '</span>' : '') + '</div>' +
-          '<div class="job-actions">' +
-            '<button type="button" class="btn btn-primary btn-sm" data-action="buy-asis" data-machine="' + esc(m.id) + '">Buy — ' + fm(m.askPrice) + '</button>' +
-          '</div>' +
-        '</div>';
-      });
-      html += '</div>';
-    }
+    /* §16.1 — the As-Is Market lives under Shop Projects now. */
+    if (cur === 'projects') html += asIsMarketHTML(st);
 
     panel.innerHTML = html;
 
@@ -932,6 +1015,36 @@
      * each select's current option. */
     var needSels = panel.querySelectorAll('select[id^="need-sel-"]');
     for (var ns = 0; ns < needSels.length; ns++) updateNeedRowUI(needSels[ns]);
+  }
+
+  function asIsMarketHTML(st) {
+    var cash = Number(st.cash) || 0;
+    var html = '<h2 class="section-title">As-Is Market <span class="muted small">broken machines, sold untested — repair and flip them</span></h2>';
+    var machines = arr(tryCall(function () { return Engine.getAsIsMarket(); }));
+    if (!machines.length) {
+      return html + emptyBox('Nothing listed right now — new machines turn up most mornings.');
+    }
+    html += '<div class="cards">';
+    machines.forEach(function (m) {
+      var age = (m.listedDay !== null && m.listedDay !== undefined) ? (st.day - m.listedDay) : null;
+      var ageTxt = age === null ? '' : (age <= 0 ? 'listed today' : 'listed ' + age + ' day' + (age === 1 ? '' : 's') + ' ago');
+      /* §16.3a — never a silent dead click on an unaffordable machine */
+      var short = Math.max(0, (Number(m.askPrice) || 0) - cash);
+      html += '<div class="card">' +
+        '<div class="card-title">' + esc(m.name) + ' <span class="muted small">(' + esc(m.year) + ')</span></div>' +
+        (m.specSummary ? '<div class="asis-spec">' + esc(m.specSummary) + '</div>' : '') +
+        (m.hint ? '<div class="blurb">&ldquo;' + esc(m.hint) + '&rdquo;</div>' : '') +
+        '<div class="meta-row"><span class="muted small">' + arr(m.partIds).length + ' parts inside • sold as-is, no returns</span>' +
+          (ageTxt ? '<span class="asis-age">' + esc(ageTxt) + '</span>' : '') + '</div>' +
+        '<div class="job-actions">' +
+          '<button type="button" class="btn btn-primary btn-sm" data-action="buy-asis" data-machine="' + esc(m.id) + '"' +
+            (short > 0 ? ' disabled title="Need ' + esc(fm(short)) + ' more"' : '') +
+            '>Buy — ' + fm(m.askPrice) + '</button>' +
+          (short > 0 ? ' <span class="muted small">Need ' + esc(fm(short)) + ' more</span>' : '') +
+        '</div>' +
+      '</div>';
+    });
+    return html + '</div>';
   }
 
   function jobCardHTML(j, st) {
@@ -1821,6 +1934,18 @@
         '<th>Part</th><th>Category</th><th class="num">Price</th><th class="num">1d</th>' +
         '<th class="num">30d</th><th>Trend</th><th class="num">Owned</th><th>Buy</th>' +
         '</tr></thead><tbody>';
+      var mktCash = Number(st.cash) || 0;
+      /* §16.3a — a Buy you can't afford is disabled with the shortfall,
+       * never a silent no-op (price is a UI-known estimate; the engine
+       * stays the authority when it IS clickable). */
+      function buyBtn(r, qty) {
+        var need = (Number(r.price) || 0) * qty;
+        var short = Math.max(0, need - mktCash);
+        return '<button type="button" class="btn btn-sm" data-action="buy" data-part="' + esc(r.partId) +
+          '" data-qty="' + qty + '"' +
+          (short > 0 ? ' disabled title="Need ' + esc(fm(short)) + ' more"' : '') +
+          '>Buy ' + qty + '</button>';
+      }
       rows.forEach(function (r) {
         var c1 = Number(r.change1) || 0;
         var c30 = Number(r.change30) || 0;
@@ -1842,8 +1967,7 @@
             (has('getPartInfo')
               ? '<button type="button" class="info-btn" data-action="partinfo" data-part="' + esc(r.partId) + '" title="Part details">i</button> '
               : '') +
-            '<button type="button" class="btn btn-sm" data-action="buy" data-part="' + esc(r.partId) + '" data-qty="1">Buy 1</button> ' +
-            '<button type="button" class="btn btn-sm" data-action="buy" data-part="' + esc(r.partId) + '" data-qty="5">Buy 5</button>' +
+            buyBtn(r, 1) + ' ' + buyBtn(r, 5) +
           '</td>' +
           '</tr>';
       });
@@ -2241,132 +2365,177 @@
     return null;
   }
 
+  /* §16.2b — plain-language ROI box for the upgrade card. Renders only
+   * when the engine ships the fields (monthlyCostDelta / slotsDelta /
+   * offerBonusDelta / staffSlotsDelta / paybackMonths on nextTier);
+   * paybackMonths === null gets the honest "not profitable yet" line,
+   * undefined omits the payback sentence entirely. */
+  function roiBoxHTML(nt) {
+    if (!nt) return '';
+    var known = nt.monthlyCostDelta !== undefined || nt.slotsDelta !== undefined ||
+      nt.offerBonusDelta !== undefined || nt.staffSlotsDelta !== undefined ||
+      nt.paybackMonths !== undefined;
+    if (!known) return '';
+    var bits = [];
+    if (nt.monthlyCostDelta !== undefined && nt.monthlyCostDelta !== null) {
+      bits.push('Rent &amp; utilities rise <b class="num">' + esc(fm(nt.monthlyCostDelta)) + '</b>/month.');
+    }
+    var adds = [];
+    if (nt.slotsDelta) adds.push('+' + esc(nt.slotsDelta) + ' workstation' + (Number(nt.slotsDelta) === 1 ? '' : 's'));
+    if (nt.offerBonusDelta) adds.push('+' + esc(nt.offerBonusDelta) + ' offer' + (Number(nt.offerBonusDelta) === 1 ? '' : 's') + '/day');
+    if (nt.staffSlotsDelta) adds.push('+' + esc(nt.staffSlotsDelta) + ' staff slot' + (Number(nt.staffSlotsDelta) === 1 ? '' : 's'));
+    if (adds.length) bits.push('Adds ' + adds.join(', ') + '.');
+    if (nt.paybackMonths !== undefined) {
+      bits.push(nt.paybackMonths === null
+        ? esc(nt.paybackReason || "You aren't profitable enough yet for this to pay for itself — build income first.")
+        : 'Rough payback: <b>~' + esc(nt.paybackMonths) + ' month' + (Number(nt.paybackMonths) === 1 ? '' : 's') + '</b> at your current daily net.');
+    }
+    return bits.length ? '<div class="roi-box">' + bits.join(' ') + '</div>' : '';
+  }
+
   function renderShop(panel) {
     var st = getState();
     if (!st) { panel.innerHTML = emptyBox('Waiting for the engine to load…'); return; }
     var sv = tryCall(function () { return Engine.getShopView(); });
     if (!sv || sv.ok === false) { panel.innerHTML = emptyBox('Shop data unavailable.'); return; }
+    var cash = Number(st.cash) || 0;
 
-    /* §10.7/§13.4 — compute these once up front so the sub-nav only offers
-     * links to sections that will actually render below. */
     var stv = has('getStaffView') ? tryCall(function () { return Engine.getStaffView(); }) : null;
     var showStaff = !!(stv && stv.ok !== false);
     var tv = has('getCertifications') ? tryCall(function () { return Engine.getCertifications(); }) : null;
     var showTraining = !!(tv && tv.ok !== false);
 
-    var html = '<h2 class="section-title">Your Shop</h2>';
-
-    /* §14.5 — small sub-nav so nothing here requires blind scrolling. */
-    html += '<nav class="shop-subnav" aria-label="Jump to a shop section">' +
-      '<button type="button" class="btn btn-sm" data-action="scrollto" data-target="shop-sec-upgrade">Shop Upgrade</button>' +
-      '<button type="button" class="btn btn-sm" data-action="scrollto" data-target="shop-sec-equipment">Equipment</button>' +
-      (showTraining ? '<button type="button" class="btn btn-sm" data-action="scrollto" data-target="shop-sec-training">Training</button>' : '') +
-      (showStaff ? '<button type="button" class="btn btn-sm" data-action="scrollto" data-target="shop-sec-staff">Staff</button>' : '') +
-      '</nav>';
-
-    /* §14.5 — surface the Assembly Bench prominently: custom builds are
-     * era-available (state.customBuildsUnlocked) but the bench isn't owned
-     * yet, so the payoff of buying it is obvious at a glance. */
     var equipmentList = arr(sv.equipment);
     var bench = null;
-    for (var bi = 0; bi < equipmentList.length; bi++) { if (equipmentList[bi].id === 'build-bench') bench = equipmentList[bi]; }
-    if (st.customBuildsUnlocked && bench && !bench.owned) {
-      html += '<div class="card unlock-callout">' +
-        '<div class="card-title">🔓 Custom builds are ready to unlock</div>' +
-        '<p class="muted small">The era supports custom-build jobs now — you are just missing the bench. Buy the <b>' +
-          esc(bench.name) + '</b> to start taking them.</p>' +
-        '<div class="job-actions">' +
-          '<button type="button" class="btn btn-primary btn-sm" data-action="buy-equip" data-id="' + esc(bench.id) + '"' +
-            (bench.available === false ? ' disabled title="Not available yet"' : '') +
-            '>Buy — ' + esc(fm(bench.cost)) + '</button>' +
-          ' <button type="button" class="btn btn-sm btn-ghost" data-action="scrollto" data-target="shop-sec-equipment">See all equipment</button>' +
-        '</div></div>';
-    }
-
-    html += '<h2 class="section-title" id="shop-sec-upgrade">Shop Tier &amp; Upgrade</h2><div class="shop-grid">';
-
-    /* current tier */
-    var tier = sv.tier || {};
-    html += '<div class="card">' +
-      '<div class="card-title">' + esc(tier.name || 'Shop') + '</div>' +
-      (tier.desc ? '<p class="muted small">' + esc(tier.desc) + '</p>' : '') +
-      '<div class="meta-row small">' +
-        (tier.workstationSlots !== undefined ? '<span class="chip">' + esc(tier.workstationSlots) + ' workstations</span>' : '') +
-        (tier.storageSlots !== undefined ? '<span class="chip">' + esc(tier.storageSlots) + ' storage slots</span>' : '') +
-        (tier.offerBonus ? '<span class="chip">+' + esc(tier.offerBonus) + ' daily offers</span>' : '') +
-      '</div></div>';
-
-    /* upgrade */
-    if (sv.nextTier) {
-      var nt = sv.nextTier;
-      var blocked = [];
-      if (nt.prestigeOk === false) blocked.push('Requires prestige tier ' + nt.minPrestige);
-      if (nt.canAfford === false) blocked.push('Not enough cash');
-      html += '<div class="card">' +
-        '<div class="card-title">Upgrade: ' + esc(nt.name) + '</div>' +
-        '<div class="meta-row"><span class="pay num">' + esc(fm(nt.cost)) + '</span>' +
-          (nt.minPrestige ? '<span class="chip">Prestige tier ' + esc(nt.minPrestige) + '+ required</span>' : '') +
-        '</div>' +
-        (blocked.length ? '<div class="muted small">' + esc(blocked.join(' • ')) + '</div>' : '') +
-        '<div class="job-actions">' +
-          '<button type="button" class="btn btn-primary btn-sm" data-action="upgrade"' +
-            ' data-label="' + esc(nt.name) + '" data-cost="' + esc(fm(nt.cost)) + '"' +
-            (nt.canAfford && nt.prestigeOk ? '' : ' disabled title="' + esc(blocked.join('; ') || 'Unavailable') + '"') +
-          '>Upgrade shop</button>' +
-        '</div></div>';
-    } else {
-      html += '<div class="card"><div class="card-title">Upgrade</div>' +
-        '<p class="muted">You own the biggest shop in town. Nowhere left to grow but your reputation.</p></div>';
-    }
-
-    /* insurance */
-    var ins = sv.insurance || {};
-    html += '<div class="card"><div class="card-title">Insurance</div>' +
-      '<p class="muted small">Covers most of the cost when a mishap fries a part — or you.</p>' +
-      '<div class="insurance-row">' +
-        '<input type="checkbox" id="insurance-toggle" data-action="insurance"' + (ins.active ? ' checked' : '') + '>' +
-        '<label for="insurance-toggle">Shop insurance — <b class="num">' + esc(fm(ins.monthlyCost)) + '</b>/month</label>' +
-      '</div></div>';
-
-    html += '</div>'; /* /shop-grid */
-
-    /* §10.7 staff */
-    if (showStaff) html += staffSectionHTML(stv, st);
-
-    /* §13.4 training & certifications */
-    if (showTraining) html += trainingSectionHTML(tv, st);
-
-    /* equipment */
-    html += '<h2 class="section-title" id="shop-sec-equipment">Equipment</h2><div class="shop-grid">';
-    var equipment = equipmentList;
-    if (!equipment.length) {
-      html += '</div>' + emptyBox('No equipment catalog available.');
-      panel.innerHTML = html;
-      return;
-    }
-    equipment.forEach(function (eq) {
-      var reasons = [];
-      if (!eq.owned) {
-        if (eq.available === false) reasons.push('Not available yet');
-        if (eq.requiresOwned === false) reasons.push('Requires the earlier model first');
-      }
-      var unlocks = equipUnlockLabel(eq); // §14.5
-      html += '<div class="card equip-card' + (eq.owned ? ' owned' : '') + '">' +
-        '<div class="card-title">' + esc(eq.name) +
-          (eq.owned ? ' <span class="chip chip-status done">Owned</span>' : '') +
-          (unlocks ? ' <span class="badge b-unlock" title="Owning this opens up this job type">Unlocks: ' + esc(unlocks) + '</span>' : '') +
-          '</div>' +
-        (eq.desc ? '<p class="muted small">' + esc(eq.desc) + '</p>' : '') +
-        '<div class="job-actions">' +
-          (eq.owned
-            ? '<span class="muted small">Installed and ready.</span>'
-            : '<button type="button" class="btn btn-primary btn-sm" data-action="buy-equip" data-id="' + esc(eq.id) + '"' +
-              (reasons.length ? ' disabled title="' + esc(reasons.join('; ')) + '"' : '') +
-              '>Buy — <span class="equip-cost num">' + esc(fm(eq.cost)) + '</span></button>' +
-              (reasons.length ? ' <span class="muted small">' + esc(reasons.join(' • ')) + '</span>' : '')) +
-        '</div></div>';
+    var buyableCount = 0;
+    equipmentList.forEach(function (eq) {
+      if (eq.id === 'build-bench') bench = eq;
+      if (!eq.owned && eq.available !== false) buyableCount++;
     });
-    html += '</div>';
+    /* §14.5 callout condition — shown on the Equipment pill (§16.1) with a
+     * 🔓 marker on the pill itself so it's discoverable from any pill. */
+    var calloutActive = !!(st.customBuildsUnlocked && bench && !bench.owned);
+
+    /* §16.1 — true sub-tabs replace the v0.5.1 scroll-anchors. */
+    var pills = [
+      { id: 'upgrade', label: 'Shop Upgrade' },
+      { id: 'equipment', label: 'Equipment' + (calloutActive ? ' 🔓' : ''), count: buyableCount,
+        title: calloutActive ? 'A build-unlocking bench is waiting here' : 'Benches, rigs and kits' },
+      { id: 'training', label: 'Training', count: showTraining ? arr(tv.available).length : undefined, hidden: !showTraining },
+      { id: 'staff', label: 'Staff', count: showStaff ? arr(stv.staff).length : undefined, hidden: !showStaff }
+    ];
+    var cur = UI.activeSubTab('shop', pills);
+
+    var html = '<h2 class="section-title">Your Shop</h2>' + UI.subTabsHTML('shop', pills);
+
+    if (cur === 'upgrade') {
+      html += '<h2 class="section-title" id="shop-sec-upgrade">Shop Tier &amp; Upgrade</h2><div class="shop-grid">';
+
+      /* current tier */
+      var tier = sv.tier || {};
+      html += '<div class="card">' +
+        '<div class="card-title">' + esc(tier.name || 'Shop') + '</div>' +
+        (tier.desc ? '<p class="muted small">' + esc(tier.desc) + '</p>' : '') +
+        '<div class="meta-row small">' +
+          (tier.workstationSlots !== undefined ? '<span class="chip">' + esc(tier.workstationSlots) + ' workstations</span>' : '') +
+          (tier.storageSlots !== undefined ? '<span class="chip">' + esc(tier.storageSlots) + ' storage slots</span>' : '') +
+          (tier.offerBonus ? '<span class="chip">+' + esc(tier.offerBonus) + ' daily offers</span>' : '') +
+        '</div></div>';
+
+      /* upgrade */
+      if (sv.nextTier) {
+        var nt = sv.nextTier;
+        var blocked = [];
+        if (nt.prestigeOk === false) blocked.push('Requires prestige tier ' + nt.minPrestige);
+        /* §16.3a — precise shortfall, never a silent no-op */
+        if (nt.canAfford === false) blocked.push('Need ' + fm(Math.max(0, (Number(nt.cost) || 0) - cash)) + ' more');
+        html += '<div class="card">' +
+          '<div class="card-title">Upgrade: ' + esc(nt.name) + '</div>' +
+          '<div class="meta-row"><span class="pay num">' + esc(fm(nt.cost)) + '</span>' +
+            (nt.minPrestige ? '<span class="chip">Prestige tier ' + esc(nt.minPrestige) + '+ required</span>' : '') +
+          '</div>' +
+          roiBoxHTML(nt) +
+          (blocked.length ? '<div class="muted small">' + esc(blocked.join(' • ')) + '</div>' : '') +
+          '<div class="job-actions">' +
+            '<button type="button" class="btn btn-primary btn-sm" data-action="upgrade"' +
+              ' data-label="' + esc(nt.name) + '" data-cost="' + esc(fm(nt.cost)) + '"' +
+              (nt.canAfford && nt.prestigeOk ? '' : ' disabled title="' + esc(blocked.join('; ') || 'Unavailable') + '"') +
+            '>Upgrade shop</button>' +
+          '</div></div>';
+      } else {
+        html += '<div class="card"><div class="card-title">Upgrade</div>' +
+          '<p class="muted">You own the biggest shop in town. Nowhere left to grow but your reputation.</p></div>';
+      }
+
+      /* insurance */
+      var ins = sv.insurance || {};
+      html += '<div class="card"><div class="card-title">Insurance</div>' +
+        '<p class="muted small">Covers most of the cost when a mishap fries a part — or you.</p>' +
+        '<div class="insurance-row">' +
+          '<input type="checkbox" id="insurance-toggle" data-action="insurance"' + (ins.active ? ' checked' : '') + '>' +
+          '<label for="insurance-toggle">Shop insurance — <b class="num">' + esc(fm(ins.monthlyCost)) + '</b>/month</label>' +
+        '</div></div>';
+
+      html += '</div>'; /* /shop-grid */
+    }
+
+    if (cur === 'staff' && showStaff) html += staffSectionHTML(stv, st);
+
+    if (cur === 'training' && showTraining) html += trainingSectionHTML(tv, st);
+
+    if (cur === 'equipment') {
+      /* §14.5/§16.1 — the Assembly-Bench callout stays visible on the
+       * Equipment pill. */
+      if (calloutActive) {
+        var benchShort = Math.max(0, (Number(bench.cost) || 0) - cash);
+        html += '<div class="card unlock-callout">' +
+          '<div class="card-title">🔓 Custom builds are ready to unlock</div>' +
+          '<p class="muted small">The era supports custom-build jobs now — you are just missing the bench. Buy the <b>' +
+            esc(bench.name) + '</b> to start taking them.</p>' +
+          '<div class="job-actions">' +
+            '<button type="button" class="btn btn-primary btn-sm" data-action="buy-equip" data-id="' + esc(bench.id) + '"' +
+              (bench.available === false ? ' disabled title="Not available yet"'
+                : (benchShort > 0 ? ' disabled title="Need ' + esc(fm(benchShort)) + ' more"' : '')) +
+              '>Buy — ' + esc(fm(bench.cost)) + '</button>' +
+            (benchShort > 0 ? ' <span class="muted small">Need ' + esc(fm(benchShort)) + ' more</span>' : '') +
+          '</div></div>';
+      }
+
+      html += '<h2 class="section-title" id="shop-sec-equipment">Equipment</h2><div class="shop-grid">';
+      if (!equipmentList.length) {
+        html += '</div>' + emptyBox('No equipment catalog available.');
+        panel.innerHTML = html;
+        return;
+      }
+      equipmentList.forEach(function (eq) {
+        var reasons = [];
+        if (!eq.owned) {
+          if (eq.available === false) reasons.push('Not available yet');
+          if (eq.requiresOwned === false) reasons.push('Requires the earlier model first');
+          /* §16.3a — an unaffordable buy is disabled with the shortfall,
+           * never a silent dead click. */
+          var eqShort = Math.max(0, (Number(eq.cost) || 0) - cash);
+          if (!reasons.length && eqShort > 0) reasons.push('Need ' + fm(eqShort) + ' more');
+        }
+        var unlocks = equipUnlockLabel(eq); // §14.5
+        html += '<div class="card equip-card' + (eq.owned ? ' owned' : '') + '">' +
+          '<div class="card-title">' + esc(eq.name) +
+            (eq.owned ? ' <span class="chip chip-status done">Owned</span>' : '') +
+            (unlocks ? ' <span class="badge b-unlock" title="Owning this opens up this job type">Unlocks: ' + esc(unlocks) + '</span>' : '') +
+            '</div>' +
+          (eq.desc ? '<p class="muted small">' + esc(eq.desc) + '</p>' : '') +
+          '<div class="job-actions">' +
+            (eq.owned
+              ? '<span class="muted small">Installed and ready.</span>'
+              : '<button type="button" class="btn btn-primary btn-sm" data-action="buy-equip" data-id="' + esc(eq.id) + '"' +
+                (reasons.length ? ' disabled title="' + esc(reasons.join('; ')) + '"' : '') +
+                '>Buy — <span class="equip-cost num">' + esc(fm(eq.cost)) + '</span></button>' +
+                (reasons.length ? ' <span class="muted small">' + esc(reasons.join(' • ')) + '</span>' : '')) +
+          '</div></div>';
+      });
+      html += '</div>';
+    }
+
     panel.innerHTML = html;
   }
 
@@ -2454,12 +2623,17 @@
           var rtBits = [];
           if (rt.cost !== undefined && rt.cost !== null) rtBits.push(fm(rt.cost));
           if (rt.hours !== undefined && rt.hours !== null) rtBits.push(rt.hours + 'h of your time');
+          /* §16.3a — unaffordable retraining is disabled with the shortfall */
+          var rtShort = (rt.cost !== undefined && rt.cost !== null && st)
+            ? Math.max(0, Number(rt.cost) - (Number(st.cash) || 0)) : 0;
           rtRow = '<div class="retrain-note" title="Until retrained, their speed bonus is halved on the job types this transition boosts">' +
             '⚠ Needs retraining — ' + esc(rtName) + '</div>' +
             '<div class="job-actions retrain-actions">' +
               '<button type="button" class="btn btn-primary btn-sm" data-action="retrain" data-id="' + esc(s.id) + '"' +
                 (rt.transitionId ? ' data-transition="' + esc(rt.transitionId) + '"' : '') +
+                (rtShort > 0 ? ' disabled title="Need ' + esc(fm(rtShort)) + ' more"' : '') +
                 '>Retrain' + (rtBits.length ? ' — ' + esc(rtBits.join(' + ')) : '') + '</button>' +
+              (rtShort > 0 ? ' <span class="muted small">Need ' + esc(fm(rtShort)) + ' more</span>' : '') +
             '</div>';
         }
         h += '<div class="card staff-card' + (rt ? ' needs-retrain' : '') + '">' +
@@ -2598,13 +2772,56 @@
     var lg = tryCall(function () { return Engine.getLedger(); });
     if (!lg || lg.ok === false) { panel.innerHTML = emptyBox('No ledger data yet.'); return; }
 
-    var html = '<h2 class="section-title">Ledger</h2>';
+    /* §16.1 — Ledger sub-tabs: Finances · Credit · Business Accounts ·
+     * Achievements. Feature-gated pills simply don't render until their
+     * engine API exists (no empty shells). */
+    var hasCredit = has('getCredit');
+    var accountsList = null;
+    if (has('getBusinessAccounts')) {
+      var bav = tryCall(function () { return Engine.getBusinessAccounts(); });
+      if (Array.isArray(bav)) accountsList = bav;
+    }
+    if (accountsList === null && Array.isArray(st.accounts)) accountsList = st.accounts;
+    var hasAch = has('getAchievements');
+    var achList = hasAch ? arr(tryCall(function () { return Engine.getAchievements(); })) : [];
+    var achUnlocked = achList.filter(function (a) { return a && a.unlocked; }).length;
+    var creditDrawn = 0;
+    if (hasCredit) {
+      var crPeek = tryCall(function () { return Engine.getCredit(); });
+      if (crPeek && crPeek.ok !== false) creditDrawn = Number(crPeek.drawn) || 0;
+    }
 
-    /* §15.3/§15.4 — financing & retainers (each renders only once its
-     * engine feature exists; both absent = no empty shell). */
-    var finHTML = creditCardHTML(st) + businessAccountsHTML(st);
-    if (finHTML) html += '<div class="shop-grid ledger-fin">' + finHTML + '</div>';
+    var pills = [
+      { id: 'finances', label: 'Finances', title: 'Monthly P&L and lifetime totals' },
+      { id: 'credit', label: 'Credit', hidden: !hasCredit,
+        count: creditDrawn > 0 ? fm(creditDrawn) : undefined, title: 'Your credit line — drawn balance shown' },
+      { id: 'accounts', label: 'Business Accounts', hidden: accountsList === null,
+        count: accountsList ? accountsList.length : undefined, title: 'Retainer clients on monthly fees' },
+      { id: 'achievements', label: 'Achievements', hidden: !hasAch,
+        count: achList.length ? achUnlocked + '/' + achList.length : undefined, title: 'Badge wall — unlocked so far' }
+    ];
+    var cur2 = UI.activeSubTab('ledger', pills);
+    var html = '<h2 class="section-title">Ledger</h2>' + UI.subTabsHTML('ledger', pills);
 
+    if (cur2 === 'credit') {
+      html += '<div class="shop-grid ledger-fin">' + (creditCardHTML(st) ||
+        '<div class="card"><p class="muted small">Credit data unavailable right now.</p></div>') + '</div>';
+      panel.innerHTML = html;
+      return;
+    }
+    if (cur2 === 'accounts') {
+      html += '<div class="shop-grid ledger-fin">' + (businessAccountsHTML(st) ||
+        '<div class="card"><p class="muted small">Account data unavailable right now.</p></div>') + '</div>';
+      panel.innerHTML = html;
+      return;
+    }
+    if (cur2 === 'achievements') {
+      html += achievementsHTML();
+      panel.innerHTML = html;
+      return;
+    }
+
+    /* ---- Finances (default) ---- */
     /* current month preview */
     var cur = lg.currentMonthPreview;
     if (cur) {
@@ -2639,7 +2856,7 @@
       html += '</tbody></table></div>';
     }
 
-    /* lifetime — §15.5 pairs the live stats table with the badge grid */
+    /* lifetime — the "stats" half of §15.5's Achievements & Stats */
     var lt = lg.lifetime || {};
     html += '<h3 class="sub-title" id="ledger-sec-stats">Lifetime</h3><div class="kv">' +
       kvCell('Revenue', fm(lt.revenue)) +
@@ -2652,11 +2869,6 @@
       kvCell('Refurbs sold', lt.refurbsSold || 0) +
       kvCell('Days played', lt.daysPlayed || 0) +
       '</div>';
-
-    /* §15.5 achievements — in the Ledger (not System) because this tab is
-     * already the shop's record book: the lifetime table above IS the
-     * "stats" half of Achievements & Stats. System stays settings/saves. */
-    html += achievementsHTML();
 
     panel.innerHTML = html;
   }

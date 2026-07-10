@@ -376,11 +376,13 @@
     if (ctx && musicBus && settings.music) musicBus.gain.value = settings.musicVol;
   };
 
+  /* §16.3e — pure setter: no per-tick preview click (dragging the slider
+   * used to machine-gun clicks). The Settings UI plays ONE preview click on
+   * the slider's `change` (drag release) instead. */
   A.setSfxVol = function (v) {
     settings.sfxVol = clamp01(v);
     saveSettings();
     if (ctx && sfxBus) sfxBus.gain.value = settings.sfxVol;
-    A.sfx('click');
   };
 
   A.getSettings = function () {

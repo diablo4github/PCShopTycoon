@@ -1128,6 +1128,27 @@
         job.needs = [{ category: picked.uc, anyOfTags: picked.fitTags, minPerf: minPerf,
                        qty: 1, filledPartIds: [], label: label,
                        originalPartId: picked.origPart ? picked.origPart.id : null }];
+        // §16.3c: rough parts-cost range shown pre-accept (playtest P2.3) —
+        // today's market prices of the qualifying parts. Min = cheapest that
+        // qualifies; max = 75th percentile so one halo part can't distort the
+        // range ("parts est. $40–95"). Whole dollars; UI adds the +25% note.
+        var estPrices = purchasableByCategory(state, picked.uc).filter(function (p) {
+          if (picked.fitTags) {
+            var ptags = p.platformTags || [], hitTag = false;
+            for (var ft = 0; ft < picked.fitTags.length; ft++)
+              if (ptags.indexOf(picked.fitTags[ft]) !== -1) { hitTag = true; break; }
+            if (!hitTag) return false;
+          }
+          return ((p.perf || {})[picked.upgKey] || 0) >= picked.minVal;
+        }).map(function (p) {
+          return P().priceOf(p, state);
+        }).sort(function (a, b) { return a - b; });
+        if (estPrices.length) {
+          var estHi = estPrices[Math.min(estPrices.length - 1,
+                                         Math.ceil((estPrices.length - 1) * 0.75))];
+          job.partsEstimate = { min: Math.round(estPrices[0]),
+                                max: Math.round(estHi) };
+        }
         job.hoursRequired = 1;   // fallback-step sizing only
         job.title = 'Upgrade: ' + picked.upgName.toLowerCase() + ' for a ' +
           ((job.machine && job.machine.name) || machineFlavor(state, year));
@@ -1666,7 +1687,28 @@
     removeFrom(state.jobs.offers, job);
     job.status = 'active';
     state.jobs.active.push(job);
-    return { ok: true };
+    // §16.2d: feasibility warning (informational — the accept still succeeds).
+    // Committed standard-speed hours across active non-refurb jobs (incl. this
+    // one) vs the open-day hours before THIS job's deadline.
+    var warning = null;
+    if (job.deadlineDay != null) {
+      var committed = 0;
+      for (var ci = 0; ci < state.jobs.active.length; ci++) {
+        var cj = state.jobs.active[ci];
+        if (cj.type === 'refurb') continue;   // no deadline — discretionary work
+        committed += Math.max(0, (cj.hoursRequired || 0) - (cj.hoursDone || 0));
+      }
+      var workable = 0;
+      for (var d = state.day; d <= job.deadlineDay; d++) {
+        if (!Engine.dateInfo(d, state).isSunday) workable += state.hoursPerDay;
+      }
+      if (workable > 0 && committed > CFG().ACCEPT_WARN_LOAD * workable) {
+        warning = 'Your bench is heavily booked (' + Engine.round1(committed) +
+                  'h queued vs ' + workable + 'h before this deadline) — ' +
+                  'this deadline may be tight';
+      }
+    }
+    return warning ? { ok: true, warning: warning } : { ok: true };
   };
 
   Jobs.declineOffer = function (state, jobId) {
@@ -1934,6 +1976,14 @@
       var chargePrice = P().priceOf(part, state); // customer-markup basis (undiscounted)
       var fromStock = !!(inv && inv.qty > 0);
       var stockCost = fromStock ? inv.avgCost : 0;
+      // §16.3b: stock pulls bill at min(current, avgCost x STOCK_BILL_CAP) —
+      // legacy/scarcity drift can't 10x the customer's bill off an old
+      // stockpile. Salvaged parts (avgCost 0, no cost basis) still bill at
+      // market: the arbitrage fix targets bought stock, not strip-downs.
+      if (fromStock && stockCost > 0) {
+        chargePrice = Math.min(chargePrice,
+                               Engine.round2(stockCost * C.STOCK_BILL_CAP));
+      }
       var paid = 0;
       if (fromStock) {
         Engine.inventoryRemove(state, part.id, 1);

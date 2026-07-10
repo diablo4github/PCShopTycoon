@@ -3492,10 +3492,300 @@ function difficultyScenario(era) {
 }
 
 // ------------------------------------------------------------------
+// Scenario (§16.2b): shop-upgrade ROI fields + capped late-era cost scaling.
+// ------------------------------------------------------------------
+function shopRoiScenario() {
+  console.log('--- Shop-upgrade ROI & capped scaling (§16.2b) ---');
+  var E = Engine;
+  var lateEra = DATA.ERAS.slice().sort(function (a, b) { return b.startYear - a.startYear; })[0];
+  var r = E.newGame({ eraId: lateEra.id, shopName: 'ROI Test', seed: 26100 });
+  if (!assert(r.ok, 'roi: newGame failed')) return;
+  var s = E.getState();
+  var C = E.getConfig();
+  var year = E.dateInfo(s.day).y;
+  var tiers = DATA.SHOP_TIERS || [];
+  var next = tiers[s.shop.tier + 1];
+  if (!assert(!!next, 'roi: no next tier in data')) return;
+
+  // Capped scaling: cost = upgradeCost x min(yearScale, 2.2)
+  var view = E.getShopView();
+  var expScale = Math.min(Engine.yearScale(year), C.UPGRADE_COST_SCALE_CAP);
+  var expCost = Engine.round2((next.upgradeCost || 0) * expScale);
+  assert(Math.abs(view.nextTier.cost - expCost) < 0.01,
+         'roi: tier cost ' + view.nextTier.cost + ' != capped ' + expCost);
+  if (lateEra.startYear >= 2021 && REAL()) {
+    assert(Engine.yearScale(year) > C.UPGRADE_COST_SCALE_CAP,
+           'roi: 2021 yearScale should exceed the cap (else the cap is untested)');
+    assert(view.nextTier.cost < 10000,
+           'roi: 2021 tier-1 should land near $9k, got ' + view.nextTier.cost);
+  }
+
+  // Delta fields vs the raw tier tables
+  var cur = tiers[s.shop.tier];
+  var scale = Engine.yearScale(year);
+  var expMonthly = Engine.round2(
+    ((next.rentBase || 0) - (cur.rentBase || 0)) * scale +
+    ((next.utilitiesBase || 0) - (cur.utilitiesBase || 0)) * scale);
+  assert(Math.abs(view.nextTier.monthlyCostDelta - expMonthly) < 0.01,
+         'roi: monthlyCostDelta ' + view.nextTier.monthlyCostDelta + ' != ' + expMonthly);
+  assert(view.nextTier.offerBonusDelta === (next.offerBonus || 0) - (cur.offerBonus || 0) &&
+         view.nextTier.slotsDelta === (next.workstationSlots || 0) - (cur.workstationSlots || 0),
+         'roi: offerBonusDelta/slotsDelta wrong');
+  assert(view.nextTier.staffSlotsDelta ===
+         (C.STAFF_SLOTS[s.shop.tier + 1] || 0) - (C.STAFF_SLOTS[s.shop.tier] || 0),
+         'roi: staffSlotsDelta wrong');
+
+  // Payback: day 0 = too early (null + honest reason)
+  assert(view.nextTier.paybackMonths === null &&
+         /early|profitable/i.test(view.nextTier.paybackReason || ''),
+         'roi: day-0 payback should be null with an honest reason, got ' +
+         JSON.stringify([view.nextTier.paybackMonths, view.nextTier.paybackReason]));
+
+  // Fake a profitable fortnight -> a real number; a loss-making one -> null+reason
+  s.netHistory = [];
+  for (var d = 1; d <= 14; d++) s.netHistory.push({ day: s.day - 14 + d, cum: d * 100 });
+  var v2 = E.getShopView().nextTier;
+  var expMonths = Math.round((v2.cost / (100 * 30)) * 10) / 10;
+  assert(v2.paybackMonths === expMonths && v2.paybackReason === null,
+         'roi: payback ' + v2.paybackMonths + ' != cost/(dailyNet*30) ' + expMonths);
+  assert(v2.dailyNetAvg === 100, 'roi: dailyNetAvg should read 100, got ' + v2.dailyNetAvg);
+  s.netHistory = [];
+  for (var d2 = 1; d2 <= 14; d2++) s.netHistory.push({ day: s.day - 14 + d2, cum: -d2 * 50 });
+  var v3 = E.getShopView().nextTier;
+  assert(v3.paybackMonths === null && /isn’t profitable|isn't profitable/i.test(v3.paybackReason || ''),
+         'roi: unprofitable fortnight should be null + honest line, got ' +
+         JSON.stringify([v3.paybackMonths, v3.paybackReason]));
+  // Nightly sampling actually populates the history
+  s.netHistory = [];
+  E.endDay(); E.endDay();
+  assert(s.netHistory.length >= 2 && typeof s.netHistory[0].cum === 'number',
+         'roi: netHistory not sampled nightly');
+  console.log('  cost capped at x' + C.UPGRADE_COST_SCALE_CAP + ' (' +
+              Engine.fmtMoney(view.nextTier.cost) + ' vs raw ' +
+              Engine.fmtMoney(Engine.round2((next.upgradeCost || 0) * Engine.yearScale(year))) +
+              '), deltas ok, payback ' + expMonths + 'mo at $100/day, honest nulls ok');
+}
+
+// ------------------------------------------------------------------
+// Scenario (§16.2d): tightened accept cap + heavy-booking warning.
+// ------------------------------------------------------------------
+function acceptCapScenario(era) {
+  console.log('--- Accept cap & booking warning (§16.2d) ---');
+  var E = Engine;
+  var r = E.newGame({ eraId: era.id, shopName: 'Cap Test', seed: 26200 });
+  if (!assert(r.ok, 'cap: newGame failed')) return;
+  var s = E.getState();
+  s.cash = 100000;
+  var C = E.getConfig();
+  assert(C.HARD_CAP_SLOTS_MULT === 1.5, 'cap: HARD_CAP_SLOTS_MULT must be 1.5');
+  var slots = Engine.tierInfo(s).workstationSlots;
+  var cap = Math.floor(slots * C.HARD_CAP_SLOTS_MULT);   // garage: 2 x 1.5 = 3
+
+  var accepted = 0, refusal = null, guard = 0;
+  while (!refusal && guard++ < 30) {
+    var offers = E.getOffers().slice();
+    for (var i = 0; i < offers.length; i++) {
+      var o = offers[i];
+      if (o.type === 'business_account' || o.crt) continue;
+      var res = E.acceptOffer(o.id);
+      if (res.ok) accepted++;
+      else if (/workstations committed/i.test(res.error || '')) {
+        refusal = res.error; break;
+      }
+    }
+    if (!refusal) E.endDay();
+  }
+  assert(!!refusal, 'cap: never hit the hard accept cap');
+  var activeNonRefurb = E.getActiveJobs().filter(function (j) {
+    return j.type !== 'refurb';
+  }).length;
+  assert(activeNonRefurb <= Math.ceil(slots * C.HARD_CAP_SLOTS_MULT),
+         'cap: active non-refurb ' + activeNonRefurb + ' exceeds slots x 1.5');
+
+  // Deterministic warning check: with a heavily-loaded queue (poked hours),
+  // the NEXT accept must warn — committed std hours > 80% of pre-deadline time.
+  var actives = E.getActiveJobs().filter(function (j) { return j.type !== 'refurb'; });
+  if (actives.length > 1) { E.abandonJob(actives[1].id); }   // free a cap slot
+  E.getActiveJobs().forEach(function (j) {
+    if (j.type !== 'refurb') { j.hoursRequired = 60; j.hoursDone = 0; }
+  });
+  var warnOffer = null, wGuard = 0;
+  while (!warnOffer && wGuard++ < 15) {
+    var oo = E.getOffers().filter(function (o) {
+      return o.type !== 'business_account' && !o.crt && o.deadlineDay != null;
+    })[0];
+    if (oo) warnOffer = oo; else E.endDay();
+  }
+  if (assert(!!warnOffer, 'cap: no acceptable offer for the warning probe')) {
+    var wres = E.acceptOffer(warnOffer.id);
+    assert(wres.ok && /booked|tight/i.test(wres.warning || ''),
+           'cap: overloaded accept should return {ok, warning}, got ' + JSON.stringify(wres));
+    console.log('  hard cap at ' + activeNonRefurb + '/' + slots + ' slots ok; warning: "' +
+                (wres.warning || '') + '"');
+  }
+}
+
+// ------------------------------------------------------------------
+// Scenario (§16.3b): stockpile billing cap — a 500-day legacy part bills
+// min(current, avgCost x 1.5) x 1.25, not the drifted market price.
+// ------------------------------------------------------------------
+function stockBillingScenario(era) {
+  console.log('--- Stockpile billing cap, 500-day legacy part (§16.3b) ---');
+  var E = Engine;
+  var r = E.newGame({ eraId: era.id, shopName: 'Billing Test', seed: 26300 });
+  if (!assert(r.ok, 'billing: newGame failed')) return;
+  var s = E.getState();
+  s.cash = 100000;
+  var C = E.getConfig();
+  // Buy the legacy-ramp RAM part closest to EOL, so the post-EOL scarcity
+  // climb (the P2.2 arbitrage vector) engages within the probe window.
+  var part = Engine.Jobs.purchasableByCategory(s, 'ram').slice().sort(function (a, b) {
+    return (a.eolYear || 9999) - (b.eolYear || 9999);
+  })[0];
+  if (!assert(!!part, 'billing: no purchasable RAM at era start')) return;
+  var buy = E.buyPart(part.id, 1);
+  if (!assert(buy.ok, 'billing: buyPart failed')) return;
+  var inv = Engine.inventoryEntry(s, part.id);
+  var avgCost = inv.avgCost;
+
+  // 500 days of drift (poke the clock; priceOf is closed-form over day).
+  // Early-era lifecycles are long — extend past 500d until the legacy climb
+  // actually clears the cap threshold, and report the real day count.
+  s.day += 500;
+  var driftDays = 500;
+  var current = Engine.Pricing.priceOf(part, s);
+  while (current <= avgCost * C.STOCK_BILL_CAP && driftDays < 2500) {
+    s.day += 100; driftDays += 100;
+    current = Engine.Pricing.priceOf(part, s);
+  }
+  if (!assert(current > avgCost * C.STOCK_BILL_CAP,
+              'billing: even ' + driftDays + 'd of drift never exceeded the cap (current ' +
+              current + ' vs basis ' + avgCost + ')')) return;
+
+  // Craft a minimal active repair-shaped job needing this category and assign
+  // the stocked part (mechanics test — mirrors assignScenario's poke style).
+  var job = {
+    id: s.jobs.nextId++, type: 'repair', subtype: null, rush: false,
+    title: 'Billing probe', blurb: '', customer: { name: 'Probe', type: 'home' },
+    taste: null, pay: 50, offeredDay: s.day, deadlineDay: s.day + 5,
+    difficulty: 2, speed: 'standard', status: 'active',
+    hoursRequired: 1, hoursDone: 0,
+    steps: [{ id: 's1', label: 'Swap in the replacement part', hours: 1,
+              done: false, progress: 0, needIndex: 0, kind: 'labor', running: false }],
+    stepIndex: 0, diagnosed: true, needsDiagnosis: false,
+    fault: { desc: 'probe', partCategory: 'ram', laborHours: 1 },
+    needs: [{ category: 'ram', anyOfTags: null, minPerf: null, qty: 1,
+              filledPartIds: [], label: 'Replacement ram', originalPartId: null }],
+    build: null, units: 1, unitsDone: 0, machine: null, peripheral: null,
+    osRequest: null, device: null, deviceModern: false, devicePartsCost: 0,
+    devicePayBase: null, drTier: 0, crt: false, budgetAsk: false, result: null
+  };
+  s.jobs.active.push(job);
+  var ar = E.assignPart(job.id, 0, part.id);
+  var guard = 0;
+  while (ar.ok && ar.mishap && (job.partsUsed || []).length === 0 && guard++ < 8) {
+    Engine.inventoryAdd(s, part.id, 1, avgCost);   // re-stock after an ESD zap
+    ar = E.assignPart(job.id, 0, part.id);
+  }
+  if (!assert(ar.ok && (job.partsUsed || []).length === 1,
+              'billing: assign failed: ' + (ar.error || ''))) return;
+  var billed = job.partsUsed[0].price;
+  var expected = Engine.round2(Math.min(current, avgCost * C.STOCK_BILL_CAP));
+  assert(Math.abs(billed - expected) < 0.01,
+         'billing: stock pull billed ' + billed + ' != min(current, avgCost x ' +
+         C.STOCK_BILL_CAP + ') = ' + expected);
+  // The §16.3b margin band: customer pays billed x 1.25; vs the shop's basis
+  // that must sit in [1.0 x, PARTS_MARKUP x STOCK_BILL_CAP x] — not the old 10x.
+  var margin = (billed * C.PARTS_MARKUP) / avgCost;
+  var bandHi = C.PARTS_MARKUP * C.STOCK_BILL_CAP;
+  assert(margin <= bandHi + 1e-9 && margin >= 1.0,
+         'billing: margin ' + margin.toFixed(2) + 'x outside [1.0, ' + bandHi + 'x]');
+  // Fresh market buys still bill full price (only STOCK pulls are capped)
+  var ar2 = E.assignPart(job.id, 0, part.id);   // slot full -> refused, fine
+  console.log('  bought $' + avgCost + ', drifted to $' + current + ' after 500d; billed $' +
+              billed + ' -> customer margin ' + margin.toFixed(2) + 'x (band cap ' +
+              bandHi.toFixed(2) + 'x, was ~' +
+              ((current * C.PARTS_MARKUP) / avgCost).toFixed(2) + 'x uncapped)');
+}
+
+// ------------------------------------------------------------------
+// Scenario (§16.3c): upgrade offers carry partsEstimate {min,max}.
+// ------------------------------------------------------------------
+function partsEstimateScenario(era) {
+  console.log('--- Upgrade partsEstimate (§16.3c) ---');
+  var E = Engine;
+  var r = E.newGame({ eraId: era.id, shopName: 'Estimate Test', seed: 26400 });
+  if (!assert(r.ok, 'estimate: newGame failed')) return;
+  var s = E.getState();
+  var offer = generateUntil(s, function (o) { return o.type === 'upgrade'; }, 200);
+  if (!assert(!!offer, 'estimate: no upgrade offer generated')) return;
+  var pe = offer.partsEstimate;
+  if (!assert(pe && typeof pe.min === 'number' && typeof pe.max === 'number',
+              'estimate: upgrade offer missing partsEstimate: ' + JSON.stringify(pe)))
+    return;
+  assert(pe.min > 0 && pe.max >= pe.min &&
+         Number.isInteger(pe.min) && Number.isInteger(pe.max),
+         'estimate: malformed range ' + JSON.stringify(pe));
+  // The range must actually bracket a qualifying option's market price
+  var need = offer.needs[0];
+  var key = Object.keys(need.minPerf)[0];
+  var cheapestQualifying = Engine.Jobs.purchasableByCategory(s, need.category)
+    .filter(function (p) {
+      if (need.anyOfTags && !(p.platformTags || []).some(function (tg) {
+        return need.anyOfTags.indexOf(tg) !== -1;
+      })) return false;
+      return ((p.perf || {})[key] || 0) >= need.minPerf[key];
+    })
+    .map(function (p) { return Engine.Pricing.priceOf(p, s); })
+    .sort(function (a, b) { return a - b; })[0];
+  assert(Math.abs(pe.min - Math.round(cheapestQualifying)) <= 1,
+         'estimate: min ' + pe.min + ' != cheapest qualifying ' + cheapestQualifying);
+  console.log('  "' + offer.title + '": parts est. $' + pe.min + '–' + pe.max + ' ok');
+}
+
+// ------------------------------------------------------------------
+// Scenario (§16.3f): waitHour auto-starts a pending wait when none running.
+// ------------------------------------------------------------------
+function waitAutoStartScenario(era) {
+  console.log('--- waitHour auto-start (§16.3f) ---');
+  var E = Engine;
+  var r = E.newGame({ eraId: era.id, shopName: 'AutoWait Test', seed: 26500 });
+  if (!assert(r.ok, 'autowait: newGame failed')) return;
+  var s = E.getState();
+  s.cash = 100000;
+  // No jobs at all -> still a readable error
+  s.jobs.active.length = 0;
+  var none = E.waitHour();
+  assert(!none.ok && /nothing is running/i.test(none.error || ''),
+         'autowait: empty bench should error readably, got ' + JSON.stringify(none));
+  // A refurb with its current step promoted to a PENDING (not running) wait
+  var listing = E.getAsIsMarket()[0];
+  if (!assert(!!listing, 'autowait: no as-is listing')) return;
+  var buy = E.buyAsIsMachine(listing.id);
+  if (!assert(buy.ok, 'autowait: buy failed')) return;
+  var job = E.getActiveJobs().filter(function (j) { return j.id === buy.jobId; })[0];
+  var st = job.steps[job.stepIndex];
+  st.kind = 'wait'; st.running = false; st.needIndex = null;   // mechanics poke
+  st.hours = 3;   // long enough that one waitHour can't complete it
+  var hoursBefore = s.hoursLeft;
+  var wh = E.waitHour();
+  assert(wh.ok && wh.hoursSpent === 1 && wh.startedWait === st.label,
+         'autowait: should auto-start "' + st.label + '", got ' + JSON.stringify(wh));
+  assert(st.running === true && !st.done, 'autowait: step should be running mid-wait');
+  var expProgress = Engine.round1(1 - E.getConfig().WAIT_START_HOURS) / st.hours;
+  assert(Math.abs(st.progress - expProgress) < 0.01,
+         'autowait: 0.9h should tick the freshly-started wait, progress ' + st.progress);
+  assert(Math.abs((hoursBefore - s.hoursLeft) - 1) < 1e-9,
+         'autowait: exactly 1h must be spent, start included');
+  console.log('  auto-started "' + st.label + '" (0.1h start inside the hour, ' +
+              '0.9h ticked), empty-bench error intact');
+}
+
+// ------------------------------------------------------------------
 // Main
 // ------------------------------------------------------------------
 console.log('sim-test using: ' + DATA_SOURCE + ' | engine v' + Engine.VERSION);
-assert(Engine.VERSION === '0.6', 'Engine.VERSION must be "0.6"');
+assert(Engine.VERSION === '0.6.1', 'Engine.VERSION must be "0.6.1"');
 assert(parseFloat(Engine.VERSION) >= 0.4, 'Engine.VERSION must stay parseFloat >= 0.4');
 var lines = [];
 try {
@@ -3622,6 +3912,11 @@ regularsScenario(DATA.ERAS[DATA.ERAS.length - 1]);
 accountsScenario(DATA.ERAS[DATA.ERAS.length - 1]);
 achievementsScenario(DATA.ERAS[0]);
 difficultyScenario(DATA.ERAS[0]);
+shopRoiScenario();
+acceptCapScenario(DATA.ERAS[0]);
+stockBillingScenario(DATA.ERAS[0]);
+partsEstimateScenario(DATA.ERAS[DATA.ERAS.length - 1]);
+waitAutoStartScenario(DATA.ERAS[0]);
 migrationScenario(DATA.ERAS[DATA.ERAS.length - 1]);
 
 finish();

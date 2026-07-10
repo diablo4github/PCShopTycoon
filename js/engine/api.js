@@ -858,6 +858,37 @@
   // ------------------------------------------------------------------
   // Shop
   // ------------------------------------------------------------------
+  /* §16.2b: upgradeCost year-scaling is capped at x2.2 — late-era moves were
+   * priced by raw laborRate ratio (2021: x3.39 = $13.6k tier-1) and never paid
+   * back (playtest P1.2). Rent/wages still scale fully; only the one-off
+   * upgrade price is softened. */
+  function upgradeCostFor(next, year) {
+    var scale = Math.min(Engine.yearScale(year), Engine.CONFIG.UPGRADE_COST_SCALE_CAP);
+    return Engine.round2((next.upgradeCost || 0) * scale);
+  }
+  /* §16.2b: trailing daily-net average from state.netHistory (nightly
+   * cumulative-net samples, capped). Returns {avg}|{reason} — reason is the
+   * honest line the UI shows when no payback estimate is possible. */
+  function trailingDailyNet(state) {
+    var h = state.netHistory || [];
+    if (h.length < 2)
+      return { avg: null, reason: 'Too early to tell — give it a few days of trading first' };
+    var last = h[h.length - 1];
+    var firstIdx = 0;
+    for (var i = h.length - 1; i >= 0; i--) {
+      if (last.day - h[i].day <= Engine.CONFIG.NET_HISTORY_DAYS) firstIdx = i;
+      else break;
+    }
+    var first = h[firstIdx];
+    var days = last.day - first.day;
+    if (days < 1)
+      return { avg: null, reason: 'Too early to tell — give it a few days of trading first' };
+    var avg = Engine.round2((last.cum - first.cum) / days);
+    if (avg <= 0)
+      return { avg: avg, reason: 'The shop isn’t profitable enough yet — recent days ' +
+                                 'average ' + Engine.fmtMoney(avg) + '/day' };
+    return { avg: avg, reason: null };
+  }
   Engine.getShopView = function () {
     var state = S();
     if (!state) return { tier: null, nextTier: null, equipment: [], insurance: {} };
@@ -869,11 +900,36 @@
     var next = tiers[state.shop.tier + 1] || null;
     var nextView = null;
     if (next) {
-      var cost = Engine.round2((next.upgradeCost || 0) * scale);
+      var cost = upgradeCostFor(next, year);   // §16.2b capped scaling
+      // §16.2b ROI transparency: what the move actually changes, in numbers.
+      // Rent delta reflects what the 1st will really charge (difficulty +
+      // scenario rent multipliers); utilities are never rent-multiplied.
+      var rentMult = Engine.difficultyFor(state).rentMult || 1;
+      var scen = Engine.currentScenario(state);
+      if (scen && scen.modifiers && scen.modifiers.rentMult > 0)
+        rentMult *= scen.modifiers.rentMult;
+      var C = Engine.CONFIG;
+      var staffCur = C.STAFF_SLOTS[Engine.clamp(state.shop.tier, 0, C.STAFF_SLOTS.length - 1)] || 0;
+      var staffNext = C.STAFF_SLOTS[Engine.clamp(state.shop.tier + 1, 0, C.STAFF_SLOTS.length - 1)] || 0;
+      var net = trailingDailyNet(state);
+      var paybackMonths = null;
+      if (net.avg != null && net.avg > 0) {
+        paybackMonths = Math.round((cost / (net.avg * 30)) * 10) / 10;
+      }
       nextView = {
         name: next.name, cost: cost, minPrestige: next.minPrestige || 0,
         canAfford: state.cash >= cost,
-        prestigeOk: state.reputation.prestige >= (next.minPrestige || 0)
+        prestigeOk: state.reputation.prestige >= (next.minPrestige || 0),
+        // §16.2b (UI contract)
+        monthlyCostDelta: Engine.round2(
+          ((next.rentBase || 0) - (cur.rentBase || 0)) * scale * rentMult +
+          ((next.utilitiesBase || 0) - (cur.utilitiesBase || 0)) * scale),
+        offerBonusDelta: (next.offerBonus || 0) - (cur.offerBonus || 0),
+        slotsDelta: (next.workstationSlots || 0) - (cur.workstationSlots || 0),
+        staffSlotsDelta: staffNext - staffCur,
+        paybackMonths: paybackMonths,          // null when no honest estimate exists
+        paybackReason: paybackMonths == null ? net.reason : null,
+        dailyNetAvg: net.avg                   // the number the estimate is built on
       };
     }
     var equipment = [];
@@ -936,8 +992,7 @@
     if (state.reputation.prestige < (next.minPrestige || 0))
       return err('Need prestige tier ' + next.minPrestige + ' (' +
                  Engine.CONFIG.PRESTIGE_TIERS[next.minPrestige].label + ') first');
-    var cost = Engine.round2((next.upgradeCost || 0) *
-                             Engine.yearScale(Engine.currentYear(state)));
+    var cost = upgradeCostFor(next, Engine.currentYear(state));   // §16.2b capped
     if (state.cash < cost) return err('Not enough cash (' + Engine.fmtMoney(cost) + ')');
     Engine.addCash(state, -cost);
     Engine.ledgerAdd(state, 'other', cost);
@@ -1288,15 +1343,52 @@
   };
 
   // §11.6: burn an hour purely to advance running wait steps (overtime applies).
+  // §16.3f: if nothing is running yet, auto-START the next pending wait step
+  // (deadline-soonest job first), charging its 0.1h start inside the hour —
+  // the button always does something useful (playtest P2.6 tooltip mismatch).
   Engine.waitHour = function () {
     var bad = needLive(); if (bad) return bad;
     var state = S();
-    var anyRunning = state.jobs.active.some(function (j) {
-      if (!j.steps || j.stepIndex >= j.steps.length) return false;
+    var C = Engine.CONFIG;
+    function currentWait(j) {
+      if (!j.steps || j.stepIndex >= j.steps.length) return null;
       var st = j.steps[j.stepIndex];
-      return st.kind === 'wait' && st.running;
+      if (st.kind !== 'wait') return null;
+      // an install-flavored wait still needs its part assigned first
+      if (st.needIndex != null) {
+        var nd = j.needs[st.needIndex];
+        if (!nd || nd.filledPartIds.length < nd.qty) return null;
+      }
+      return st;
+    }
+    var anyRunning = state.jobs.active.some(function (j) {
+      var st = currentWait(j);
+      return !!(st && st.running);
     });
-    if (!anyRunning) return err('Nothing is running — no waits to sit through');
+    var startedLabel = null;
+    if (!anyRunning) {
+      // Auto-start the pending wait on the most urgent job holding one
+      var candidates = state.jobs.active.filter(function (j) {
+        var st = currentWait(j);
+        return !!(st && !st.running);
+      }).sort(function (a, b) {
+        return (a.deadlineDay == null ? 1e9 : a.deadlineDay) -
+               (b.deadlineDay == null ? 1e9 : b.deadlineDay);
+      });
+      if (!candidates.length)
+        return err('Nothing is running — no waits to sit through or start');
+      var job = candidates[0];
+      var wst = currentWait(job);
+      var sp0 = Engine.spendHours(state, 1);   // the whole hour, start included
+      if (!sp0.ok) return sp0;
+      wst.running = true;
+      startedLabel = wst.label;
+      state.workedToday = state.workedToday || [];
+      if (state.workedToday.indexOf(job.id) === -1) state.workedToday.push(job.id);
+      // 0.1h went to setting it running; the rest of the hour ticks all waits
+      var advanced0 = Engine.Jobs.tickWaits(state, Engine.round1(1 - C.WAIT_START_HOURS), null);
+      return { ok: true, hoursSpent: 1, advanced: advanced0, startedWait: startedLabel };
+    }
     var sp = Engine.spendHours(state, 1);
     if (!sp.ok) return sp;
     var advanced = Engine.Jobs.tickWaits(state, 1, null);

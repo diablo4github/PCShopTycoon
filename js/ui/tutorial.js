@@ -394,6 +394,14 @@
       '<h3>Saving</h3>' +
       '<p>The game autosaves every night. Use the System tab to export a copy, or import a save from a file ' +
       'or pasted text.</p>' +
+      '<h3>Keyboard shortcuts</h3>' +
+      '<ul>' +
+        '<li><b>1–9</b> — switch tabs (in bar order)</li>' +
+        '<li><b>E</b> — End Day (asks first when unfinished work is due today)</li>' +
+        '<li><b>W</b> — Wait 1h, whenever that button is showing</li>' +
+        '<li><b>?</b> — this help &nbsp;·&nbsp; <b>Esc</b> — close dialogs</li>' +
+      '</ul>' +
+      '<p class="muted small">Shortcuts pause while you are typing or a dialog is open.</p>' +
     '</div>';
     UI.modal({
       title: 'Help & How to Play',

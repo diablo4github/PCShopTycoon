@@ -232,7 +232,19 @@
 
     // Workstations
     SOFT_CAP_HOURS_MULT: 1.5,    // jobs beyond slots worked same day take +50% hours
-    HARD_CAP_SLOTS_MULT: 2,      // acceptOffer fails at active non-refurb >= slots*2
+    // §16.2d: accept-cap tightened 2.0 -> 1.5 (playtest P1.4 — "accept
+    // everything" overbooked a solo shop into 14-19% deadline failures).
+    HARD_CAP_SLOTS_MULT: 1.5,    // acceptOffer fails at active non-refurb >= slots*1.5
+    ACCEPT_WARN_LOAD: 0.8,       // §16.2d: acceptOffer warns when committed std hours
+                                 //   exceed this fraction of workable hours pre-deadline
+    // §16.2b: late-era shop upgrades cost-scale capped (playtest P1.2 — 2021
+    // tier-1 at yearScale x3.39 = $13.6k never paid back; x2.2 lands ~$8.8k).
+    UPGRADE_COST_SCALE_CAP: 2.2,
+    NET_HISTORY_DAYS: 14,        // trailing window for the §16.2b payback estimate
+    // §16.3b: stock pulls on customer jobs bill at min(current, avgCost x this)
+    // x the 1.25 markup (playtest P2.2 — legacy drift let stockpiles bill ~10x
+    // cost; the shop's own builds/flips keep full buy-ahead-of-shock upside).
+    STOCK_BILL_CAP: 1.5,
 
     // Compatibility / builds (§5.1)
     PSU_HEADROOM: 1.15,
@@ -328,7 +340,8 @@
   // ------------------------------------------------------------------
   // Live state reference (set by api.js newGame/importSave)
   // ------------------------------------------------------------------
-  Engine.VERSION = '0.6';        // §15: parseFloat-compatible with the UI's >=0.4 gate
+  Engine.VERSION = '0.6.1';      // §16: parseFloat-compatible with the UI's >=0.4 gate;
+                                  // NO save-shape change — state.version stays 7
   Engine._state = null;
   Engine.getData = function () { return root.DATA || {}; };
 

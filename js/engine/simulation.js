@@ -120,6 +120,18 @@
 
     // 14. §15.5: achievements sweep (unlocks surface in the morning summary)
     Sim.checkAchievements(state, summary);
+
+    // 15. §16.2b: nightly cumulative-net sample feeding the trailing 14-day
+    // daily-net average behind the shop-upgrade payback estimate. Lazily
+    // created — a v7 save without it simply starts sampling tonight.
+    var lt = state.ledger.lifetime;
+    state.netHistory = state.netHistory || [];
+    state.netHistory.push({
+      day: state.day,
+      cum: Engine.round2(lt.revenue - lt.partsCost - lt.fixedCosts - lt.other)
+    });
+    while (state.netHistory.length > CFG().NET_HISTORY_DAYS + 1)
+      state.netHistory.shift();
   };
 
   // ------------------------------------------------------------------

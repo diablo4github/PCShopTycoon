@@ -266,10 +266,28 @@
     var jobId = jobIdOf(el);
 
     switch (action) {
+      /* ---- §16.1 sub-tab pills (shared by Workbench/Ledger/Shop/Offers) ---- */
+      case 'subtab': {
+        var stGroup = el.getAttribute('data-group');
+        var stId = el.getAttribute('data-subtab');
+        if (stGroup && stId) {
+          UI.state.subTab[stGroup] = stId;
+          T.render(stGroup);   // group names equal tab panel ids
+        }
+        break;
+      }
+
       /* ---- Offers ---- */
       case 'accept': {
-        var ac = UI.act(function () { return Engine.acceptOffer(jobId); }, 'Job accepted — it is on your Workbench');
-        if (ac && ac.ok !== false && UI.audio && UI.audio.sfx) UI.audio.sfx('accept');
+        var ac = UI.act(function () { return Engine.acceptOffer(jobId); });
+        if (ac && ac.ok !== false) {
+          if (UI.audio && UI.audio.sfx) UI.audio.sfx('accept');
+          UI.toast(ac.accountSigned
+            ? 'Account signed — their service jobs will land straight on your bench'
+            : 'Job accepted — it is on your Workbench', 'success');
+          /* §16.2d — engine's bench-load feasibility heads-up (info, not error) */
+          if (ac.warning) UI.toast(ac.warning, 'info', 6500);
+        }
         break;
       }
       case 'decline': {
@@ -388,8 +406,24 @@
       case 'sell-part': {
         var spid = el.getAttribute('data-part');
         var sqty = parseInt(el.getAttribute('data-qty'), 10) || 1;
-        var pr = UI.act(function () { return Engine.sellPart(spid, sqty); });
-        if (pr && pr.ok !== false) UI.toast('Sold ' + sqty + ' for ' + fm(pr.proceeds), 'success');
+        var doSell = function () {
+          var pr = UI.act(function () { return Engine.sellPart(spid, sqty); });
+          if (pr && pr.ok !== false) UI.toast('Sold ' + sqty + ' for ' + fm(pr.proceeds), 'success');
+        };
+        /* §16.3d — confirm the ALL variant only (a misclick on rare legacy
+         * stock is an uncushioned loss); single sells stay one-click. */
+        if (el.getAttribute('data-all') === '1' && sqty > 1) {
+          var spName = el.getAttribute('data-name') || 'this part';
+          var spEst = parseFloat(el.getAttribute('data-est'));
+          UI.confirm(
+            'Sell all ' + sqty + ' × ' + spName +
+            (isFinite(spEst) ? ' for about ' + fm(spEst) : '') +
+            ' (70% of market value)? Parts on the shelf can be worth more to a job later.',
+            doSell, { yesLabel: 'Sell all', title: 'Sell all stock' }
+          );
+        } else {
+          doSell();
+        }
         break;
       }
 
@@ -545,6 +579,12 @@
      * Stock" vs "Order & Assign") and the replaces/overspend meta line in
      * sync with the highlighted option. */
     if (t.id && t.id.indexOf('need-sel-') === 0) { updateNeedRowUI(t); return; }
+    /* §16.3e — ONE preview click when the SFX slider is released (`change`),
+     * not per input tick; setSfxVol itself is a silent setter now. */
+    if (t.id === 'sfx-vol') {
+      if (UI.audio && UI.audio.sfx) UI.audio.sfx('click');
+      return;
+    }
     var el = t.closest('[data-action]');
     if (!el) return;
     var action = el.getAttribute('data-action');
@@ -1734,7 +1774,8 @@
         '<td class="num">' + esc(fm((Number(it.curPrice) || 0) * qty)) + '</td>' +
         '<td class="actions">' +
           '<button type="button" class="btn btn-sm" data-action="sell-part" data-part="' + esc(it.partId) + '" data-qty="1">Sell 1</button> ' +
-          (qty > 1 ? '<button type="button" class="btn btn-sm" data-action="sell-part" data-part="' + esc(it.partId) + '" data-qty="' + qty + '">Sell all</button>' : '') +
+          (qty > 1 ? '<button type="button" class="btn btn-sm" data-action="sell-part" data-part="' + esc(it.partId) + '" data-qty="' + qty +
+            '" data-all="1" data-name="' + esc(it.name) + '" data-est="' + ((Number(it.curPrice) || 0) * qty * 0.7).toFixed(2) + '">Sell all</button>' : '') +
         '</td>' +
         '</tr>';
     });

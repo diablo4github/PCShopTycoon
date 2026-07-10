@@ -262,6 +262,16 @@
       '</div>';
   }
 
+  /** §16.5 — same fail-soft banner, sized for the game-over / scenario-end
+   * cards ("reward long play" per the style bible). Decorative only. */
+  function endBannerArt(src) {
+    if (!src) return '';
+    return '<div class="era-card-art end-banner" aria-hidden="true">' +
+      '<img src="' + esc(src) + '" alt="" decoding="async" ' +
+        'onerror="this.parentNode.classList.add(\'no-art\'); this.remove();">' +
+      '</div>';
+  }
+
   /** §15.6 — one selectable difficulty card. */
   function diffCard(id, label, blurb) {
     var sel = (UI.state.difficulty || 'standard') === id;
@@ -460,15 +470,24 @@
       return;
     }
 
-    /* §15.6 — show the run's difficulty when the save carries one. */
+    /* §15.6 — show the run's difficulty when the save carries one;
+     * §16.5 — reuse the era's banner art (or the scenario's when the run
+     * was a scenario), id-mapped and fail-soft. */
     var goDiff = '';
+    var goArt = '';
     try {
       var goSt = Engine.getState();
       goDiff = UI.difficultyLabel(goSt && goSt.difficulty);
+      if (goSt && goSt.scenario && goSt.scenario.id) {
+        goArt = 'assets/scenarios/' + goSt.scenario.id + '.jpg';
+      } else if (goSt && goSt.eraId) {
+        goArt = 'assets/eras/' + goSt.eraId + '.jpg';
+      }
     } catch (eD) { /* ignore */ }
 
     var lt = s.lifetime || {};
     el.innerHTML = '<div class="go-wrap"><div class="go-card">' +
+      endBannerArt(goArt) +
       '<h1>Game Over</h1>' +
       (s.reason ? '<p class="go-reason">' + esc(s.reason) + '</p>' : '') +
       '<div class="go-meta">' +
@@ -549,7 +568,12 @@
       linesHTML = '<p class="muted small">No score breakdown available.</p>';
     }
 
+    /* §16.5 — matching scenario banner art, id-mapped, fail-soft. */
+    var scArt = (st && st.scenario && st.scenario.id)
+      ? 'assets/scenarios/' + st.scenario.id + '.jpg' : '';
+
     el.innerHTML = '<div class="go-wrap"><div class="go-card scenario-end">' +
+      endBannerArt(scArt) +
       '<div class="sc-grade grade-' + gradeCls + '" aria-label="Grade ' + esc(grade) + '">' + esc(grade) + '</div>' +
       '<h1>' + esc(name) + ' — complete</h1>' +
       '<div class="go-meta">' +

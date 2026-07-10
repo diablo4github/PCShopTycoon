@@ -30,7 +30,9 @@
     wikiOpen: {},             // partId -> true for expanded wiki rows
     chronicleTag: 'all',      // §13.1 Chronicle tag filter
     tutorialToggle: undefined,// §13.5 New Game screen tour checkbox (undefined = not yet decided this session)
-    saveUrl: null             // objectURL of the last exported save blob
+    saveUrl: null,            // objectURL of the last exported save blob
+    /* §16.1 — active sub-tab per main tab (session-level persistence). */
+    subTab: { workbench: 'active', ledger: 'finances', shop: 'upgrade', offers: 'all' }
   };
 
   /* ------------------------------------------------------------------ *
@@ -103,6 +105,64 @@
       }
     } catch (e) { /* ignore */ }
     return String(sc.id || 'Scenario');
+  };
+
+  /** Dotted-version compare against Engine.VERSION ("0.6.1" ≥ "0.6.1" →
+   * true). parseFloat cannot tell 0.6 from 0.6.1, hence this helper. */
+  UI.engineVerAtLeast = function (want) {
+    var cur = String((window.Engine && Engine.VERSION) || '0').split('.');
+    var min = String(want || '0').split('.');
+    for (var i = 0; i < Math.max(cur.length, min.length); i++) {
+      var a = parseInt(cur[i], 10) || 0;
+      var b = parseInt(min[i], 10) || 0;
+      if (a > b) return true;
+      if (a < b) return false;
+    }
+    return true;
+  };
+
+  /* ------------------------------------------------------------------ *
+   * §16.1 — reusable sub-tab component (the de-bloat pattern).
+   * Renders a horizontal pill row; selection state lives in
+   * UI.state.subTab[group]; clicks are handled by tabs.js's delegated
+   * "subtab" action (house pattern: innerHTML re-render, no per-render
+   * listeners). Pills are real <button>s (keyboard accessible) and carry
+   * stable data-subtab hooks for the tutorial & E2E selectors.
+   *
+   * tabs: [{ id, label, count?, countCls? ('red'), hidden?, title? }]
+   * ------------------------------------------------------------------ */
+  UI.subTabsHTML = function (group, tabs) {
+    var active = UI.activeSubTab(group, tabs);
+    var h = '<nav class="subtab-row" role="tablist" aria-label="' + UI.esc(group) + ' sections">';
+    (tabs || []).forEach(function (t) {
+      if (!t || t.hidden) return;
+      var isActive = t.id === active;
+      h += '<button type="button" role="tab" aria-selected="' + (isActive ? 'true' : 'false') +
+        '" class="subtab-pill' + (isActive ? ' active' : '') + '"' +
+        ' data-action="subtab" data-group="' + UI.esc(group) + '" data-subtab="' + UI.esc(t.id) + '"' +
+        (t.title ? ' title="' + UI.esc(t.title) + '"' : '') + '>' +
+        UI.esc(t.label) +
+        (t.count !== undefined && t.count !== null
+          ? ' <span class="subtab-count' + (t.countCls ? ' ' + UI.esc(t.countCls) : '') + '">' + UI.esc(t.count) + '</span>'
+          : '') +
+        '</button>';
+    });
+    return h + '</nav>';
+  };
+
+  /** Current valid selection for a group: falls back to the first visible
+   * pill when the stored choice is hidden/gone (e.g. Priority drops to 0,
+   * or a feature-gated pill's engine API is absent this session). */
+  UI.activeSubTab = function (group, tabs) {
+    var want = (UI.state.subTab || {})[group];
+    var firstVisible = null;
+    for (var i = 0; i < (tabs || []).length; i++) {
+      var t = tabs[i];
+      if (!t || t.hidden) continue;
+      if (firstVisible === null) firstVisible = t.id;
+      if (t.id === want) return want;
+    }
+    return firstVisible;
   };
 
   /** Run an Engine call, converting thrown exceptions into {ok:false}. */
@@ -608,16 +668,22 @@
     var endBtn = byId('btn-endday');
     if (endBtn) endBtn.disabled = !!(st.flags && st.flags.gameOver);
 
-    /* §11.6 — "Wait 1h ⏲" appears only when Engine.waitHour exists AND a
-     * wait step is currently running somewhere on the bench. */
+    /* §11.6/§16.3f — "Wait 1h ⏲": shown when a wait step is running; on a
+     * ≥0.6.1 engine (waitHour auto-STARTS the next pending wait step when
+     * none are running) it also shows when a job's current step is a
+     * pending wait step, with the tooltip matching that behavior. */
     var waitBtn = byId('btn-wait');
     if (waitBtn) {
       var showWait = false;
+      var autoStart = UI.engineVerAtLeast('0.6.1');
       if (window.Engine && typeof Engine.waitHour === 'function') {
-        showWait = UI.anyWaitStepRunning();
+        showWait = UI.anyWaitStepRunning() || (autoStart && UI.anyWaitStepUpNext());
       }
       waitBtn.hidden = !showWait;
       waitBtn.disabled = !!(st.flags && st.flags.gameOver);
+      waitBtn.title = autoStart
+        ? 'Spend 1 hour advancing running timed steps (burn-ins, scans…) — if none are running, it starts the next pending one'
+        : 'Burn 1 hour to advance running timed steps (burn-ins, scans…)';
     }
 
     UI.updateHeaderHeightVar();
@@ -648,6 +714,24 @@
         if (!steps) continue;
         for (var k = 0; k < steps.length; k++) {
           if (UI.isWaitStepRunning(steps[k])) return true;
+        }
+      }
+    } catch (e) { /* engine not ready */ }
+    return false;
+  };
+
+  /** §16.3f — is any active job's CURRENT (first not-done) step a pending
+   * wait step? That's what a ≥0.6.1 waitHour can auto-start. */
+  UI.anyWaitStepUpNext = function () {
+    try {
+      var jobs = Engine.getActiveJobs() || [];
+      for (var i = 0; i < jobs.length; i++) {
+        var steps = jobs[i].steps;
+        if (!steps || jobs[i].status === 'done') continue;
+        for (var k = 0; k < steps.length; k++) {
+          if (steps[k].done) continue;
+          if (steps[k].kind === 'wait' && !UI.isWaitStepRunning(steps[k])) return true;
+          break; // only the current step counts — deeper waits can't start yet
         }
       }
     } catch (e) { /* engine not ready */ }
@@ -731,6 +815,32 @@
   UI.endDay = function () {
     if (!UI.engineReady()) { UI.toast('Engine not loaded', 'error'); return; }
 
+    /* §16.2c — ending the day fails overdue work overnight; when unfinished
+     * jobs are due TODAY, ask first (no confirm when zero). */
+    var dueUnfinished = 0;
+    try {
+      var stNow = Engine.getState();
+      (Engine.getActiveJobs() || []).forEach(function (j) {
+        if (!j || j.status === 'done') return;
+        if (j.deadlineDay !== null && j.deadlineDay !== undefined && j.deadlineDay <= stNow.day) dueUnfinished++;
+      });
+    } catch (eDue) { /* engine not ready — no confirm */ }
+    if (dueUnfinished > 0) {
+      UI.confirm(
+        dueUnfinished === 1
+          ? "1 job due today isn't finished — ending the day will fail it. End anyway?"
+          : dueUnfinished + " jobs due today aren't finished — ending the day will fail them. End anyway?",
+        function () { UI.performEndDay(); },
+        { yesLabel: 'End the day', title: 'Unfinished work due today' }
+      );
+      return;
+    }
+    UI.performEndDay();
+  };
+
+  UI.performEndDay = function () {
+    if (!UI.engineReady()) { UI.toast('Engine not loaded', 'error'); return; }
+
     // §9.9: brief disabled shimmer on the button while the summary opens.
     var btn = document.getElementById('btn-endday');
     if (btn && !btn.disabled) {
@@ -812,6 +922,39 @@
         var root = document.getElementById('modal-root');
         var last = root && root.lastElementChild;
         if (last && last._close) last._close();
+      }
+    });
+
+    /* §16.4 — keyboard shortcuts: 1-9 tabs, E End Day (through the §16.2c
+     * confirm), W Wait 1h when visible, ? Help. Ignored while typing, with
+     * modifier keys held, while a modal is open, or off the main screen. */
+    document.addEventListener('keydown', function (e) {
+      if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey) return;
+      var t = e.target;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
+      var mroot = document.getElementById('modal-root');
+      if (mroot && mroot.childElementCount > 0) return;
+      if (UI.state.screen !== 'main') return;
+
+      var k = e.key;
+      if (k >= '1' && k <= '9') {
+        var bar2 = document.getElementById('tab-bar');
+        var btns2 = bar2 ? bar2.querySelectorAll('.tab-btn') : [];
+        var idx = parseInt(k, 10) - 1;
+        if (btns2[idx]) {
+          e.preventDefault();
+          if (UI.audio && UI.audio.sfx) UI.audio.sfx('click');
+          UI.switchTab(btns2[idx].getAttribute('data-tab'));
+        }
+      } else if (k === 'e' || k === 'E') {
+        e.preventDefault();
+        UI.endDay();
+      } else if (k === 'w' || k === 'W') {
+        var wb = document.getElementById('btn-wait');
+        if (wb && !wb.hidden && !wb.disabled) { e.preventDefault(); wb.click(); }
+      } else if (k === '?') {
+        e.preventDefault();
+        if (UI.tutorial && UI.tutorial.openHelp) UI.tutorial.openHelp();
       }
     });
 

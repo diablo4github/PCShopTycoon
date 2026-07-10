@@ -1569,3 +1569,115 @@ Overseer E2E: scenario card boots + countdown chip + end screen; credit draw/rep
 Ledger; a regular returns with chip; achievements grid + an unlock toast; difficulty
 selector affects starting cash; transition warning news appears in a long run; no
 console errors.
+
+---
+
+# v0.6.1 Addendum — UI Refinement round
+
+Patch release. Save stays **version 7**; `Engine.VERSION = "0.6.1"`. Sources: v0.6
+external playtest ("the workbench could use sub tabs"), docs/PLAYTEST-v0.5.md (the
+subagent playtest report — fix its P1/P2 items below), and the asset integration
+review. External testers active; AGENTS.md hardening bar applies.
+
+## 16.1 Sub-tabs: the de-bloat pattern (UI) — HEADLINE
+Build ONE reusable sub-tab component (`UI.subTabs(containerCtx, tabs, activeId,
+onSwitch)` or equivalent): a horizontal pill row under a tab's header with per-pill
+counts, persisted active selection per tab in `UI.state` (session-level; localStorage
+optional), keyboard accessible, wrap-safe. Then apply it:
+- **Workbench** (the playtest ask): sub-tabs **Active** (default: everything not
+  covered below, sorted deadline-ascending) · **Priority** (due today/tomorrow or
+  rush — red count badge) · **Customer Jobs** (repair/upgrade/software/cleaning/
+  peripheral/data_recovery/device_repair) · **Contracts** (contract, contract_build,
+  business-account jobs) · **Shop Projects** (refurbs + spec/stock work) · **Waiting**
+  (jobs currently blocked on a running wait-step or an unassigned part). A job may
+  appear under multiple pills where sensible (Priority is a lens, not a bucket). The
+  As-Is market section moves under Shop Projects. Counts on every pill; empty state
+  per pill; "Priority" pill hidden when zero.
+- **Ledger**: sub-tabs Finances (P&L) · Credit · Business Accounts · Achievements.
+- **Shop**: convert the v0.5.1 scroll-anchors into true sub-tabs (Shop Upgrade ·
+  Equipment · Training · Staff), keeping the Assembly-Bench callout visible on the
+  Equipment pill.
+- **Offers**: a light type-filter pill row (All · Repairs & Service · Builds ·
+  Contracts & Accounts · Devices) — filter, not buckets; counts included.
+- Wiki/System keep their existing chip patterns (already fine). Tutorial targets and
+  the E2E selectors must keep working — keep stable data-action/id hooks on the pills
+  (`data-subtab="..."`).
+
+## 16.2 Playtest P1 fixes
+- **16.2a (DATA)**: repair the 8 corrupted descs in catalog.js (a `$1` replacement
+  artifact rendered as ` },` — lines ~250/289/317/330/456/486/532/539 per the report;
+  restore the intended dollar figures: Zip 100 "$100 cartridge"… use period-correct
+  values; cross-check each sentence reads naturally). Add a validator regex guard
+  (`/ \},\d| \},,/` and a general `/ \},/` in desc) so it can never regress.
+- **16.2b (ENGINE + UI)**: shop-upgrade ROI transparency — engine exposes on
+  `getShopView().nextTier`: `monthlyCostDelta` (rent+utilities increase) and
+  `paybackNote` inputs (`offerBonusDelta`, `slotsDelta`, `staffSlotsDelta`); UI renders
+  a plain-language box on the upgrade card ("Rent rises $X/mo. Adds N workstations,
+  +M offers/day, staff cap Y. Rough payback: ~Z months at your current daily net.") —
+  Z computed engine-side from a trailing 14-day net-income average (`getShopView().
+  nextTier.paybackMonths`, null when net ≤ 0 with an honest "you're not profitable
+  enough yet" line). ALSO soften late-era upgrade cost scaling: cap the year-scale
+  multiplier applied to `upgradeCost` at ×2.2 (CONFIG) — sim-check 2021 tier-1 cost
+  lands nearer $9k than $13.6k.
+- **16.2c (UI)**: End Day confirm when unfinished jobs are due today: "N job(s) due
+  today aren't finished — ending the day will fail them. End anyway?" (reuse the
+  existing dueToday badge logic; no confirm when zero).
+- **16.2d (ENGINE)**: accept-cap: lower `HARD_CAP_SLOTS_MULT` 2.0 → 1.5; and
+  `acceptOffer` returns `{ok:true, warning: "Your bench is heavily booked — this
+  deadline may be tight"}` when committed standard-speed hours across active jobs
+  exceed ~80% of workable hours before the new job's deadline (engine estimate; UI
+  toasts the warning as info, not error).
+
+## 16.3 Playtest P2 fixes
+- **16.3a (UI)**: unaffordable purchases (equipment, upgrades, market, certs, hires)
+  must never be silent: disabled with a "Need $X more" reason where state is known, or
+  an error toast fallback. Audit every Buy/Start/Hire path.
+- **16.3b (ENGINE)**: stockpile-billing arbitrage: bill stock pulls on customer jobs at
+  `min(currentPrice, avgCost × STOCK_BILL_CAP (CONFIG, ~1.5)) × 1.25` markup — buying
+  ahead of shocks stays profitable for the shop's own builds/flips, but customer
+  billing can't 10× on legacy drift. Sim: assert repair parts margin stays within a
+  sane band on a 500-day legacy-part scenario (report the number).
+- **16.3c (ENGINE + UI)**: upgrade offers show a rough parts-cost range pre-accept
+  (engine field `partsEstimate: {min, max}` on upgrade offers from the current
+  market's qualifying parts; UI renders "parts est. $40–95 · billed to customer +25%").
+- **16.3d (UI)**: confirm on Inventory "Sell all" (only the all variant).
+- **16.3e (UI)**: SFX volume slider previews on `change`, not every `input` tick.
+- **16.3f (ENGINE + UI)**: waitHour vs tooltip mismatch — make `Engine.waitHour()`
+  auto-START a pending (not-yet-started) wait step on the job whose turn it is if none
+  are running (charging its 0.1h start inside the hour), so the button always does
+  something useful; tooltip updated to match actual behavior.
+
+## 16.4 Playtest P3 quick wins
+- (DATA) +4 random-event templates for mid/late eras (mining-noise complaint, OEM
+  recall wave, right-to-repair coverage, big-box competitor sale) with era gates.
+- (DATA) Pentium 60/66: retag `SKT-4` with a matching board entry OR keep the SKT-7
+  merge and document it in the part desc — pick one, be consistent with the SPEC §2.2
+  socket-collapsing precedent, and note the choice.
+- (UI) Keyboard shortcuts: `1-9` switch tabs, `E` End Day (with the 16.2c confirm),
+  `W` Wait 1h when visible, `?` Help. Ignore keystrokes while typing in inputs/modals.
+  Document in Help.
+- (UI) Soften "wholesale discount" copy to match the real 2%/tier (or the engine may
+  raise to 3%/tier, cap 12% — engine's choice, one line in report).
+
+## 16.5 Asset integration refinements (UI)
+- Favicon: replace the JPEG favicon with a small PNG crop (or restore the inline SVG)
+  — JPEG favicons render fuzzy at 16px and lack transparency. Generate
+  `assets/brand/favicon-64.png` from the logo via a canvas-less step is NOT possible
+  headlessly without tooling — instead ship the inline-SVG fallback PLUS
+  `<link rel="apple-touch-icon">` pointing at the JPG. (If ImageMagick exists in the
+  env, a real 64px PNG crop is preferred — check `which convert`.)
+- Era/scenario banner polish: verify the CSS gradient fade keeps title text readable
+  on all four skins; ensure `no-art` fail-soft class also hides the gradient strip.
+- Game-over and scenario-complete screens reuse the matching era/scenario banner art
+  when available (id-mapped, fail-soft) — cheap mood win consistent with the style
+  bible's "reward long play".
+
+## 16.6 Testing
+validate-data: desc-corruption regex guard; new event templates; socket decision
+consistency. sim-test: 16.2b payback fields + capped upgrade scaling; 16.2d cap +
+warning; 16.3b margin band; 16.3f waitHour auto-start; prior guards green (retune
+CONFIG if the cap change shifts the 1983 band). Overseer E2E: workbench sub-tabs
+render with counts and filter correctly (incl. Waiting + Priority behavior); Ledger/
+Shop/Offers sub-tabs; End-Day confirm fires only when due-today unfinished; sell-all
+confirm; keyboard shortcuts; unaffordable buy shows reason; banners fail-soft; no
+console errors.

@@ -875,4 +875,123 @@
     { name: "Stable Diffusion", minYear: 2022, maxYear: 2025, kind: "creative", customers: ["creator", "hobbyist"] }
   ];
 
+  // ================================================================ v0.7 §17.1
+  // Craft Update text tables. Field names are the binding ENGINE contract.
+
+  // Mid-job discoveries (repair/upgrade/build + device_repair). Each entry:
+  //   category      — part category being worked when this can fire ("device" =
+  //                   device_repair jobs)
+  //   minYear/maxYear — optional era gate (inclusive)
+  //   text          — bench voice, first person, honest
+  //   addCategory   — part category of the approved add-on need, or null for
+  //                   device-billed/labor-style add-ons (no catalog part)
+  //   addLaborHours — extra bench hours if approved (0.1-hour grid)
+  DATA.DISCOVERIES = [
+    { category: "storage", text: "While I had the drive out, the power supply's casing is bulging at the seam and it smells faintly of burnt varnish. I wouldn't trust it through the summer.", addCategory: "psu", addLaborHours: 0.4 },
+    { category: "storage", maxYear: 1990, text: "While the hard disk was out I ran the floppy — the head rail is dry and it squeals like a coffee grinder. Servicing it now is cheaper than the disk it eventually chews.", addCategory: "storage", addLaborHours: 0.4 },
+    { category: "motherboard", maxYear: 1992, text: "Down at board level I got a look inside the power supply — the line-filter caps are the old waxy RIFA type, and one is already crazed. When those let go it's smoke, stink, and a scared customer.", addCategory: "psu", addLaborHours: 0.4 },
+    { category: "motherboard", minYear: 1985, maxYear: 1996, text: "The clock battery has leaked — green fuzz creeping along the traces from the corner of the board. I cleaned what I could reach, but one memory bank already tests flaky from the corrosion.", addCategory: "ram", addLaborHours: 0.3 },
+    { category: "motherboard", minYear: 1985, maxYear: 1995, text: "Thermal cycling has walked half the socketed chips out of their seats — classic chip creep. I pressed everything home, but one memory module's contacts are corroded past saving.", addCategory: "ram", addLaborHours: 0.3 },
+    { category: "psu", minYear: 2002, maxYear: 2007, text: "Swapping the supply gave me a clear view of the board: half the electrolytics around the voltage regulators are doming — the bad-cap plague. It runs today, but that board is on borrowed time.", addCategory: "motherboard", addLaborHours: 0.6 },
+    { category: "psu", minYear: 2012, text: "With the supply out, that old boot drive is the loudest thing on the bench — bearings whining, seek times to match. A solid-state drive would transform this machine for pocket money.", addCategory: "storage", addLaborHours: 0.3 },
+    { category: "gpu", minYear: 1996, text: "The heatsink under this card is wearing a felt coat of dust and the fan barely turns. A proper cooler swap while everything is already apart would spare you the next callout.", addCategory: "cooling", addLaborHours: 0.3 },
+    { category: "gpu", minYear: 2006, text: "Every time this card loads up, the 12-volt rail sags and the drives click. The supply is marginal for this class of hardware — replacing it now beats a crash mid-game later.", addCategory: "psu", addLaborHours: 0.4 },
+    { category: "ram", minYear: 1998, text: "Memory's swapped and testing clean, but while the box was on the bench the hard drive threw SMART reallocated-sector warnings. It boots fine today; it won't forever.", addCategory: "storage", addLaborHours: 0.3 },
+    { category: "ram", minYear: 1986, maxYear: 1998, text: "The memory checked out, but the expansion card beside it was seated at an angle and one edge-connector finger is scorched. It should be replaced before it drags the whole bus down.", addCategory: "expansion", addLaborHours: 0.3 },
+    { category: "cpu", minYear: 1997, text: "The old thermal compound under this heatsink has dried to chalk — the chip has been running a fever for years. Fresh paste is part of the job; a better cooler is the real fix.", addCategory: "cooling", addLaborHours: 0.2 },
+    { category: "cpu", minYear: 2017, text: "The chip is healthy — the little stock cooler sitting on it isn't. Eight cores under that slab of aluminum will throttle the minute anything works hard. A tower cooler ends it.", addCategory: "cooling", addLaborHours: 0.2 },
+    { category: "cooling", minYear: 1995, text: "New cooler's on, but listen: that grinding is the power supply's fan bearing, not mine. When it finally seizes, the supply cooks itself inside an afternoon.", addCategory: "psu", addLaborHours: 0.4 },
+    { category: "device", minYear: 2010, text: "The screen didn't crack on its own — the battery underneath is swelling and pushed the glass out of its frame. It has to come out before it vents.", addCategory: null, addLaborHours: 0.4 }
+  ];
+
+  // Diagnosis-fork flavor (repair/device_repair): patch-vs-proper in honest
+  // tradeoff voice. Keyed by fault category; "device" covers device_repair;
+  // "generic" is the laborOnly-compatible fallback.
+  DATA.FORK_TEXT = {
+    ram: {
+      patchLabel: "Reseat & clean the contacts",
+      patchDesc: "An eraser pass on the contacts and a firm reseat will hold for a while — flaky connections have a way of finding their way back.",
+      properLabel: "Replace the module",
+      properDesc: "A new stick costs a part but tests clean and stays fixed. No mystery beeps at two in the morning next month."
+    },
+    storage: {
+      patchLabel: "Remap & patch it",
+      patchDesc: "I can remap the bad sectors and coax it back to booting — but a drive that has started dying doesn't change its mind.",
+      properLabel: "Replace the drive",
+      properDesc: "A fresh drive with the data copied over ends the problem for good. Costs a part; saves the data while it's still readable."
+    },
+    gpu: {
+      patchLabel: "Reflow & re-seat the card",
+      patchDesc: "A careful reflow and fresh thermal pads can bring a flaky card back — for a season, maybe two. It's a stay of execution, not a pardon.",
+      properLabel: "Replace the card",
+      properDesc: "A replacement card fixes it outright and tests stable under a full hour of load. The artifacts don't come back."
+    },
+    psu: {
+      patchLabel: "Swap the fan & worst caps",
+      patchDesc: "A new fan and the worst capacitors replaced keeps this supply alive on a budget — but a stressed supply fails downhill, and it takes other parts with it.",
+      properLabel: "Replace the supply",
+      properDesc: "A new unit is the boring, correct answer. Half the ghosts in a flaky machine turn out to live in the power supply."
+    },
+    motherboard: {
+      patchLabel: "Patch the trace & reseat",
+      patchDesc: "I can bridge the damaged trace and reseat everything that moves — board-level patches hold right up until the day they don't.",
+      properLabel: "Replace the board",
+      properDesc: "A replacement board is more labor and more money — and also the end of the intermittent faults instead of a truce with them."
+    },
+    cpu: {
+      patchLabel: "Back the clock off",
+      patchDesc: "Underclocking a degraded chip usually stabilizes it — the machine limps, but slower and honest about it.",
+      properLabel: "Replace the processor",
+      properDesc: "A replacement chip restores full speed and stops the crashes at the source instead of hiding them."
+    },
+    cooling: {
+      patchLabel: "Clean & re-lube the fan",
+      patchDesc: "A full cleanout and a drop of oil in the bearing buys a quieter season — but bearings that have started grinding never really heal.",
+      properLabel: "Replace the cooler",
+      properDesc: "A new cooler is cheap insurance on every other part in the case. Heat is the tax everything else pays."
+    },
+    device: {
+      patchLabel: "Seat it & glue the frame",
+      patchDesc: "I can reseat the connector and glue the frame square — it will survive gentle hands, not a back pocket or a gym bag.",
+      properLabel: "Replace the failed part",
+      properDesc: "A proper part swap with fresh adhesive brings it back to factory feel, and the repair outlives the phone."
+    },
+    generic: {
+      patchLabel: "Quick fix & out the door",
+      patchDesc: "A cleanup, a reseat, and a test pass gets it out the door today — most of these stay fixed, and the ones that don't come back angrier.",
+      properLabel: "Do it properly",
+      properDesc: "The thorough pass costs more bench time, but the fault stays fixed and the machine leaves with a clean bill of health."
+    }
+  };
+
+  // Overclock tuning flavor (enthusiast jobs): era bands teaching the period's
+  // real method. Bands cover 1983-2100; conservative/balanced/aggressive are the
+  // player-facing option lines.
+  DATA.TUNING_TEXT = [
+    {
+      minYear: 1983, maxYear: 1997, method: "Jumpers & bus clocks",
+      conservative: "Move the bus-speed jumper up one step and leave the voltage alone — most chips of this era take a single grade without complaint.",
+      balanced: "Set the bus jumpers a grade past spec and add an I/O wait state for the fussier ISA cards, then burn it in overnight before it ships.",
+      aggressive: "Swap the clock crystal and max the bus jumpers — the classic gamble: free 486 speed if the cache chips keep up, corrupted disk writes if they don't."
+    },
+    {
+      minYear: 1998, maxYear: 2009, method: "FSB & multipliers",
+      conservative: "Raise the front-side bus one notch at stock voltage — the Celeron 300A trick in miniature, safe on almost any decent board of the day.",
+      balanced: "Push the FSB with a modest core-voltage bump and drop the memory divider so the RAM stays in spec; a night of stress testing tells the truth.",
+      aggressive: "Chase the legend: a big FSB jump with the voltage raised to match. When a budget chip catches a $600 one it's glorious — when it doesn't, it reboots mid-benchmark."
+    },
+    {
+      minYear: 2010, maxYear: 2016, method: "Unlocked multipliers & BCLK",
+      conservative: "Add two bins to the multiplier on this unlocked chip and switch on the XMP memory profile — nearly free performance at stock voltage.",
+      balanced: "Set a fixed all-core multiplier with a small vcore bump and steady the droop with load-line calibration, then stress it for a full evening.",
+      aggressive: "Push the vcore toward the community's red line and find out what this sample drew in the silicon lottery — big bins, or a lesson in thermals."
+    },
+    {
+      minYear: 2017, maxYear: 2100, method: "Boost tuning & PBO",
+      conservative: "Modern chips mostly tune themselves — enable the memory profile and lift the boost limits a hair, then let the firmware do the pushing.",
+      balanced: "Dial in the boost overrides with per-core offsets and an undervolt where the sample allows — more sustained clocks at less heat, the modern win.",
+      aggressive: "Flatten every limit: maximum boost scalar or a manual all-core with serious cooling behind it. The gains are real, and so is the power bill."
+    }
+  ];
+
 })(typeof window !== 'undefined' ? window : globalThis);

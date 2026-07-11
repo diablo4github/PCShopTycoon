@@ -362,26 +362,56 @@
   };
 
   // ------------------------------------------------------------------
-  // Seeded RNG — mulberry32 over state.rngState (SPEC §0)
+  // Seeded RNG — §17.5: five NAMED mulberry32 streams in state.rng
+  // {prices, offers, faults, market, misc}, seeded from the game seed +
+  // fixed salts. Draws route by domain so new features' draws in one domain
+  // never reshuffle the others (the v0.5-v0.6.1 "gate-seed churn" killer):
+  //   prices — nightly noise walk & price history
+  //   offers — offer generation, customers, tastes, copy, regulars, accounts
+  //   faults — fault categories/templates, §17.1 decision & discovery rolls
+  //   market — as-is machines, refurb condition/sale variance, market events
+  //   misc   — mishaps, callbacks, DR success, strip survival, staff market
   // ------------------------------------------------------------------
-  Engine.rand = function () {
+  var RNG_SALTS = {
+    prices: 0x1F123BB5, offers: 0x9E3779B9, faults: 0xC2B2AE3D,
+    market: 0x27D4EB2F, misc: 0x165667B1
+  };
+  Engine.RNG_STREAMS = ['prices', 'offers', 'faults', 'market', 'misc'];
+  function mixSeed(seed, salt) {
+    var t = (seed ^ salt) | 0;
+    t = Math.imul(t ^ (t >>> 16), 0x45D9F3B);
+    t = Math.imul(t ^ (t >>> 16), 0x45D9F3B);
+    return (t ^ (t >>> 16)) | 0;
+  }
+  // Fresh stream states for a game seed (newGame + the v7->v8 migration).
+  Engine.seedRngStreams = function (seed) {
+    var rng = {};
+    for (var i = 0; i < Engine.RNG_STREAMS.length; i++) {
+      var name = Engine.RNG_STREAMS[i];
+      rng[name] = mixSeed(seed | 0, RNG_SALTS[name]);
+    }
+    return rng;
+  };
+  Engine.rand = function (stream) {
     var s = Engine._state;
     if (!s) return 0.5; // no state yet; deterministic fallback (never used in play)
-    s.rngState = (s.rngState + 0x6D2B79F5) | 0;
-    var t = s.rngState;
+    if (!s.rng) s.rng = Engine.seedRngStreams(s.rngState != null ? s.rngState : s.seed);
+    var key = RNG_SALTS[stream] ? stream : 'misc';
+    s.rng[key] = (s.rng[key] + 0x6D2B79F5) | 0;
+    var t = s.rng[key];
     t = Math.imul(t ^ (t >>> 15), t | 1);
     t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
-  Engine.randInt = function (min, max) { // inclusive
-    return min + Math.floor(Engine.rand() * (max - min + 1));
+  Engine.randInt = function (min, max, stream) { // inclusive
+    return min + Math.floor(Engine.rand(stream) * (max - min + 1));
   };
-  Engine.uniform = function (a, b) { return a + Engine.rand() * (b - a); };
-  Engine.pick = function (arr) {
+  Engine.uniform = function (a, b, stream) { return a + Engine.rand(stream) * (b - a); };
+  Engine.pick = function (arr, stream) {
     if (!arr || !arr.length) return null;
-    return arr[Math.floor(Engine.rand() * arr.length)];
+    return arr[Math.floor(Engine.rand(stream) * arr.length)];
   };
-  Engine.chance = function (p) { return Engine.rand() < p; };
+  Engine.chance = function (p, stream) { return Engine.rand(stream) < p; };
 
   // ------------------------------------------------------------------
   // Numeric hygiene
@@ -940,7 +970,7 @@
     var customerType = ctx.customerType || null;
     var out = str.replace(COPY_TOKEN_RE, function (m, key) {
       var cands = periodSoftwareCandidates(year, customerType, COPY_TOKEN_KIND[key]);
-      var pick = cands.length ? Engine.pick(cands) : null;
+      var pick = cands.length ? Engine.pick(cands, ctx.stream) : null;   // §17.5
       return pick ? pick.name : '';
     });
     // Hardening (§13.6): a player must NEVER see a literal brace token — strip

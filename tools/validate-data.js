@@ -993,6 +993,62 @@ var bizSeen = {};
   else bizSeen[n] = true;
 });
 
+// ---------------------------------------------------------------- v0.7 §17.1 craft text tables
+// Binding field names — the engine consumes these shapes with fallbacks.
+function onTenthGrid(x) { return isNum(x) && Math.abs(x * 10 - Math.round(x * 10)) < 1e-9; }
+var DISC_CATS = CATEGORIES.concat(['device']);   // "device" = device_repair context
+var DISC = DATA.DISCOVERIES || [];
+if (!Array.isArray(DISC) || DISC.length < 12) err('DISCOVERIES: need >= 12 entries (§17.1), have ' + (Array.isArray(DISC) ? DISC.length : 'none'));
+var discCatSeen = {}, discGated = 0;
+DISC.forEach(function (d, i) {
+  var l = 'DISCOVERIES[' + i + '] (' + (d && d.category ? d.category : '?') + ')';
+  if (DISC_CATS.indexOf(d.category) === -1) err(l + ': category must be a part category or "device"');
+  else discCatSeen[d.category] = true;
+  if (!isStr(d.text) || d.text.length < 30) err(l + ': text must be bench-voice copy >= 30 chars');
+  if (d.addCategory !== null && CATEGORIES.indexOf(d.addCategory) === -1) {
+    err(l + ': addCategory must be a part category, or null for device-billed add-ons');
+  }
+  if (d.category !== 'device' && d.addCategory === null) err(l + ': null addCategory is reserved for "device" entries');
+  if (!onTenthGrid(d.addLaborHours) || d.addLaborHours <= 0 || d.addLaborHours > 2) err(l + ': addLaborHours must be on the 0.1 grid in (0, 2]');
+  if (d.minYear !== undefined && (!isInt(d.minYear) || d.minYear < 1979 || d.minYear > 2026)) err(l + ': minYear invalid');
+  if (d.maxYear !== undefined && (!isInt(d.maxYear) || d.maxYear < 1979 || d.maxYear > 2100)) err(l + ': maxYear invalid');
+  if (d.minYear !== undefined && d.maxYear !== undefined && d.minYear > d.maxYear) err(l + ': minYear > maxYear');
+  if (d.minYear !== undefined || d.maxYear !== undefined) discGated++;
+});
+if (Object.keys(discCatSeen).length < 5) err('DISCOVERIES: need coverage of >= 5 distinct work-context categories, have ' + Object.keys(discCatSeen).length);
+if (!discCatSeen.device) err('DISCOVERIES: need >= 1 "device" entry (bloated-battery class, §17.1)');
+if (discGated < 3) err('DISCOVERIES: need >= 3 era-gated entries (minYear/maxYear), have ' + discGated);
+
+var FORK_REQ = FAULT_KEYS.concat(['generic']);   // 7 fault categories + laborOnly fallback
+var FORK_OK = FORK_REQ.concat(['device']);
+var FORK = DATA.FORK_TEXT || {};
+if (typeof FORK !== 'object' || Array.isArray(FORK)) err('FORK_TEXT must be an object keyed by fault category (§17.1)');
+FORK_REQ.forEach(function (k) { if (!FORK[k]) err('FORK_TEXT missing required key "' + k + '"'); });
+if (Object.keys(FORK).length < 8) err('FORK_TEXT: need >= 8 categories (§17.1), have ' + Object.keys(FORK).length);
+Object.keys(FORK).forEach(function (k) {
+  var l = 'FORK_TEXT.' + k;
+  if (FORK_OK.indexOf(k) === -1) err(l + ': unknown key (allowed: ' + FORK_OK.join('|') + ')');
+  var f = FORK[k] || {};
+  if (!isStr(f.patchLabel) || !isStr(f.properLabel)) err(l + ': patchLabel/properLabel required');
+  if (!isStr(f.patchDesc) || f.patchDesc.length < 30) err(l + ': patchDesc must be an honest-tradeoff line >= 30 chars');
+  if (!isStr(f.properDesc) || f.properDesc.length < 30) err(l + ': properDesc must be an honest-tradeoff line >= 30 chars');
+});
+
+var TUNE = DATA.TUNING_TEXT || [];
+if (!Array.isArray(TUNE) || TUNE.length < 3) err('TUNING_TEXT: need >= 3 era bands (§17.1), have ' + (Array.isArray(TUNE) ? TUNE.length : 'none'));
+TUNE.forEach(function (b, i) {
+  var l = 'TUNING_TEXT[' + i + '] (' + (b && b.method ? b.method : '?') + ')';
+  if (!isInt(b.minYear) || !isInt(b.maxYear) || b.minYear > b.maxYear) err(l + ': minYear/maxYear invalid');
+  ['conservative', 'balanced', 'aggressive'].forEach(function (k) {
+    if (!isStr(b[k]) || b[k].length < 30) err(l + ': ' + k + ' line must teach the era method (>= 30 chars)');
+  });
+});
+// overclock jobs exist 1997+ — every year in 1997-2025 needs a band
+for (var ty = 1997; ty <= 2025; ty++) {
+  var covered = TUNE.some(function (b) { return isInt(b.minYear) && isInt(b.maxYear) && b.minYear <= ty && ty <= b.maxYear; });
+  if (!covered) { err('TUNING_TEXT: no band covers year ' + ty + ' (overclock jobs run 1997+)'); break; }
+}
+
 // ---------------------------------------------------------------- report
 function pad(s, n) { s = String(s); while (s.length < n) s = ' ' + s; return s; }
 console.log('=== Coverage table (parts by introYear bucket) ===');

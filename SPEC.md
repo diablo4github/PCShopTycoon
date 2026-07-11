@@ -1681,3 +1681,95 @@ render with counts and filter correctly (incl. Waiting + Priority behavior); Led
 Shop/Offers sub-tabs; End-Day confirm fires only when due-today unfinished; sell-all
 confirm; keyboard shortcuts; unaffordable buy shows reason; banners fail-soft; no
 console errors.
+
+---
+
+# v0.7 Addendum — The Craft Update (from docs/SYSTEMS-REVIEW-v0.6.md)
+
+Binding; wins on conflict. Save `version` → **8** (§17.5 rng streams + §17.1 job
+fields; chain-migrate v1-v7). `Engine.VERSION = "0.7"`. External testers active;
+AGENTS.md bar applies. Read docs/SYSTEMS-REVIEW-v0.6.md for the rationale.
+
+## 17.1 Job decision moments (ENGINE + DATA + UI) — HEADLINE
+Add player decisions INSIDE jobs. Three mechanisms, all deterministic (seeded), all
+era/type-gated, at most ONE decision moment per job (CONFIG chance ~35% of eligible
+jobs; never on cleaning/callbacks/accounts' auto-jobs):
+- **Diagnosis forks (repair/device_repair):** the bench-diagnosis step can reveal two
+  remedies: `{ patch: {label "Reseat & patch it", hours×0.6, parts none-or-cheap,
+  callbackMult ×2.2, payMult ×0.85}, proper: {label "Replace the failing part",
+  current behavior} }`. The job PAUSES at a `decision` state after diagnosis until the
+  player picks (UI card shows both options with honest tradeoffs). job.decision =
+  { kind:"fork", options:[{id,label,effects-summary}], chosen:null }.
+- **Mid-job discovery → approval call (repair/upgrade/build):** on reaching a marked
+  step, a discovery fires ("the PSU is bulging too"): call the customer to approve an
+  add-on (adds a need + hours + pay at parts×1.25 + small rating bonus if approved
+  work delights) or skip it (small callback-risk bump, note in result). Decision
+  card: Approve-call (0.1h, outcome seeded: ~80% yes, refusal = proceed without) vs
+  Leave it. DATA: discovery tables per category with era-flavored text (≥12 entries).
+- **Overclock tuning (enthusiast):** replace the flat labor job with a 3-way push
+  choice at the tuning step: Conservative (+small perf bonus to rating, ~0 risk),
+  Balanced, Aggressive (+big rating bonus if it holds, seeded ~18% "unstable" = redo
+  hours + small rating ding). Educational blurbs per era (bus clocks vs multipliers
+  vs BCLK).
+- Post-diagnosis **estimate update** on repairs: job card shows "revised estimate:
+  $labor + ~$parts (billed +25%)" once needs are known.
+- ENGINE: `job.decision` shape above + `Engine.decideJob(jobId, optionId)` → {ok,...};
+  workJob returns `{ok:false, error:"Waiting on your decision"}`-style block while
+  pending (UI never computes rules). Sim: forks/approvals/tuning all exercised, both
+  branches; blocked-work path; decisions absent on gated types; determinism (same
+  seed → same decisions).
+- UI: a visually distinct decision card section on the job (amber border, two/three
+  option buttons with tradeoff lines, via UI.act), toast on discovery, tutorial/Help
+  one-liner added.
+- DATA: discovery/fork/tuning text tables (with complaints-style voice), era gates;
+  validator schema checks.
+
+## 17.2 Rating transparency (ENGINE + UI)
+- ENGINE: reputation history entries become `{score, day, jobId?, title, reasons:
+  ["late", "quick work", "taste matched", "downgrade part", ...]}` (migrate old
+  numeric entries to {score} — v8). `Engine.getReputationLog(limit=15)` → newest-first
+  with per-entry delta vs the rolling mean. Completion results expose `ratingDelta`.
+- UI: rating delta floats on job completion (reuse the cash/hours float pattern,
+  ★-styled); a Reputation panel on the Ledger Finances pill (or its own pill if
+  cleaner): current rating, last-15 outcome log with reasons, prestige progress line.
+
+## 17.3 tabs.js split (UI) — mechanical, zero behavior change
+Split `js/ui/tabs.js` into `js/ui/tabs/` modules loaded in order BEFORE screens.js:
+`tabs-core.js` (shared helpers, dispatch, UI.tabs.render/bind), `tabs-offers.js`,
+`tabs-workbench.js` (incl. build configurator + pickers), `tabs-market.js` (market +
+inventory), `tabs-wiki.js`, `tabs-shop.js`, `tabs-ledger.js`, `tabs-news-system.js`.
+Same namespace surface (`UI.tabs`), same selectors/handlers, index.html script tags
+updated. `node --check` all + the existing smoke must pass unchanged. AGENTS.md
+ownership table updated by the overseer. Engine `jobs.js` split is DEFERRED to v0.8.
+
+## 17.4 Survival difficulty bite (ENGINE)
+At Survival ONLY: rent creeps +2%/quarter (compounding, capped ×1.6 of era base),
+grace 10→7 days, offer count −1 nightly floor 1, negative-event weight ×1.5 (up from
+1.3), storage free threshold −25%. Standard/Relaxed untouched. Sim: a competent-bot
+Survival 1983 run survives but lands ≤60% of the Standard bot's cash; a passive bot
+goes bankrupt within ~120 days at Survival (the pressure exists); Standard guards
+unchanged.
+
+## 17.5 RNG streams + multi-seed guards (ENGINE) — the churn killer
+- Split the single `rngState` into named streams: `rng: { prices, offers, faults,
+  market, misc }` (five mulberry32 states seeded from the game seed + fixed salts).
+  Route draws by domain (price noise/history → prices; offer gen/customers/tastes →
+  offers; fault/discovery/decision rolls → faults; as-is/events → market; everything
+  else → misc). New-feature draws in one domain must no longer reshuffle others.
+  Save v8: migrate v7's rngState by seeding all five streams from it (documented
+  one-time trajectory break — acceptable, saves stay playable).
+- sim-test: balance guards move from single-gate-seed to **median across 5 fixed
+  seeds** (bands unchanged, applied to the median; report min/max for visibility).
+  Delete the seed-churn comment block; add a determinism assertion per stream
+  (same seed → same 30-day price series even when offer volume differs by difficulty).
+## 17.6 News filters (UI)
+Kind filter pills on the News tab via the §16.1 sub-tab component: All · Market ·
+Chronicle · Shop (achievements/level-ups/staff) · Warnings (transitions/grace).
+Engine: ensure every news entry carries a filterable `kind` (audit; add where missing).
+
+## 17.7 Testing
+validator: §17.1 text-table schemas. sim: §17.1 branches/determinism; §17.4 Survival
+assertions; §17.5 stream determinism + median-of-5 guards green; prior guards intact.
+Overseer E2E: a fork decision appears and both options resolve; approval call flow;
+tuning choice; rating float + reputation log; news filters; tabs.js split smoke (all
+tabs render identically); Survival pressure boot; no console errors.

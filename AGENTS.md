@@ -22,7 +22,7 @@ the game must always run by opening `index.html` from `file://` or any static se
 |---|---|
 | DATA   | `js/data/*.js`, `tools/validate-data.js` |
 | ENGINE | `js/engine/*.js`, `tools/sim-test.js`, `tools/mock-data.js` |
-| UI     | `index.html`, `css/styles.css`, `js/ui/*.js` |
+| UI     | `index.html`, `css/styles.css`, `js/ui/*.js`, `js/ui/tabs/*.js` |
 
 - `SPEC.md` grows by **appended, numbered addenda** (§9, §10, …), one per version.
   Later sections win on conflict. Do not rewrite earlier sections.

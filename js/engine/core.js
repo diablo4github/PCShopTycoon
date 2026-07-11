@@ -66,7 +66,11 @@
     // smaller flip premium so flips land 1.2-1.8x the jobs $/hour, not 3x+)
     ASIS_MAX: 4,                 // listing cap
     ASIS_CHURN: 0.08,            // nightly chance each listing churns (~2wk shelf life)
-    ASIS_ARRIVAL_CHANCE: 0.33,   // <=1 new arrival/night (~1 per 3 nights) below cap
+    // §17: 0.33 -> 0.42 (~1 per 2.4 nights). Decision moments (§17.1 approvals
+    // / PSU swaps) raised the dedicated-jobs lane's $/day; the flip lane is
+    // supply-capped, so arrivals get a matching nudge to hold the long-standing
+    // "jobs never out-earn a dedicated flipper by more than 3x" band.
+    ASIS_ARRIVAL_CHANCE: 0.42,   // <=1 new arrival/night below cap
     ASIS_START_MIN: 2, ASIS_START_MAX: 4,     // listings seeded at newGame
     ASIS_ASK_MIN: 0.45, ASIS_ASK_MAX: 0.55,   // ask vs part value (§9.6: 40-55%)
     // §14.3: retuned 0.66 -> 0.75 alongside the new used-market saturation

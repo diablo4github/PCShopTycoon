@@ -187,7 +187,7 @@
     for (i = 0; i < templates.length; i++) {
       var t = templates[i];
       var activeRandom = state.market.activeEvents.filter(function (e) {
-        return e.kind === 'random';
+        return e.kind === 'random' && !e.playerFired;   // §17.5: world noise only
       }).length;
       if (activeRandom >= C.MAX_RANDOM_EVENTS) break;
       if (year < (t.minYear || 0) || year > (t.maxYear || 9999)) continue;
@@ -209,26 +209,34 @@
     });
   };
 
-  function copyEffect(ef) {
+  function copyEffect(ef, stream) {
+    var str = typeof stream === 'string' ? stream : 'market';   // .map passes an index
     var out = { categories: (ef.categories || []).slice(), priceMult: ef.priceMult };
     if (Array.isArray(ef.priceMult))
-      out.priceMult = Engine.round2(Engine.uniform(ef.priceMult[0], ef.priceMult[1], 'market'));
+      out.priceMult = Engine.round2(Engine.uniform(ef.priceMult[0], ef.priceMult[1], str));
     if (ef.tags) out.tags = ef.tags.slice();
     return out;
   }
 
-  Sim.fireRandomEvent = function (state, t, durationOverride) {
+  // §17.5: nightly world rolls draw on 'market' (default); PLAYER-triggered
+  // fires (prestige press coverage) pass 'misc' so player pace can never
+  // reshuffle the world's as-is/event trajectory.
+  Sim.fireRandomEvent = function (state, t, durationOverride, stream) {
+    var str = stream || 'market';
     var dur = durationOverride ||
-      (Array.isArray(t.durationDays) ? Engine.randInt(t.durationDays[0], t.durationDays[1], 'market')
+      (Array.isArray(t.durationDays) ? Engine.randInt(t.durationDays[0], t.durationDays[1], str)
                                      : (t.durationDays || 30));
-    var headline = Array.isArray(t.headlines) ? Engine.pick(t.headlines, 'market')
+    var headline = Array.isArray(t.headlines) ? Engine.pick(t.headlines, str)
                                               : (t.headlines || t.headline || t.id);
     var inst = {
       id: t.id + '#' + state.day, kind: 'random', name: headline, headline: headline,
       startDay: state.day, endDay: state.day + dur,
-      effects: (t.effects || []).map(copyEffect),
+      effects: (t.effects || []).map(function (ef) { return copyEffect(ef, str); }),
       jobVolumeMult: t.jobVolumeMult || 1
     };
+    // Player-triggered fires don't count against the world's random-event cap
+    // (§17.5: the nightly roll count must not depend on player pace).
+    if (str === 'misc') inst.playerFired = true;
     state.market.activeEvents.push(inst);
     Engine.pushNews(state, 'event', headline, t.body || '');
     return inst;
@@ -470,13 +478,14 @@
       var press = null;
       for (var i = 0; i < templates.length; i++)
         if (templates[i].id === 'press-coverage') press = templates[i];
-      if (press) Sim.fireRandomEvent(state, press);
+      // §17.5: player-earned promotion — draws ride 'misc', not 'market'
+      if (press) Sim.fireRandomEvent(state, press, null, 'misc');
       else Sim.fireRandomEvent(state, {
         id: 'press-coverage', headlines: ['Local press covers the rising shop'],
         body: 'A nice write-up brings the customers in.',
         durationDays: [C.PRESS_BOOST_DAYS, C.PRESS_BOOST_DAYS],
         effects: [], jobVolumeMult: C.PRESS_BOOST_MULT
-      });
+      }, null, 'misc');
     }
   };
 

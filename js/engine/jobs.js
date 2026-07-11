@@ -481,7 +481,10 @@
         job.decisionTaken = { kind: 'fork', option: 'proper' };
       }
       d.chosen = optionId;
-      return { ok: true, kind: 'fork', option: optionId };
+      return { ok: true, kind: 'fork', option: optionId,
+               note: optionId === 'patch'
+                 ? 'Going with the quick patch — faster now, riskier later'
+                 : 'Doing it properly — the full fix is on the bench' };
     }
 
     if (d.kind === 'approval') {
@@ -496,7 +499,8 @@
         job.callbackRiskMult = (job.callbackRiskMult || 1) * C.APPROVAL_SKIP_CALLBACK_MULT;
         job.approvalSkipped = true;
         job.decisionTaken = { kind: 'approval', option: 'skip' };
-        return { ok: true, kind: 'approval', option: 'skip' };
+        return { ok: true, kind: 'approval', option: 'skip',
+                 note: 'Left it alone — the extra issue stays unfixed' };
       }
       // 'call': 0.1h on the phone, seeded outcome
       var sp = Engine.spendHours(state, C.APPROVAL_CALL_HOURS);
@@ -511,7 +515,8 @@
         }
         job.approvalRefused = true;
         job.decisionTaken = { kind: 'approval', option: 'call', approved: false };
-        return { ok: true, kind: 'approval', option: 'call', approved: false };
+        return { ok: true, kind: 'approval', option: 'call', approved: false,
+                 note: 'They passed on the extra work' };
       }
       // Approved: add the quoted work
       if (d.subkind === 'psu') {
@@ -529,7 +534,8 @@
                              Engine.laborRate(year) * C.PSU_SWAP_HOURS);
         job.approvalDelight = true;
         job.decisionTaken = { kind: 'approval', option: 'call', approved: true, psu: true };
-        return { ok: true, kind: 'approval', option: 'call', approved: true, psu: true };
+        return { ok: true, kind: 'approval', option: 'call', approved: true, psu: true,
+                 note: 'Customer approved the PSU swap' };
       }
       var disc = (job.decisionPlan && job.decisionPlan.discovery) || {};
       var addHours = Engine.round1(disc.addLaborHours || C.APPROVAL_ADD_HOURS);
@@ -561,7 +567,8 @@
       }
       job.approvalDelight = true;
       job.decisionTaken = { kind: 'approval', option: 'call', approved: true };
-      return { ok: true, kind: 'approval', option: 'call', approved: true };
+      return { ok: true, kind: 'approval', option: 'call', approved: true,
+               note: 'Customer approved the extra work' };
     }
 
     if (d.kind === 'tuning') {
@@ -577,7 +584,10 @@
       job.decisionTaken = { kind: 'tuning', option: optionId,
                             unstable: !!job.tuningUnstable };
       return { ok: true, kind: 'tuning', option: optionId,
-               unstable: !!job.tuningUnstable };
+               unstable: !!job.tuningUnstable,
+               note: job.tuningUnstable
+                 ? 'It crashed the burn-in — backing the clocks off and redoing it'
+                 : 'Tune dialed in and stable' };
     }
     return err('Unknown decision kind');
   };
@@ -2179,8 +2189,13 @@
     if (!job.diagnosed)
       return err('Ran out of steam mid-diagnosis — finish it tomorrow');
     var fault = job.fault || { desc: 'No fault found', partCategory: null };
-    return { ok: true, hoursSpent: r.hoursSpent,
-             fault: { desc: fault.desc, partCategory: fault.partCategory } };
+    var out = { ok: true, hoursSpent: r.hoursSpent,
+                fault: { desc: fault.desc, partCategory: fault.partCategory } };
+    if (r.decisionPending) {   // §17.1: diagnosis revealed a fork
+      out.decisionPending = true;
+      out.decisionPrompt = r.decisionPrompt || null;
+    }
+    return out;
   };
 
   // ------------------------------------------------------------------
@@ -2313,6 +2328,8 @@
           overspendGrade: overspendGrade,                  // §14.2: null|"mild"|"hard"
           overPsu: overPsuFor(job, need, part)             // §17.1 PSU gate (UI amber flag)
         };
+        // §17.1: canonical field the UI reads for the over-PSU callout.
+        if (opt.overPsu) opt.psuWatts = machinePsuWatts(job);
         options.push(opt);
       }
       options.sort(function (a, b) { return a.price - b.price; });
@@ -3007,6 +3024,7 @@
     // only ever looks at the CURRENT step, so it stops at its boundary.
     var wk = workableStdHours(job, singleStep);
     if (wk.hours <= 1e-9 && wk.barrier !== 'assign' &&
+        wk.barrier !== 'decision' && wk.barrier !== 'decision-plan' &&
         job.stepIndex < job.steps.length) {
       // Self-heal (pre-fix saves): a fully-worked labor step stranded at
       // progress 1 without completing leaves the checklist wedged. Zero
@@ -3093,7 +3111,15 @@
     var completed = jobFinished(job) && job.status !== 'done';
     var result = null;
     if (completed) result = completeJob(state, job);
-    return { ok: true, hoursSpent: spend, completed: completed, result: result };
+    var out = { ok: true, hoursSpent: spend, completed: completed, result: result };
+    // §17.1: a fork can fire mid-session (diagnosis step completing inside
+    // advanceSteps). Surface it exactly like the approval/tuning barrier path
+    // so the UI can toast the moment without waiting for a refresh.
+    if (!completed && decisionPending(job)) {
+      out.decisionPending = true;
+      out.decisionPrompt = job.decision.prompt || null;
+    }
+    return out;
   };
 
   function avgReliabilityFactor(state, job) {

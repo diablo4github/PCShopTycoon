@@ -114,7 +114,8 @@
       title: 'Doing the work',
       body: 'Spend hours with Tinker, Finish Step, Work 1 Hour, or Finish Job — pick whatever chunk of time ' +
         'fits. Standard pace is the safe default — Quick trades hours for a much higher chance the customer ' +
-        'calls back unhappy later; Meticulous costs more time but polishes your reputation.',
+        'calls back unhappy later; Meticulous costs more time but polishes your reputation. Some jobs will ' +
+        'pause on an amber card for a decision — patch or proper fix, call the customer or leave it.',
       advanceOn: 'work'
     },
     {
@@ -387,6 +388,10 @@
       '<p>Quick finishes faster but risks a warranty callback — an unhappy customer returning later for a ' +
       'free fix, with a rating hit. Standard is the safe default. Meticulous costs more hours but lowers ' +
       'the risk and helps your rating.</p>' +
+      '<h3>Decision moments</h3>' +
+      '<p>Some jobs pause mid-bench for a call that is yours to make — a cheap patch versus the proper fix, ' +
+      'a discovery worth phoning the customer about, or how hard to push an overclock. The amber card on ' +
+      'the job lists the honest trade-offs; pick an option and work continues.</p>' +
       '<h3>Staff &amp; certifications</h3>' +
       '<p>Once your shop outgrows the garage, hire staff to speed up specific job types. You — the owner — ' +
       'can also study certifications in the Shop tab, real trade certs of the era, for faster work, better ' +

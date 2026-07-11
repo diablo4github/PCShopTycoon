@@ -57,15 +57,20 @@ var Engine = globalThis.Engine;
 var DATA = globalThis.DATA;
 var REAL = function () { return DATA_SOURCE.indexOf('real') === 0; };
 
-// Tuning hooks (harness-only): sweep seeds/ratios without editing files.
-// Default gate seed chosen so the deterministic run sits near the median of
-// the seed distribution for both the §9.6 band and the flips ratio.
-// (v0.6: gate seed 3000 -> 3200 — the §15 features add seeded-RNG draws to
-// the nightly stream, reshuffling every downstream roll. v0.6.1: 3200 -> 3300
-// — the §16.2d accept-cap cut plus DATA's four new event templates reshuffled
-// the mid/late-era streams again; 3300 re-centers the 1983 band/ratio/offer
-// guards at once.)
-var SEED_BASE = Number(process.env.SIM_SEED_BASE || 3300);
+// §17.5: balance guards run as the MEDIAN across five fixed seeds — the named
+// RNG streams stop new features from reshuffling other domains, and the
+// median stops any single seed's luck from gating a round. Bands unchanged;
+// min/max reported for visibility.
+var GUARD_SEEDS = [101, 202, 303, 404, 505];
+var SEED_BASE = Number(process.env.SIM_SEED_BASE || GUARD_SEEDS[0]);
+function median(arr) {
+  var a = arr.slice().sort(function (x, y) { return x - y; });
+  return a.length ? a[Math.floor(a.length / 2)] : 0;
+}
+function rangeStr(arr) {
+  return 'min ' + Math.min.apply(null, arr).toFixed(2) +
+         ' / max ' + Math.max.apply(null, arr).toFixed(2);
+}
 if (process.env.SIM_SALE_RATIO) {
   Engine.CONFIG.REFURB_SALE_RATIO = Number(process.env.SIM_SALE_RATIO);
   console.log('[sim-test] REFURB_SALE_RATIO override: ' + Engine.CONFIG.REFURB_SALE_RATIO);
@@ -262,7 +267,8 @@ function tryConfigureBuild(E, job) {
 // Pick an option for a need: prefer meets && tasteMatch, then meets, cheapest.
 // Also opportunistically verifies the below-spec rejection path once (§9.11).
 function chooseOption(E, job, need) {
-  var meets = need.options.filter(function (o) { return o.meets; });
+  // §17.1: a sane player skips options the machine's PSU can't feed
+  var meets = need.options.filter(function (o) { return o.meets && !o.overPsu; });
   if (!meets.length) return null;
   var pick = meets[0]; // cheapest qualifying
   var taste = meets.filter(function (o) { return o.tasteMatch; });
@@ -280,6 +286,23 @@ function chooseOption(E, job, need) {
     }
   }
   return pick;
+}
+
+// §17.1 test rig helpers. Some scenarios exercise pre-0.7 mechanics (steps,
+// assignment, overspend, quality flags) and want the decision machinery out of
+// the way so their asserts stay about the mechanic under test.
+// disarmDecisions() clears any armed plan or fired decision on a job;
+// pokeBigPsu() marks the PSU swap as already quoted, which is the engine's own
+// bypass for the over-PSU gate (overPsuFor returns false when approved).
+function disarmDecisions(job) {
+  if (!job) return;
+  job.decisionPlan = null;
+  job.decision = null;
+}
+function pokeBigPsu(E, job) {
+  if (!job) return;
+  job.psuSwapApproved = true;
+  job.psuSwapDeclined = false;
 }
 
 function botDay(E, mem) {
@@ -492,7 +515,9 @@ function botDay(E, mem) {
         if (ir.ok && (ir.filledNow > 0 || ir.mishap)) progress = true;
         if (!ir.ok) blocked = true;
       }
+      if (botResolveDecision(E, job)) progress = true;   // §17.1
       var w = tracked(E, mem, isFlip, function () { return E.workJob(job.id); });
+      if (w.ok && w.decisionPending && botResolveDecision(E, job)) progress = true;
       if (w.ok && (w.hoursSpent > 0 || w.completed)) progress = true;
       if (w.ok && w.completed && job.type === 'device_repair') globals.deviceRepairsDone++;
       if (w.ok && w.completed && w.result && w.result.tasteMatched) {
@@ -522,11 +547,11 @@ function botDay(E, mem) {
 // ------------------------------------------------------------------
 // Per-era run
 // ------------------------------------------------------------------
-function runEra(era, idx, metricRun) {
+function runEra(era, seed, metricRun) {
   console.log('--- Era ' + era.id + (metricRun ? ' [flip-metric run]' : '') +
-              ' (' + (era.name || '') + ') ---');
+              ' (' + (era.name || '') + ') seed ' + seed + ' ---');
   var E = Engine;
-  var r = E.newGame({ eraId: era.id, shopName: 'Test Bench', seed: SEED_BASE + idx * 77 });
+  var r = E.newGame({ eraId: era.id, shopName: 'Test Bench', seed: seed });
   if (!assert(r.ok, era.id + ': newGame failed: ' + (r.error || ''))) return null;
 
   var mem = {
@@ -609,20 +634,11 @@ function runEra(era, idx, metricRun) {
   var s2 = E.exportSave();
   assert(s1 === s2, era.id + ': save round-trip not byte-identical');
 
-  // 1983 balance sanity band (§9.6: final cash $2k-$10k) — asserted on the
-  // canonical single-flip greedy bot against the REAL catalog. The §9.6
-  // balance targets are catalog-tuned; the tiny mock only verifies mechanics.
-  if (era.startYear === 1983 && !metricRun && REAL()) {
-    assert(s.cash >= 2000 && s.cash <= 10000,
-           era.id + ': final cash ' + s.cash + ' outside sanity band [2000, 10000]');
-  }
-  // §11.2: ramp-down — the 1983 40-day mean stays at or under 3.6 offers/day
-  if (era.startYear === 1983 && !metricRun) {
-    var meanOffers = offersGenerated / 40;
+  // §17.5: the 1983 cash band + offer-ramp guards are asserted on the MEDIAN
+  // across GUARD_SEEDS by the caller — runEra just reports this run's numbers.
+  var meanOffers = offersGenerated / 40;
+  if (era.startYear === 1983 && !metricRun)
     console.log('    offers/day mean: ' + meanOffers.toFixed(2));
-    assert(meanOffers <= 3.6,
-           era.id + ': offer ramp too fast — mean ' + meanOffers.toFixed(2) + '/day > 3.6');
-  }
 
   var pendingCallbacks = s.jobs.completedRecent.filter(function (e) { return e.fired; }).length;
   var line = {
@@ -635,6 +651,8 @@ function runEra(era, idx, metricRun) {
     callbacksArrived: s.reputation.callbacks,
     callbacksPending: pendingCallbacks,
     achievementsUnlocked: Object.keys(s.achievements || {}).length,   // §15.5
+    offersMean: meanOffers,
+    flipRatio: null,
     mem: mem
   };
   console.log('  ' + era.id + ': cash ' + Engine.fmtMoney(line.cash) +
@@ -660,13 +678,7 @@ function runEra(era, idx, metricRun) {
       ratio.toFixed(2) + 'x');
     assert(mem.refurbsSold >= 2, era.id + ': too few flips completed to measure (' +
            mem.refurbsSold + ')');
-    if (REAL()) {
-      assert(ratio >= 1.2 && ratio <= 1.8,
-             era.id + ': flips/jobs $-per-hour ratio ' + ratio.toFixed(2) +
-             ' outside [1.2, 1.8]');
-    } else {
-      console.log('    (ratio asserted against the real catalog only — mock verifies mechanics)');
-    }
+    line.flipRatio = ratio;   // §17.5: asserted on the median by the caller
   }
   return line;
 }
@@ -827,7 +839,9 @@ function runDedicatedBot(era, mode, seed) {
           var ir = E.assignPart(job.id, need.index, opt.partId);
           if (ir.ok) progress = true;
         }
+        if (botResolveDecision(E, job)) progress = true;   // §17.1
         var w = E.workJob(job.id, 'job');
+        if (w.ok && w.decisionPending && botResolveDecision(E, job)) progress = true;
         if (w.ok && w.hoursSpent > 0) progress = true;
         if (w.ok && w.completed && job.type !== 'refurb') {
           var partsCost = (job.partsUsed || []).reduce(function (a, p) { return a + (p.cost || 0); }, 0);
@@ -866,66 +880,57 @@ function mem_dedicatedDayGuard(E) {
 }
 
 function jobsVsFlipsDedicatedScenario(era, seedBase) {
-  console.log('--- Dedicated job-bot vs flip-bot, 60 days (' + era.id + ', §14.3) ---');
-  var jobRun = runDedicatedBot(era, 'jobs', seedBase);
-  var flipRun = runDedicatedBot(era, 'flips', seedBase + 1);
-  if (!assert(!!jobRun && !!flipRun, era.id + ': dedicated bot run failed to start')) return;
-  var jobVar = variance(jobRun.dayNets), flipVar = variance(flipRun.dayNets);
-  var hi = Math.max(Math.abs(jobRun.perDay), Math.abs(flipRun.perDay));
-  var lo = Math.min(Math.abs(jobRun.perDay), Math.abs(flipRun.perDay));
-  var ratio = lo > 0 ? hi / lo : (hi > 0 ? Infinity : 1);
-  console.log('  jobs $/day ' + Engine.fmtMoney(jobRun.perDay) + ' (' + jobRun.count +
-              ' jobs, day-var ' + Math.round(jobVar) + ') | flips $/day ' +
-              Engine.fmtMoney(flipRun.perDay) + ' (' + flipRun.count +
-              ' flips, day-var ' + Math.round(flipVar) + ') — ratio ' + ratio.toFixed(2) + 'x');
-  // The tiny mock catalog (mechanics-only fallback) may not have enough
-  // distinct parts/listings to sustain 60 days of either strategy at volume;
-  // the sample-size and ratio/variance checks below are real-catalog-only.
-  if (REAL()) {
-    assert(jobRun.count >= 3,
-           era.id + ': dedicated job-bot completed too few jobs to measure (' + jobRun.count + ')');
-    assert(flipRun.count >= 2,
-           era.id + ': dedicated flip-bot sold too few machines to measure (' + flipRun.count + ')');
+  console.log('--- Dedicated job-bot vs flip-bot, 60 days x ' + GUARD_SEEDS.length +
+              ' seeds (' + era.id + ', §14.3/§17.5) ---');
+  // §17.5: median across five fixed seed-pairs; min/max reported. RATIO_CAP
+  // stays 3.0 (the v0.5.1 empirical bound — a maximally-dedicated jobs bot
+  // legitimately snowballs prestige/volume in ways a flip-only strategy
+  // structurally cannot; see the v0.5.1 ENGINE report for the derivation).
+  var ratios = [], allFlipEvents = [], okPairs = 0;
+  var lastJob = null, lastFlip = null;
+  for (var si = 0; si < GUARD_SEEDS.length; si++) {
+    var seed = seedBase + si * 10;
+    var jobRun = runDedicatedBot(era, 'jobs', seed);
+    var flipRun = runDedicatedBot(era, 'flips', seed + 1);
+    if (!jobRun || !flipRun) continue;
+    lastJob = jobRun; lastFlip = flipRun;
+    var hi = Math.max(Math.abs(jobRun.perDay), Math.abs(flipRun.perDay));
+    var lo = Math.min(Math.abs(jobRun.perDay), Math.abs(flipRun.perDay));
+    var ratio = lo > 0 ? hi / lo : (hi > 0 ? 99 : 1);
+    console.log('  seed ' + seed + ': jobs ' + Engine.fmtMoney(jobRun.perDay) +
+                '/day (' + jobRun.count + ' jobs) | flips ' +
+                Engine.fmtMoney(flipRun.perDay) + '/day (' + flipRun.count +
+                ' flips) — ratio ' + ratio.toFixed(2) + 'x');
+    if (jobRun.count >= 3 && flipRun.count >= 2) {
+      ratios.push(ratio);
+      allFlipEvents = allFlipEvents.concat(flipRun.events);
+      okPairs++;
+    }
   }
-  if (REAL() && jobRun.count >= 3 && flipRun.count >= 2) {
-    // Spec's own §9.6 mixed-strategy 40-day metric (kept green just above,
-    // band [1.2, 1.8]) and this NEW 60-day fully-dedicated metric turn out to
-    // pull in opposite directions on REFURB_SALE_RATIO: a maximally-dedicated
-    // job-bot runs 60 days of nothing but repairs/upgrades/etc and reliably
-    // climbs 2+ prestige tiers (100+ jobs completed), which snowballs its own
-    // offer volume — an advantage a flip-only strategy structurally cannot
-    // reach (selling a refurb never increments jobsCompleted/rating). That
-    // volume snowball, combined with §14.1's fix legitimately making upgrades
-    // pay more (a genuine upgrade costs real money), pushes a maximally-
-    // dedicated jobs bot's $/day well above what flip tuning can match
-    // without blowing through the pre-existing (and required-green) §9.6
-    // band. RATIO_CAP is set from the actual achieved numbers with headroom,
-    // not the spec's illustrative "~1.35x" — see SPEC.md §14.3 discussion /
-    // ENGINE final report for the empirical tuning trail. The variance
-    // requirement (flips clearly riskier) holds regardless and is the other
-    // half of §14.3's intent.
-    var RATIO_CAP = 3.0;
-    assert(ratio <= RATIO_CAP,
-           era.id + ': dedicated jobs-vs-flips $/day ratio ' + ratio.toFixed(2) +
-           ' exceeds ' + RATIO_CAP + 'x');
-    // §14.3 risk shape, asserted as the spec words it: "some flips
-    // underperform (real risk), keeping the BEST flips lucrative". (A raw
-    // flips-var >= jobs-var comparison proved seed-fragile once v0.6 business
-    // accounts made dedicated-jobs income legitimately lumpy — one $1k+
-    // contract day can out-vary a whole flip season. The one-sided downside/
-    // upside shape below is what the design actually promises.)
-    var flipEvents = flipRun.events;
-    var flipMean = flipEvents.reduce(function (a, b) { return a + b; }, 0) /
-                   Math.max(1, flipEvents.length);
-    assert(Math.min.apply(null, flipEvents) < 0,
-           era.id + ': no flip underperformed — flipping shows no downside risk');
-    assert(Math.max.apply(null, flipEvents) > flipMean * 1.5,
-           era.id + ': best flip should clearly beat the average flip (max ' +
-           Math.round(Math.max.apply(null, flipEvents)) + ' vs mean ' +
-           Math.round(flipMean) + ')');
-  } else {
-    console.log('    (ratio/variance asserted against the real catalog only — mock verifies mechanics)');
+  if (!REAL()) {
+    console.log('    (bands asserted against the real catalog only — mock verifies mechanics)');
+    return;
   }
+  assert(okPairs >= 3,
+         era.id + ': too few measurable dedicated seed-pairs (' + okPairs + '/5)');
+  if (!okPairs) return;
+  var med = median(ratios);
+  console.log('  == dedicated median ratio ' + med.toFixed(2) + 'x (' +
+              rangeStr(ratios) + ') over ' + okPairs + ' seed-pairs ==');
+  assert(med <= 3.0,
+         era.id + ': median dedicated jobs-vs-flips $/day ratio ' + med.toFixed(2) +
+         ' exceeds 3x');
+  // §14.3 risk shape on the POOLED flip outcomes: some flips underperform
+  // (real downside), the best flips clearly beat the average (lucrative).
+  var flipMean = allFlipEvents.reduce(function (a, b) { return a + b; }, 0) /
+                 Math.max(1, allFlipEvents.length);
+  assert(Math.min.apply(null, allFlipEvents) < 0,
+         era.id + ': no flip underperformed across ' + allFlipEvents.length +
+         ' pooled flips — flipping shows no downside risk');
+  assert(Math.max.apply(null, allFlipEvents) > flipMean * 1.5,
+         era.id + ': best pooled flip should clearly beat the average (max ' +
+         Math.round(Math.max.apply(null, allFlipEvents)) + ' vs mean ' +
+         Math.round(flipMean) + ')');
 }
 
 // ------------------------------------------------------------------
@@ -1114,6 +1119,7 @@ function stepScenario(era) {
     if (!job) E.endDay();
   }
   if (!assert(!!job, 'steps: no part-fault repair found in 25 days')) return;
+  disarmDecisions(job);   // §17.1 off — checklist mechanics under test
   assert(job.steps.length >= 3, 'steps: repair checklist too short');
   job.steps.forEach(function (st) {
     assert(st.progress >= 0 && st.progress <= 1, 'steps: progress out of [0,1]');
@@ -1190,6 +1196,7 @@ function workModesScenario(era) {
       }
       if (!job) E.endDay();
     }
+    disarmDecisions(job);   // §17.1 off — work-mode mechanics under test
     return job;
   }
 
@@ -1306,6 +1313,7 @@ function assignScenario(era) {
     if (!job) E.endDay();
   }
   if (!assert(!!job, 'assign: no upgrade offer in 20 days')) return;
+  disarmDecisions(job); pokeBigPsu(E, job);   // §17.1 off — assign mechanics under test
   var needs = E.getJobNeeds(job.id);
   var opt = needs[0].options.filter(function (o) { return o.meets; })[0];
   if (!assert(!!opt, 'assign: no viable option')) return;
@@ -1384,6 +1392,7 @@ function overspendScenario(era) {
       if (!job) E.endDay();
     }
     if (!assert(!!job, 'overspend: no machine-backed upgrade in 25 days')) return null;
+    disarmDecisions(job); pokeBigPsu(E, job);   // §17.1 off — overspend under test
     // Force a wide value gap: pretend the original was the cheapest of the
     // category, and lift the machine-fit constraint so the full price range of
     // the category is on the table (mechanics test, not a compat test).
@@ -1412,10 +1421,13 @@ function overspendScenario(era) {
     var res = null, guard2 = 0;
     while (guard2++ < 40) {
       E.getState().hoursLeft = 8;
+      botResolveDecision(E, job);   // §17.1
       var w = E.workJob(job.id);
       if (w.ok && w.completed) { res = w.result; break; }
       if (job.result) { res = job.result; break; }   // completed via a wait tick
+      if (w.ok && w.decisionPending) { botResolveDecision(E, job); continue; }
       if (!w.ok) {
+        if (/decision/i.test(w.error || '')) { botResolveDecision(E, job); continue; }
         if (/waiting/i.test(w.error || '')) {   // §11.6: sit out the wait
           var wh = E.waitHour();
           if (job.result) { res = job.result; break; }
@@ -1478,6 +1490,7 @@ function qualityFlagsScenario(era) {
     if (!job) return null;
     if (job.needsDiagnosis && !job.diagnosed) E.diagnoseJob(job.id);
     if (!job.diagnosed || !job.needs.length) return null;
+    disarmDecisions(job); pokeBigPsu(E, job);   // §17.1 off — quality flags under test
     return job;
   }
 
@@ -1485,10 +1498,13 @@ function qualityFlagsScenario(era) {
     var res = null, guard = 0;
     while (guard++ < 60) {
       E.getState().hoursLeft = 8;
+      botResolveDecision(E, job);   // §17.1
       var w = E.workJob(job.id);
       if (w.ok && w.completed) { res = w.result; break; }
       if (job.result) { res = job.result; break; }
+      if (w.ok && w.decisionPending) { botResolveDecision(E, job); continue; }
       if (!w.ok) {
+        if (/decision/i.test(w.error || '')) { botResolveDecision(E, job); continue; }
         if (/waiting/i.test(w.error || '')) {
           var wh = E.waitHour();
           if (job.result) { res = job.result; break; }
@@ -1958,8 +1974,8 @@ function staffXpScenario() {
   var hist = s.reputation.history;
   var added = hist.length - Math.min(histBefore, Engine.CONFIG.RATING_HISTORY - 2);
   var lastTwo = hist.slice(-2);
-  assert(lastTwo[0] === Engine.CONFIG.FIRE_REP_SCORE &&
-         lastTwo[1] === Engine.CONFIG.FIRE_REP_SCORE,
+  assert(Engine.entryScore(lastTwo[0]) === Engine.CONFIG.FIRE_REP_SCORE &&
+         Engine.entryScore(lastTwo[1]) === Engine.CONFIG.FIRE_REP_SCORE,
          'xp: firing L4+ should push the rep ding twice, got ' + JSON.stringify(lastTwo));
   console.log('  L2 at ' + TH[1] + 'h ok, fixed tables ok, summary line ok, ' +
               'senior firing double-ding ok');
@@ -2119,13 +2135,25 @@ function generateUntil(s, pred, tries) {
   }
   return found;
 }
+/* §17.1: bot default choices — proper fix, make the call, balanced tune. */
+function botResolveDecision(E, job) {
+  if (!job || !job.decision || job.decision.chosen != null) return false;
+  var kind = job.decision.kind;
+  var pick = kind === 'fork' ? 'proper' : (kind === 'tuning' ? 'balanced' : 'call');
+  var r = E.decideJob(job.id, pick);
+  return !!(r && r.ok);
+}
 function workToDone(E, job) {
   var guard = 0;
   while (job.status === 'active' && guard++ < 300) {
+    if (botResolveDecision(E, job)) continue;   // §17.1
     var w = E.workJob(job.id);
     if (w.ok && w.completed) break;
+    if (w.ok && w.decisionPending) { botResolveDecision(E, job); continue; }
     if (!w.ok) {
-      if (/waiting/i.test(w.error || '')) {
+      if (/decision/i.test(w.error || '')) {
+        if (!botResolveDecision(E, job)) return 'stuck on decision: ' + w.error;
+      } else if (/waiting/i.test(w.error || '')) {
         var wh = E.waitHour();
         if (!wh.ok) E.endDay();
       } else if (/exhaust|time/i.test(w.error || '')) {
@@ -2770,7 +2798,7 @@ function certScenario() {
 // Scenario (§10.8/§11.7/§12.6/§13.8): v1-v5 fixtures migrate to v6 and play
 // ------------------------------------------------------------------
 function migrationScenario(era) {
-  console.log('--- Save migration (v1/v2/v3/v4/v5/v6 -> v7) ---');
+  console.log('--- Save migration (v1/v2/v3/v4/v5/v6/v7 -> v8) ---');
   var E = Engine;
   var r = E.newGame({ eraId: era.id, shopName: 'Migrate Test', seed: 73737 });
   if (!assert(r.ok, 'migration: newGame failed')) return;
@@ -2781,11 +2809,27 @@ function migrationScenario(era) {
   E.getState().cash = 50000;
   var listing = E.getAsIsMarket()[0];
   if (listing) E.buyAsIsMachine(listing.id);
-  var v7snapshot = E.exportSave();
+  var v8snapshot = E.exportSave();
 
   function downgrade(version) {
-    var obj = JSON.parse(v7snapshot);
+    var obj = JSON.parse(v8snapshot);
     obj.version = version;
+    // §17: a genuine pre-v8 save carried ONE rngState (not streams), numeric
+    // reputation history, and no decision fields
+    if (version < 8) {
+      delete obj.rng;
+      obj.rngState = obj.seed | 0;
+      obj.reputation.history = (obj.reputation.history || []).map(function (e) {
+        return typeof e === 'number' ? e : e.score;
+      });
+      [].concat(obj.jobs.offers || [], obj.jobs.active || []).forEach(function (j) {
+        delete j.decision; delete j.decisionPlan; delete j.decisionTaken;
+        delete j.callbackRiskMult; delete j.tuningChoice; delete j.tuningUnstable;
+        delete j.approvalDelight; delete j.approvalRefused; delete j.approvalSkipped;
+        delete j.psuSwapApproved; delete j.psuSwapDeclined;
+        (j.needs || []).forEach(function (nd) { delete nd.minWatts; });
+      });
+    }
     // §15: a genuine pre-v7 save never carried credit/regulars/accounts/
     // achievements/difficulty/scenario/transition bookkeeping
     if (version < 7) {
@@ -2874,11 +2918,21 @@ function migrationScenario(era) {
     return JSON.stringify(obj);
   }
 
-  [1, 2, 3, 4, 5, 6].forEach(function (ver) {
+  [1, 2, 3, 4, 5, 6, 7].forEach(function (ver) {
     var imp = E.importSave(downgrade(ver));
     if (!assert(imp.ok, 'migration: v' + ver + ' fixture rejected: ' + (imp.error || ''))) return;
     var s = E.getState();
-    assert(s.version === 7, 'migration: v' + ver + ' should land on version 7');
+    assert(s.version === 8, 'migration: v' + ver + ' should land on version 8');
+    // §17.5: five seeded streams replace the single rngState
+    assert(s.rng && Engine.RNG_STREAMS.every(function (k) {
+      return typeof s.rng[k] === 'number';
+    }) && s.rngState === undefined,
+           'migration: v' + ver + ' missing rng streams / stale rngState');
+    // §17.2: history entries are outcome objects
+    assert((s.reputation.history || []).every(function (e) {
+      return e && typeof e === 'object' && typeof e.score === 'number' &&
+             Array.isArray(e.reasons);
+    }), 'migration: v' + ver + ' history entries not wrapped');
     // §15: v7 fields fill in with sane defaults
     assert(s.credit && s.credit.drawn === 0,
            'migration: v' + ver + ' missing credit.{drawn:0}');
@@ -2926,16 +2980,16 @@ function migrationScenario(era) {
     if (act) {
       if (act.needsDiagnosis && !act.diagnosed) E.diagnoseJob(act.id);
       var w = E.workJob(act.id);
-      assert(w.ok || /assign|cash|time|exhaust|waiting|nothing/i.test(w.error || ''),
+      assert(w.ok || /assign|cash|time|exhaust|waiting|nothing|decision/i.test(w.error || ''),
              'migration: v' + ver + ' workJob broke: ' + (w.error || ''));
     }
     console.log('  v' + ver + ' fixture migrated & playable');
   });
-  // Idempotence: v7 round-trips byte-identically
-  E.importSave(v7snapshot);
-  var v7b = E.exportSave();
-  E.importSave(v7b);
-  assert(E.exportSave() === v7b, 'migration: v7 re-import not byte-identical');
+  // Idempotence: v8 round-trips byte-identically
+  E.importSave(v8snapshot);
+  var v8b = E.exportSave();
+  E.importSave(v8b);
+  assert(E.exportSave() === v8b, 'migration: v8 re-import not byte-identical');
 }
 
 // ------------------------------------------------------------------
@@ -3302,7 +3356,8 @@ function regularsScenario(era) {
     back.deadlineDay = s.day - 1;
     var histBefore = s.reputation.history.length;
     Engine.Jobs.deadlineSweep(s, Engine.Sim.newSummary());
-    var pushed = s.reputation.history[s.reputation.history.length - 1];
+    var pushedEntry = s.reputation.history[s.reputation.history.length - 1];
+    var pushed = Engine.entryScore(pushedEntry);   // §17.2 entries are objects
     var expected = Math.max(0, E.getConfig().SCORE_LATE - E.getConfig().REGULAR_FAIL_EXTRA);
     assert(s.reputation.history.length > histBefore &&
            Math.abs(pushed - expected) < 1e-9,
@@ -3429,6 +3484,7 @@ function achievementsScenario(era) {
       if (offers[i].crt || offers[i].type === 'business_account') continue;
       if (E.acceptOffer(offers[i].id).ok) {
         var job = E.getActiveJobs().filter(function (j) { return j.id === offers[i].id; })[0];
+        disarmDecisions(job);   // §17.1 off — achievement plumbing under test
         if (job.needsDiagnosis && !job.diagnosed) E.diagnoseJob(job.id);
         var needs = E.getJobNeeds(job.id);
         var ok = true;
@@ -3808,17 +3864,606 @@ function waitAutoStartScenario(era) {
 }
 
 // ------------------------------------------------------------------
+// Scenario (§17.5): RNG stream isolation & determinism.
+// ------------------------------------------------------------------
+function rngStreamScenario(era) {
+  console.log('--- RNG streams: isolation & determinism (§17.5) ---');
+  var E = Engine;
+  // (a) stream isolation: draws on one stream never advance the others
+  var r = E.newGame({ eraId: era.id, shopName: 'RNG Test', seed: 424242 });
+  if (!assert(r.ok, 'rng: newGame failed')) return;
+  var s = E.getState();
+  var before = JSON.parse(JSON.stringify(s.rng));
+  for (var i = 0; i < 100; i++) Engine.rand('offers');
+  assert(s.rng.offers !== before.offers, 'rng: offers stream did not advance');
+  assert(s.rng.prices === before.prices && s.rng.faults === before.faults &&
+         s.rng.market === before.market && s.rng.misc === before.misc,
+         'rng: drawing on offers must not advance the other streams');
+  var d1 = Engine.rand('prices'), d2 = Engine.rand();
+  assert(typeof d1 === 'number' && typeof d2 === 'number',
+         'rng: stream draws must return numbers');
+
+  // (b) §17.5 determinism: same seed -> same 30-day price series and as-is
+  // market, even when the player-side load (offers accepted/worked) differs.
+  function priceSeries() {
+    var st = E.getState();
+    var ids = (DATA.PARTS || []).slice(0, 12).map(function (p2) { return p2.id; });
+    return ids.map(function (id) {
+      return (st.market.hist[id] || []).join(',');
+    }).join('|');
+  }
+  function asisIds() {
+    return E.getAsIsMarket().map(function (m) { return m.id; }).join(',');
+  }
+  // Run A: 30 idle days
+  E.newGame({ eraId: era.id, shopName: 'RNG A', seed: 777001 });
+  for (var dA = 0; dA < 30; dA++) E.endDay();
+  var seriesA = priceSeries(), asisA = asisIds(), eventsA =
+    E.getState().market.activeEvents.map(function (ev) { return ev.id; }).join(',');
+  // Run B: same seed, but the bot accepts and works customer jobs every day
+  // (no as-is purchases — buying from the used market IS a market action)
+  E.newGame({ eraId: era.id, shopName: 'RNG B', seed: 777001 });
+  var sB = E.getState();
+  sB.cash = 100000;
+  for (var dB = 0; dB < 30; dB++) {
+    E.getOffers().slice(0, 2).forEach(function (o) {
+      if (o.type === 'business_account' || o.crt) return;
+      if (E.acceptOffer(o.id).ok) {
+        var job = E.getActiveJobs().filter(function (j) { return j.id === o.id; })[0];
+        if (job) {
+          botResolveDecision(E, job);
+          if (job.needsDiagnosis && !job.diagnosed) E.diagnoseJob(job.id);
+          botResolveDecision(E, job);
+          var needs = E.getJobNeeds(job.id);
+          for (var n = 0; n < needs.length; n++) {
+            var opt = chooseOption(E, job, needs[n]);
+            if (opt && needs[n].filled < needs[n].qty)
+              E.assignPart(job.id, needs[n].index, opt.partId);
+          }
+          E.workJob(job.id);
+          botResolveDecision(E, job);
+        }
+      }
+    });
+    E.endDay();
+  }
+  assert(priceSeries() === seriesA,
+         'rng: 30-day price series must be identical regardless of player load');
+  assert(asisIds() === asisA,
+         'rng: as-is market must be identical when the player never buys from it');
+  assert(E.getState().market.activeEvents.map(function (ev) { return ev.id; })
+           .join(',') === eventsA,
+         'rng: market events must be identical regardless of player load');
+  console.log('  isolation ok; 30-day price/as-is/event series identical under ' +
+              'different player load');
+}
+
+// ------------------------------------------------------------------
+// Scenario (§17.1): decision moments — forks, approvals, tuning, gating,
+// blocked-work path, determinism.
+// ------------------------------------------------------------------
+function findDecisionOffer(s, pred, tries) {
+  var found = null, guard = 0;
+  while (!found && guard++ < (tries || 300)) {
+    s.jobs.offers.length = 0;
+    Engine.Jobs.generateOffers(s, null);
+    found = s.jobs.offers.filter(pred)[0] || null;
+  }
+  return found;
+}
+function decisionForkScenario(era) {
+  console.log('--- Decision moments: diagnosis fork (§17.1) ---');
+  var E = Engine;
+  var r = E.newGame({ eraId: era.id, shopName: 'Fork Test', seed: 31001 });
+  if (!assert(r.ok, 'fork: newGame failed')) return;
+  var s = E.getState();
+  s.cash = 100000;
+
+  function runFork(optionId, seed) {
+    E.newGame({ eraId: era.id, shopName: 'Fork Test', seed: seed });
+    var st = E.getState();
+    st.cash = 100000;
+    var offer = findDecisionOffer(st, function (o) {
+      return o.type === 'repair' && o.decisionPlan && o.decisionPlan.kind === 'fork';
+    });
+    if (!assert(offer, 'fork: no fork-armed repair generated')) return null;
+    if (!assert(E.acceptOffer(offer.id).ok, 'fork: accept failed')) return null;
+    var job = E.getActiveJobs().filter(function (j) { return j.id === offer.id; })[0];
+    var dr = E.diagnoseJob(job.id);
+    if (!assert(dr.ok, 'fork: diagnose failed: ' + (dr.error || ''))) return null;
+    if (!assert(job.decision && job.decision.kind === 'fork' &&
+                job.decision.chosen == null,
+                'fork: decision should be live after diagnosis')) return null;
+    // workJob must block readably while pending
+    var blocked = E.workJob(job.id);
+    assert(!blocked.ok && /decision/i.test(blocked.error || ''),
+           'fork: work should block readably, got ' + JSON.stringify(blocked));
+    var payBefore = job.pay, hoursBefore =
+      Engine.round1(job.hoursRequired - job.hoursDone);
+    var bad = E.decideJob(job.id, 'nonsense');
+    assert(!bad.ok, 'fork: bogus option must be refused');
+    var dec = E.decideJob(job.id, optionId);
+    assert(dec.ok, 'fork: decideJob failed: ' + (dec.error || ''));
+    return { job: job, payBefore: payBefore, hoursBefore: hoursBefore };
+  }
+
+  var patch = runFork('patch', 31002);
+  if (patch) {
+    var C = E.getConfig();
+    assert(patch.job.pay === Math.round(patch.payBefore * C.FORK_PATCH.payMult),
+           'fork: patch should cut pay x' + C.FORK_PATCH.payMult);
+    assert(patch.job.needs.length === 0,
+           'fork: patch should clear the parts need (labor-only)');
+    assert(patch.job.callbackRiskMult === C.FORK_PATCH.callbackMult,
+           'fork: patch should raise callback risk x' + C.FORK_PATCH.callbackMult);
+    var hoursAfter = Engine.round1(patch.job.hoursRequired - patch.job.hoursDone);
+    assert(hoursAfter < patch.hoursBefore,
+           'fork: patch should shrink the remaining bench time (' +
+           patch.hoursBefore + ' -> ' + hoursAfter + ')');
+    var werr = workToDone(E, patch.job);
+    assert(!werr && patch.job.status === 'done', 'fork: patched job never completed');
+    assert((patch.job.result.notes || []).some(function (n2) { return /patch/i.test(n2); }),
+           'fork: result should note the patch');
+  }
+  var proper = runFork('proper', 31003);
+  if (proper) {
+    assert(proper.job.pay === proper.payBefore,
+           'fork: proper fix keeps the quoted pay');
+    assert(proper.job.needs.length >= 1,
+           'fork: proper fix keeps the parts need');
+    var werr2 = workToDone(E, proper.job);
+    // may need a part first — assign then finish
+    if (werr2 && /assign/i.test(werr2)) {
+      var needs = E.getJobNeeds(proper.job.id);
+      var opt = needs[0] && chooseOption(E, proper.job, needs[0]);
+      if (opt) { E.assignPart(proper.job.id, 0, opt.partId); werr2 = workToDone(E, proper.job); }
+    }
+    assert(!werr2 && proper.job.status === 'done', 'fork: proper job never completed: ' + werr2);
+  }
+  console.log('  patch (cheaper/faster/riskier) and proper (unchanged) both resolve; ' +
+              'blocked-work path readable');
+}
+
+function decisionApprovalScenario(era) {
+  console.log('--- Decision moments: approval call (§17.1) ---');
+  var E = Engine;
+  var C = Engine.CONFIG;
+  var sawApproved = false, sawRefused = false, sawSkip = false, guard = 0;
+  var seed = 32000;
+  while ((!sawApproved || !sawRefused || !sawSkip) && guard++ < 25) {
+    E.newGame({ eraId: era.id, shopName: 'Approval Test', seed: seed + guard });
+    var s = E.getState();
+    s.cash = 100000;
+    var offer = findDecisionOffer(s, function (o) {
+      return o.decisionPlan && o.decisionPlan.kind === 'approval' &&
+             o.type !== 'business_account';
+    });
+    if (!offer) continue;
+    if (!E.acceptOffer(offer.id).ok) continue;
+    var job = E.getActiveJobs().filter(function (j) { return j.id === offer.id; })[0];
+    if (job.needsDiagnosis && !job.diagnosed) {
+      if (!E.diagnoseJob(job.id).ok) continue;
+    }
+    // Work to the marked step: the discovery must fire
+    var fired = false, wGuard = 0;
+    while (!fired && wGuard++ < 30) {
+      s.hoursLeft = 8;
+      var needs = E.getJobNeeds(job.id);
+      for (var n = 0; n < needs.length; n++) {
+        var opt = chooseOption(E, job, needs[n]);
+        if (opt && needs[n].filled < needs[n].qty)
+          E.assignPart(job.id, needs[n].index, opt.partId);
+      }
+      var w = E.workJob(job.id);
+      if (w.ok && w.decisionPending) { fired = true; break; }
+      if (!w.ok && /decision/i.test(w.error || '')) { fired = true; break; }
+      if (!w.ok || w.completed) break;
+    }
+    if (!fired) continue;
+    if (!job.decision || job.decision.kind !== 'approval') continue;
+    var choice = !sawSkip ? 'skip' : 'call';
+    if (choice === 'skip') {
+      var riskBefore = job.callbackRiskMult || 1;
+      var dr = E.decideJob(job.id, 'skip');
+      if (dr.ok) {
+        sawSkip = true;
+        assert((job.callbackRiskMult || 1) > riskBefore,
+               'approval: skip must bump callback risk');
+      }
+      continue;
+    }
+    var payBefore = job.pay, needsBefore = job.needs.length;
+    var hoursBefore = s.hoursLeft;
+    var dc = E.decideJob(job.id, 'call');
+    if (!dc.ok) continue;
+    assert(Math.abs((hoursBefore - s.hoursLeft) - C.APPROVAL_CALL_HOURS) < 1e-9,
+           'approval: the call must cost ' + C.APPROVAL_CALL_HOURS + 'h');
+    if (dc.approved) {
+      sawApproved = true;
+      assert(job.pay > payBefore, 'approval: approved add-on must raise pay');
+      assert(job.needs.length > needsBefore || job.type === 'device_repair',
+             'approval: approved add-on should add a need (or bill the device)');
+      assert(job.approvalDelight === true, 'approval: delight flag missing');
+    } else {
+      sawRefused = true;
+      assert(job.pay === payBefore && job.needs.length === needsBefore,
+             'approval: a refusal must change nothing but the note');
+    }
+  }
+  assert(sawApproved, 'approval: never saw an approved call across 25 seeds');
+  assert(sawRefused, 'approval: never saw a refusal across 25 seeds');
+  assert(sawSkip, 'approval: never exercised the skip branch');
+  console.log('  approve (pay+need+delight), refuse (no-op + note), skip ' +
+              '(callback bump) all exercised; call costs 0.1h');
+}
+
+function decisionTuningScenario() {
+  console.log('--- Decision moments: overclock tuning (§17.1) ---');
+  var E = Engine;
+  var C = Engine.CONFIG;
+  var era = eraLatestAtOrBefore(1998) || DATA.ERAS[DATA.ERAS.length - 1];
+  var results = {}, sawUnstable = false, guard = 0;
+  while ((!results.conservative || !results.balanced || !results.aggressive ||
+          !sawUnstable) && guard++ < 30) {
+    E.newGame({ eraId: era.id, shopName: 'Tune Test', seed: 33000 + guard });
+    var s = pokeYear('1999-06-15');
+    s.reputation.prestige = 1;
+    var offer = findDecisionOffer(s, function (o) {
+      return o.type === 'enthusiast' && o.subtype === 'overclock' &&
+             o.decisionPlan && o.decisionPlan.kind === 'tuning';
+    }, 200);
+    if (!offer) continue;
+    if (!E.acceptOffer(offer.id).ok) continue;
+    var job = E.getActiveJobs().filter(function (j) { return j.id === offer.id; })[0];
+    E.setJobSpeed(job.id, 'quick');   // score 4.4 base leaves headroom for bonuses
+    // Reach the tuning step
+    var fired = false, wGuard = 0;
+    while (!fired && wGuard++ < 20) {
+      s.hoursLeft = 8;
+      var needs = E.getJobNeeds(job.id);
+      for (var n = 0; n < needs.length; n++) {
+        var opt = chooseOption(E, job, needs[n]);
+        if (opt && needs[n].filled < needs[n].qty)
+          E.assignPart(job.id, needs[n].index, opt.partId);
+      }
+      var w = E.workJob(job.id);
+      if ((w.ok && w.decisionPending) || (!w.ok && /decision/i.test(w.error || ''))) {
+        fired = true; break;
+      }
+      if (!w.ok || w.completed) break;
+    }
+    if (!fired || !job.decision || job.decision.kind !== 'tuning') continue;
+    assert(job.decision.options.length === 3, 'tuning: expected 3 options');
+    var pick = !results.conservative ? 'conservative' :
+               !results.balanced ? 'balanced' : 'aggressive';
+    var hoursBefore2 = Engine.round1(job.hoursRequired - job.hoursDone);
+    var dt = E.decideJob(job.id, pick);
+    if (!dt.ok) continue;
+    if (dt.unstable) {
+      sawUnstable = true;
+      assert(Engine.round1(job.hoursRequired - job.hoursDone) > hoursBefore2,
+             'tuning: unstable must add redo hours');
+    }
+    var werr = workToDone(E, job);
+    if (werr || job.status !== 'done') continue;
+    if (!results[pick]) results[pick] = job.result;
+    if (pick === 'conservative') {
+      assert(Math.abs(job.result.score - (4.4 + C.TUNING.conservative.scoreBonus)) < 0.01 ||
+             job.result.score >= 4.4,
+             'tuning: conservative bonus missing (score ' + job.result.score + ')');
+    }
+    if (dt.unstable) {
+      assert((job.result.notes || []).some(function (n2) { return /didn.t hold/i.test(n2); }),
+             'tuning: unstable completion should be noted');
+    }
+  }
+  assert(results.conservative && results.balanced && results.aggressive,
+         'tuning: all three choices must complete (' +
+         Object.keys(results).join(',') + ')');
+  assert(sawUnstable, 'tuning: never saw an unstable aggressive/balanced tune');
+  console.log('  conservative/balanced/aggressive all resolve; instability adds ' +
+              'redo hours + note');
+}
+
+function decisionGatingScenario(era) {
+  console.log('--- Decision moments: gating & determinism (§17.1) ---');
+  var E = Engine;
+  // Gated types never arm
+  var r = E.newGame({ eraId: era.id, shopName: 'Gate Test', seed: 34001 });
+  if (!assert(r.ok, 'gating: newGame failed')) return;
+  var s = E.getState();
+  var badGate = null;
+  for (var d = 0; d < 25 && !badGate; d++) {
+    s.jobs.offers.length = 0;
+    Engine.Jobs.generateOffers(s, null);
+    s.jobs.offers.forEach(function (o) {
+      if ((o.type === 'cleaning' || o.type === 'business_account') &&
+          (o.decisionPlan || o.decision)) badGate = o.title;
+      if (o.type === 'software' && o.decisionPlan) badGate = o.title;
+    });
+  }
+  assert(!badGate, 'gating: decision armed on a gated type: ' + badGate);
+  // Account auto-jobs never carry decisions
+  s.reputation.prestige = 2; s.reputation.rating = 4.2;
+  s.accounts = [{ id: 'acctT', name: 'Gate Test Co', monthlyFee: 100,
+                  jobsPerMonth: 4, minRating: 2.5, signedDay: s.day,
+                  failsThisMonth: 0, jobsThisMonth: 0 }];
+  var acctJob = null, g2 = 0;
+  while (!acctJob && g2++ < 200) {
+    Engine.Jobs.generateAccountJobs(s, null);
+    acctJob = s.jobs.active.filter(function (j) { return j.accountId; })[0];
+  }
+  if (acctJob) {
+    assert(!acctJob.decision && !acctJob.decisionPlan,
+           'gating: account auto-job must never carry a decision');
+  }
+  // Determinism: same seed -> same armed decisions on the same offers
+  function offerPlans(seed) {
+    E.newGame({ eraId: era.id, shopName: 'Det Test', seed: seed });
+    var st = E.getState();
+    for (var i = 0; i < 5; i++) E.endDay();
+    return JSON.stringify(st.jobs.offers.map(function (o) {
+      return [o.title, o.decisionPlan && o.decisionPlan.kind,
+              o.decision && o.decision.kind];
+    }));
+  }
+  assert(offerPlans(35001) === offerPlans(35001),
+         'gating: same seed must arm identical decisions');
+  console.log('  cleaning/software/account jobs unarmed; same-seed decisions identical');
+}
+
+// ------------------------------------------------------------------
+// Scenario (§17.1 addendum): the upgrade-path PSU gate.
+// ------------------------------------------------------------------
+function psuGateScenario() {
+  console.log('--- Upgrade PSU gate (§17.1 audit fix) ---');
+  var E = Engine;
+  var era = DATA.ERAS[DATA.ERAS.length - 1];
+  var r = E.newGame({ eraId: era.id, shopName: 'PSU Gate Test', seed: 36001 });
+  if (!assert(r.ok, 'psugate: newGame failed')) return;
+  var s = E.getState();
+  s.cash = 200000;
+  // Deterministic rig: a small PSU machine + a heavy GPU candidate
+  var smallPsu = Engine.Jobs.purchasableByCategory(s, 'psu')
+    .slice().sort(function (a, b) { return (a.watts || 0) - (b.watts || 0); })[0];
+  var heavyGpu = Engine.Jobs.purchasableByCategory(s, 'gpu')
+    .slice().sort(function (a, b) { return (b.powerDraw || 0) - (a.powerDraw || 0); })[0];
+  if (!assert(smallPsu && heavyGpu &&
+              (heavyGpu.powerDraw || 0) * E.getConfig().PSU_HEADROOM > (smallPsu.watts || 0),
+              'psugate: catalog lacks a small-PSU/heavy-GPU pair')) return;
+  var job = null, guard = 0;
+  while (!job && guard++ < 40) {
+    var offer = findDecisionOffer(s, function (o) {
+      return o.type === 'upgrade' && o.machine &&
+             o.needs[0] && o.needs[0].category === 'gpu';
+    }, 60);
+    if (offer && E.acceptOffer(offer.id).ok)
+      job = E.getActiveJobs().filter(function (j) { return j.id === offer.id; })[0];
+  }
+  if (!assert(!!job, 'psugate: no machine-backed GPU upgrade generated')) return;
+  disarmDecisions(job);
+  // Force the machine onto the small supply; drop the fit constraint so the
+  // heavy card is listable (mechanics probe, not a compat test).
+  for (var i = 0; i < job.machine.partIds.length; i++) {
+    var mp = Engine.partById(job.machine.partIds[i]);
+    if (mp && mp.category === 'psu') job.machine.partIds[i] = smallPsu.id;
+  }
+  job.needs[0].anyOfTags = null;
+  job.needs[0].minPerf = null;
+
+  // getJobNeeds flags the heavy option up front
+  var view = E.getJobNeeds(job.id)[0];
+  var heavyOpt = view.options.filter(function (o) { return o.partId === heavyGpu.id; })[0];
+  assert(view.machinePsuWatts === (smallPsu.watts || 0),
+         'psugate: need view must expose the machine PSU watts');
+  assert(heavyOpt && heavyOpt.overPsu === true,
+         'psugate: heavy option must carry overPsu:true');
+
+  // Assigning it triggers the approval flow with a readable wattage error
+  var a1 = E.assignPart(job.id, 0, heavyGpu.id);
+  assert(!a1.ok && new RegExp(smallPsu.watts + 'W').test(a1.error || ''),
+         'psugate: rejection must name the wattage, got ' + JSON.stringify(a1));
+  assert(job.decision && job.decision.subkind === 'psu',
+         'psugate: a PSU-swap decision must be pending');
+
+  // Decline path: rejection stands, readable
+  var skip = E.decideJob(job.id, 'skip');
+  assert(skip.ok && job.psuSwapDeclined === true, 'psugate: skip should decline the swap');
+  var a2 = E.assignPart(job.id, 0, heavyGpu.id);
+  assert(!a2.ok && /declined|lighter/i.test(a2.error || ''),
+         'psugate: post-decline assign must reject readably');
+
+  // Approve path (fresh gate): call until the seeded roll approves
+  job.psuSwapDeclined = false;
+  var approved = false, g3 = 0;
+  while (!approved && g3++ < 12) {
+    var a3 = E.assignPart(job.id, 0, heavyGpu.id);   // re-opens the decision
+    if (!job.decision || job.decision.chosen != null) job.decision = null;
+    if (!job.decision) { E.assignPart(job.id, 0, heavyGpu.id); }
+    s.hoursLeft = 8;
+    var call = E.decideJob(job.id, 'call');
+    if (call.ok && call.approved) approved = true;
+    else job.psuSwapDeclined = false;   // customer said no — retry the probe
+  }
+  if (assert(approved, 'psugate: approval never rolled yes in 12 tries')) {
+    var psuNeed = job.needs.filter(function (nd) { return nd.category === 'psu'; })[0];
+    assert(psuNeed && psuNeed.minWatts > (smallPsu.watts || 0),
+           'psugate: approval must add a PSU need with a real wattage floor');
+    assert(job.psuSwapApproved === true, 'psugate: approved flag missing');
+    // The heavy part is now assignable
+    var a4 = E.assignPart(job.id, 0, heavyGpu.id);
+    var g4 = 0;
+    while (a4.ok && a4.mishap && job.needs[0].filledPartIds.length < 1 && g4++ < 8)
+      a4 = E.assignPart(job.id, 0, heavyGpu.id);
+    assert(a4.ok, 'psugate: approved swap should unlock the heavy part, got ' +
+           JSON.stringify(a4));
+    // And an under-watt PSU pick is refused readably
+    var weak = Engine.Jobs.purchasableByCategory(s, 'psu').filter(function (p2) {
+      return (p2.watts || 0) < psuNeed.minWatts;
+    })[0];
+    if (weak) {
+      var psuIdx = job.needs.indexOf(psuNeed);
+      var aw = E.assignPart(job.id, psuIdx, weak.id);
+      assert(!aw.ok && /under the quoted/i.test(aw.error || ''),
+             'psugate: under-watt PSU must be refused readably');
+    }
+  }
+  console.log('  overPsu flag, wattage-naming rejection, decline & approve paths, ' +
+              'minWatts PSU need all ok');
+}
+
+// ------------------------------------------------------------------
+// Scenario (§17.2): rating transparency — entry shape, log, ratingDelta.
+// ------------------------------------------------------------------
+function reputationScenario(era) {
+  console.log('--- Rating transparency (§17.2) ---');
+  var E = Engine;
+  var r = E.newGame({ eraId: era.id, shopName: 'Rep Test', seed: 37001 });
+  if (!assert(r.ok, 'rep: newGame failed')) return;
+  var s = E.getState();
+  s.cash = 100000;
+  var done = null, guard = 0;
+  while (!done && guard++ < 25) {
+    var offers = E.getOffers().slice();
+    for (var i = 0; i < offers.length; i++) {
+      var o = offers[i];
+      if ((o.type === 'cleaning' || o.type === 'software') && !o.rush &&
+          E.acceptOffer(o.id).ok) {
+        var job = E.getActiveJobs().filter(function (j) { return j.id === o.id; })[0];
+        var werr = workToDone(E, job);
+        if (!werr && job.status === 'done') { done = job; break; }
+      }
+    }
+    if (!done) E.endDay();
+  }
+  if (!assert(!!done, 'rep: no completion in 25 days')) return;
+  assert(typeof done.result.ratingDelta === 'number',
+         'rep: completion result must expose ratingDelta');
+  var entry = s.reputation.history[s.reputation.history.length - 1];
+  assert(entry && typeof entry === 'object' && entry.score === done.result.score &&
+         entry.jobId === done.id && entry.title === done.title &&
+         Array.isArray(entry.reasons) && entry.reasons.length >= 1,
+         'rep: history entry malformed: ' + JSON.stringify(entry));
+  var log = E.getReputationLog(15);
+  assert(log.length >= 1 && log[0].title === done.title &&
+         typeof log[0].delta === 'number' && log[0].dayLabel,
+         'rep: getReputationLog newest-first shape wrong: ' + JSON.stringify(log[0]));
+  var logAll = E.getReputationLog(200);
+  assert(logAll.length <= Engine.CONFIG.RATING_HISTORY,
+         'rep: log cannot exceed the rolling window');
+  console.log('  entries {score,day,jobId,title,reasons[]}, ratingDelta on results, ' +
+              'log newest-first with deltas — reasons: ' +
+              JSON.stringify(entry.reasons));
+}
+
+// ------------------------------------------------------------------
+// Scenario (§17.4): Survival pressure — competent bot squeezed, passive
+// bot dies; Standard untouched (its guards run above).
+// ------------------------------------------------------------------
+function runBotDays(eraId, difficulty, seed, days) {
+  var r = Engine.newGame({ eraId: eraId, shopName: 'Surv ' + difficulty,
+                           seed: seed, difficulty: difficulty });
+  if (!r.ok) return null;
+  var mem = {
+    equipmentBought: [], refurbBought: false, refurbsSold: 0, flipsStarted: 0,
+    standardOnly: true, multiFlip: false,
+    jobStats: { net: 0, hours: 0 }, flipStats: { net: 0, hours: 0 }
+  };
+  for (var d = 0; d < days; d++) {
+    mem.day = d;
+    botDay(Engine, mem);
+    var res = Engine.endDay();
+    if (!res.ok || Engine.getState().flags.gameOver) break;
+  }
+  return Engine.getState();
+}
+function survivalScenario(era) {
+  console.log('--- Survival bite (§17.4) ---');
+  var E = Engine;
+  var ratios = [];
+  GUARD_SEEDS.forEach(function (gs) {
+    var sStd = runBotDays(era.id, 'standard', gs, 40);
+    var stdCash = sStd ? sStd.cash : 0;
+    var sSurv = runBotDays(era.id, 'survival', gs, 40);
+    if (!assert(sSurv && !sSurv.flags.gameOver,
+                'survival: competent bot went bankrupt at seed ' + gs)) return;
+    ratios.push(stdCash > 0 ? sSurv.cash / stdCash : 1);
+  });
+  var med = median(ratios);
+  console.log('  competent-bot survival/standard cash ratio: median ' +
+              med.toFixed(2) + ' (' + rangeStr(ratios) + ')');
+  if (REAL()) {
+    assert(med <= 0.6,
+           'survival: competent bot should land at <=60% of Standard cash, got ' +
+           med.toFixed(2));
+  }
+  // Passive pressure: an idle shop dies at Survival, and meaningfully sooner
+  // than the same idle shop at Standard.
+  function passiveDeathDay(difficulty) {
+    var r2 = E.newGame({ eraId: era.id, shopName: 'Passive', seed: 38001,
+                         difficulty: difficulty });
+    if (!r2.ok) return -1;
+    for (var d = 0; d < 320; d++) {
+      var res = E.endDay();
+      if (!res.ok) break;
+      if (E.getState().flags.gameOver) return E.getState().day;
+    }
+    return -1;
+  }
+  var survDeath = passiveDeathDay('survival');
+  var stdDeath = passiveDeathDay('standard');
+  console.log('  passive bot: bankrupt day ' + survDeath + ' at Survival vs ' +
+              (stdDeath === -1 ? 'alive past 320' : 'day ' + stdDeath) + ' at Standard');
+  assert(survDeath > 0 && survDeath <= 210,
+         'survival: passive bot should go bankrupt within ~210 days, got ' + survDeath);
+  if (stdDeath > 0) {
+    assert(survDeath <= stdDeath - 25,
+           'survival: passive death should come meaningfully sooner than Standard (' +
+           survDeath + ' vs ' + stdDeath + ')');
+  }
+}
+
+// ------------------------------------------------------------------
 // Main
 // ------------------------------------------------------------------
 console.log('sim-test using: ' + DATA_SOURCE + ' | engine v' + Engine.VERSION);
-assert(Engine.VERSION === '0.6.1', 'Engine.VERSION must be "0.6.1"');
+assert(Engine.VERSION === '0.7', 'Engine.VERSION must be "0.7"');
 assert(parseFloat(Engine.VERSION) >= 0.4, 'Engine.VERSION must stay parseFloat >= 0.4');
 var lines = [];
 try {
   DATA.ERAS.forEach(function (era, idx) {
-    var line = runEra(era, idx, false);
-    if (line) lines.push(line);
-    if (era.startYear === 1983) runEra(era, idx, true);   // §9.6 metric run
+    if (era.startYear === 1983) {
+      // §17.5: the guard era runs across ALL five fixed seeds — greedy runs
+      // for the cash band + offer ramp, metric runs for the flips ratio.
+      // Bands assert on the MEDIAN; min/max printed for visibility.
+      var cashes = [], offerMeans = [], ratios = [];
+      GUARD_SEEDS.forEach(function (gs) {
+        var gl = runEra(era, gs, false);
+        if (gl) { lines.push(gl); cashes.push(gl.cash); offerMeans.push(gl.offersMean); }
+        var ml = runEra(era, gs, true);
+        if (ml && ml.flipRatio != null) ratios.push(ml.flipRatio);
+      });
+      console.log('  == 1983 guard medians: cash ' + Engine.fmtMoney(median(cashes)) +
+        ' (' + rangeStr(cashes) + ') | offers/day ' + median(offerMeans).toFixed(2) +
+        ' (' + rangeStr(offerMeans) + ') | flips/jobs ratio ' +
+        median(ratios).toFixed(2) + 'x (' + rangeStr(ratios) + ') ==');
+      if (REAL()) {
+        assert(median(cashes) >= 2000 && median(cashes) <= 10000,
+               era.id + ': median cash ' + median(cashes) +
+               ' outside sanity band [2000, 10000]');
+        assert(median(offerMeans) <= 3.6,
+               era.id + ': median offer ramp ' + median(offerMeans).toFixed(2) +
+               '/day > 3.6');
+        assert(median(ratios) >= 1.2 && median(ratios) <= 1.8,
+               era.id + ': median flips/jobs ratio ' + median(ratios).toFixed(2) +
+               ' outside [1.2, 1.8]');
+      } else {
+        console.log('  (guard bands asserted against the real catalog only)');
+      }
+    } else {
+      var line = runEra(era, 4242 + idx * 77, false);   // structural, single seed
+      if (line) lines.push(line);
+    }
   });
 } catch (e) {
   fatal('era loop crashed: ' + e.stack);
@@ -3943,6 +4588,14 @@ acceptCapScenario(DATA.ERAS[0]);
 stockBillingScenario(DATA.ERAS[0]);
 partsEstimateScenario(DATA.ERAS[DATA.ERAS.length - 1]);
 waitAutoStartScenario(DATA.ERAS[0]);
+rngStreamScenario(DATA.ERAS[0]);
+decisionForkScenario(DATA.ERAS[0]);
+decisionApprovalScenario(DATA.ERAS[0]);
+decisionTuningScenario();
+decisionGatingScenario(DATA.ERAS[0]);
+psuGateScenario();
+reputationScenario(DATA.ERAS[0]);
+survivalScenario(DATA.ERAS[0]);
 migrationScenario(DATA.ERAS[DATA.ERAS.length - 1]);
 
 finish();

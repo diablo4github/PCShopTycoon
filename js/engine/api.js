@@ -65,8 +65,9 @@
     if (!isFinite(seed)) seed = 42;
     var startDi = null;
     var state = {
-      version: 7,
-      seed: seed, rngState: seed | 0,
+      version: 8,
+      seed: seed,
+      rng: Engine.seedRngStreams(seed),   // §17.5 five named streams
       shopName: String(opts.shopName ||
         ((DATA.FLAVOR && DATA.FLAVOR.shopNameSuggestions) ?
           DATA.FLAVOR.shopNameSuggestions[0] : 'Circuit & Solder')),
@@ -79,8 +80,11 @@
       customBuildsUnlocked: !!era.customBuildsUnlocked,
       flags: { gameOver: false, gameOverReason: null, graceDeadlineDay: null },
       reputation: { rating: Engine.CONFIG.RATING_SEED,
-                    history: [Engine.CONFIG.RATING_SEED, Engine.CONFIG.RATING_SEED,
-                              Engine.CONFIG.RATING_SEED],
+                    // §17.2: history entries are outcome objects now
+                    history: [0, 1, 2].map(function () {
+                      return { score: Engine.CONFIG.RATING_SEED, day: 0, jobId: null,
+                               title: null, reasons: ['opening reputation'] };
+                    }),
                     prestige: 0, jobsCompleted: 0, jobsFailed: 0, callbacks: 0 },
       shop: { tier: startTier, equipment: ['repair-bench'], insurance: false },
       inventory: [],
@@ -406,13 +410,42 @@
     }
     return obj;
   }
+  // v7 -> v8 migration (§17): the RNG stream split + §17.1/§17.2 fields.
+  // Seeding all five streams from v7's single rngState is a documented
+  // ONE-TIME trajectory break — the save stays fully playable, but future
+  // rolls land differently than they would have pre-split.
+  function migrateV7toV8(obj) {
+    obj.version = 8;
+    if (!obj.rng || typeof obj.rng !== 'object') {
+      obj.rng = Engine.seedRngStreams(
+        obj.rngState != null ? obj.rngState : (obj.seed | 0));
+    }
+    delete obj.rngState;
+    // §17.2: wrap old numeric reputation entries
+    if (obj.reputation && Array.isArray(obj.reputation.history)) {
+      obj.reputation.history = obj.reputation.history.map(function (e) {
+        return (typeof e === 'number') ?
+          { score: e, day: null, jobId: null, title: null, reasons: [] } : e;
+      });
+    }
+    // §17.1: decision fields default in on jobs in flight
+    function fixJob(job) {
+      if (!job || typeof job !== 'object') return;
+      if (!('decision' in job)) job.decision = null;
+      if (!('decisionPlan' in job)) job.decisionPlan = null;
+    }
+    (obj.jobs.offers || []).forEach(fixJob);
+    (obj.jobs.active || []).forEach(fixJob);
+    return obj;
+  }
   Engine.importSave = function (str) {
     var obj;
     try { obj = JSON.parse(String(str)); }
     catch (e) { return err('Not valid save JSON'); }
-    if (!obj || [1, 2, 3, 4, 5, 6, 7].indexOf(obj.version) === -1)
+    if (!obj || [1, 2, 3, 4, 5, 6, 7, 8].indexOf(obj.version) === -1)
       return err('Unsupported save version');
-    var required = ['seed', 'rngState', 'eraId', 'startDate', 'day', 'cash',
+    // §17.5: v8 saves carry rng streams instead of the old single rngState
+    var required = ['seed', 'eraId', 'startDate', 'day', 'cash',
                     'hoursLeft', 'flags', 'reputation', 'shop', 'inventory',
                     'jobs', 'asIsMarket', 'market', 'news', 'ledger'];
     for (var i = 0; i < required.length; i++) {
@@ -424,6 +457,7 @@
     if (obj.version === 4) migrateV4toV5(obj);
     if (obj.version === 5) migrateV5toV6(obj);
     if (obj.version === 6) migrateV6toV7(obj);
+    if (obj.version === 7) migrateV7toV8(obj);
     Engine._state = obj;
     return { ok: true };
   };
@@ -483,6 +517,11 @@
   // Deprecated alias for assignPart (one release, §10.3)
   Engine.installPart = function (jobId, needIndex, partId) {
     return Engine.assignPart(jobId, needIndex, partId);
+  };
+  // §17.1: resolve a pending job decision (fork / approval call / tuning).
+  Engine.decideJob = function (jobId, optionId) {
+    var bad = needLive(); if (bad) return bad;
+    return Engine.Jobs.decideJob(S(), jobId, optionId);
   };
   Engine.workJob = function (jobId, hours) {
     var bad = needLive(); if (bad) return bad;
@@ -1124,9 +1163,11 @@
     Engine.addCash(state, -severance);
     if (severance > 0) Engine.ledgerAdd(state, 'other', severance);
     state.staff.splice(state.staff.indexOf(member), 1);
-    Engine.pushScore(state, Engine.CONFIG.FIRE_REP_SCORE);   // small rep ding
+    Engine.pushScore(state, Engine.CONFIG.FIRE_REP_SCORE,
+      { reasons: ['let staff go'] });   // small rep ding
     if ((member.level || 1) >= 4) {   // §11.5: firing senior talent stings double
-      Engine.pushScore(state, Engine.CONFIG.FIRE_REP_SCORE);
+      Engine.pushScore(state, Engine.CONFIG.FIRE_REP_SCORE,
+        { reasons: ['fired a senior employee'] });
     }
     Engine.pushNews(state, 'system', 'Let go: ' + member.name,
       'Two weeks severance paid (' + Engine.fmtMoney(severance) + '). Word gets around.');
@@ -1398,6 +1439,31 @@
   // ------------------------------------------------------------------
   // Misc
   // ------------------------------------------------------------------
+  /* §17.2: newest-first outcome log with a per-entry delta vs the current
+   * rolling mean (positive = this outcome pulled the stars up). */
+  Engine.getReputationLog = function (limit) {
+    var state = S();
+    if (!state) return [];
+    var n = limit == null ? 15 : Math.max(1, limit | 0);
+    var h = state.reputation.history || [];
+    var out = [];
+    for (var i = h.length - 1; i >= 0 && out.length < n; i--) {
+      var e = h[i];
+      var score = Engine.entryScore(e);
+      out.push({
+        score: score,
+        day: (e && typeof e === 'object') ? e.day : null,
+        dayLabel: (e && typeof e === 'object' && e.day != null) ?
+          Engine.dateInfo(e.day, state).label : null,
+        jobId: (e && typeof e === 'object') ? e.jobId : null,
+        title: (e && typeof e === 'object') ? e.title : null,
+        reasons: (e && typeof e === 'object' && Array.isArray(e.reasons)) ?
+          e.reasons.slice() : [],
+        delta: Engine.round2(score - state.reputation.rating)
+      });
+    }
+    return out;
+  };
   Engine.getNews = function (limit) {
     if (!S()) return [];
     return S().news.slice(0, limit == null ? 50 : Math.max(0, limit | 0));

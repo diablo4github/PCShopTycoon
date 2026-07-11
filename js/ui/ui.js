@@ -32,7 +32,7 @@
     tutorialToggle: undefined,// §13.5 New Game screen tour checkbox (undefined = not yet decided this session)
     saveUrl: null,            // objectURL of the last exported save blob
     /* §16.1 — active sub-tab per main tab (session-level persistence). */
-    subTab: { workbench: 'active', ledger: 'finances', shop: 'upgrade', offers: 'all' }
+    subTab: { workbench: 'active', ledger: 'finances', shop: 'upgrade', offers: 'all', news: 'all' } /* §17.6 */
   };
 
   /* ------------------------------------------------------------------ *
@@ -201,7 +201,11 @@
     if (UI.engineReady()) {
       try {
         var st0 = Engine.getState();
-        if (st0) before = { cash: Number(st0.cash) || 0, hours: Number(st0.hoursLeft) || 0 };
+        if (st0) before = {
+          cash: Number(st0.cash) || 0,
+          hours: Number(st0.hoursLeft) || 0,
+          rating: st0.reputation ? (Number(st0.reputation.rating) || 0) : null  // §17.2
+        };
       } catch (e) { /* ignore */ }
     }
     var res = UI.tryCall(fn);
@@ -211,7 +215,12 @@
         if (st1) {
           var dc = Math.round(((Number(st1.cash) || 0) - before.cash) * 100) / 100;
           var dh = Math.round(((Number(st1.hoursLeft) || 0) - before.hours) * 100) / 100;
-          UI.feedback(dc, dh);
+          /* §17.2 — rating floats like cash/hours: any mutation that moves
+           * the stars (completion, wait-tick finish, abandon, callbacks…)
+           * shows its ★ delta, no per-call wiring needed. */
+          var drt = (before.rating !== null && st1.reputation)
+            ? Math.round(((Number(st1.reputation.rating) || 0) - before.rating) * 100) / 100 : 0;
+          UI.feedback(dc, dh, drt);
         }
       } catch (e2) { /* ignore */ }
     }
@@ -256,8 +265,10 @@
     } catch (e) { /* never let celebration break the action */ }
   };
 
-  /** Spawn the §9.9 floating deltas / pip pulse for a cash & hours change. */
-  UI.feedback = function (cashDelta, hoursDelta) {
+  /** Spawn the §9.9 floating deltas / pip pulse for a cash & hours change
+   * (+ §17.2 the ★ rating delta). */
+  UI.feedback = function (cashDelta, hoursDelta, ratingDelta) {
+    if (ratingDelta) UI.floatRatingDelta(ratingDelta);
     if (cashDelta) {
       UI.floatDelta(document.getElementById('hdr-cash'),
         (cashDelta > 0 ? '+' : '-') + UI.fm(Math.abs(cashDelta)),
@@ -288,6 +299,17 @@
     el.style.top = Math.max(4, (rect.bottom + 6) / z) + 'px';
     document.body.appendChild(el);
     window.setTimeout(function () { if (el.parentNode) el.parentNode.removeChild(el); }, 750);
+  };
+
+  /** §17.2 — ★-styled rating-delta float near the header stars, same
+   * pattern as the cash/hours floats. Reads result.ratingDelta from job
+   * completion/failure; silent on 0/absent (feature-detected). */
+  UI.floatRatingDelta = function (delta) {
+    var d = Number(delta);
+    if (!isFinite(d) || d === 0) return;
+    var txt = (d > 0 ? '+' : '−') + Math.abs(d).toFixed(2) + '★';
+    UI.floatDelta(document.getElementById('hdr-rating'), txt,
+      d > 0 ? 'd-rating-up' : 'd-rating-down');
   };
 
   /* ------------------------------------------------------------------ *

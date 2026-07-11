@@ -1873,3 +1873,101 @@ body.era-early .account-card { border-left-color: var(--accent); }
 @media (max-width: 640px) {
   .go-card .end-banner { height: 130px; }
 }
+
+/* ==========================================================================
+   v0.7 additions (SPEC §17) — The Craft Update
+   ========================================================================== */
+
+/* ---------- §17.1 decision moments — the amber pause card ---------- */
+.decision-card {
+  border: 2px solid var(--warn);
+  border-radius: var(--radius);
+  background: rgba(201, 118, 43, 0.07);
+  padding: 10px 12px;
+  margin: 8px 0;
+  box-shadow: 0 0 0 3px rgba(201, 118, 43, 0.12);
+}
+.decision-card .dec-head { font-size: 14px; margin-bottom: 4px; }
+.decision-card .dec-chip {
+  background: rgba(201, 118, 43, 0.16);
+  border-color: var(--warn);
+  color: #8a4c12;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 10px;
+}
+.decision-card .dec-prompt {
+  font-style: italic;
+  margin: 2px 0 8px;
+  overflow-wrap: break-word;
+}
+.dec-options { display: flex; gap: 8px; flex-wrap: wrap; }
+.dec-option {
+  flex: 1 1 200px;
+  max-width: 340px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  text-align: left;
+  padding: 8px 11px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--panel-bg);
+  color: var(--ink);
+  cursor: pointer;
+  transition: border-color 0.1s ease, box-shadow 0.1s ease;
+}
+.dec-option:hover, .dec-option:focus-visible {
+  border-color: var(--warn);
+  box-shadow: 0 0 0 2px rgba(201, 118, 43, 0.18);
+}
+.dec-option .dec-label { font-size: 13px; }
+.dec-option .dec-summary { color: var(--muted); white-space: normal; overflow-wrap: break-word; }
+
+/* post-diagnosis revised estimate line (§17.1) */
+.revised-est {
+  color: var(--muted);
+  font-weight: 600;
+  border-left: 3px solid var(--accent);
+  padding-left: 8px;
+  overflow-wrap: break-word;
+}
+
+/* ---------- §17.2 rating transparency ---------- */
+.float-delta.d-rating-up { color: #e0a100; }
+.float-delta.d-rating-down { color: #ff7a6b; }
+.rep-panel {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-bg);
+  padding: 10px 12px;
+  margin: 6px 0 14px;
+  max-width: 860px;
+}
+.rep-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.rep-head .rep-val { font-weight: 700; font-size: 15px; }
+.rep-prestige { margin: 4px 0 6px; }
+.rep-log td { vertical-align: top; }
+.chip.rep-reason {
+  white-space: normal;
+  overflow-wrap: break-word;
+  border-radius: 6px;
+}
+.chip.rep-reason.pos { background: rgba(28, 124, 60, 0.1); border-color: rgba(28, 124, 60, 0.4); color: var(--good); }
+.chip.rep-reason.neg { background: rgba(179, 53, 44, 0.1); border-color: rgba(179, 53, 44, 0.4); color: #7a231c; }
+
+/* ---------- §17 PSU-adequacy flag (needs picker meta line) ---------- */
+.chip-overpsu {
+  background: rgba(201, 118, 43, 0.14);
+  border: 1px solid var(--warn);
+  color: #8a4c12;
+  font-size: 10.5px;
+  font-weight: 700;
+  border-radius: 6px;
+  padding: 1px 8px;
+  cursor: help;
+  white-space: normal;
+  overflow-wrap: break-word;
+  max-width: 100%;
+}

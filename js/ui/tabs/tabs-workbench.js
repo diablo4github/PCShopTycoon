@@ -43,6 +43,13 @@
       }
     }
     if (r && r.ok !== false) {
+      /* §17.1 — a mid-job discovery/tuning moment just fired: surface it
+       * loudly; the amber decision card renders on the refresh. */
+      if (r.decisionPending) {
+        UI.toast('📞 ' + (r.decisionPrompt || 'Something turned up — there is a decision waiting on the job card'), 'info', 7000);
+        if (UI.audio && UI.audio.sfx) UI.audio.sfx('callback');
+        return;
+      }
       if (r.completed) {
         var res = r.result || {};
         var msg = 'Job finished';
@@ -52,6 +59,8 @@
         if (res.notes) msg += ' • ' + res.notes;
         UI.toast(msg, 'success', 6500);
         if (UI.audio && UI.audio.sfx && !res.payout) UI.audio.sfx('complete');
+        /* §17.2 — the ★ delta float itself comes from UI.act's rating diff
+         * (workGraduated mirrors it), so every completion path is covered. */
       } else if (r.hoursSpent) {
         UI.toast('Worked ' + fmtHours(r.hoursSpent) + 'h', 'info', 1600);
       }
@@ -79,7 +88,11 @@
     if (UI.engineReady()) {
       try {
         var st0 = Engine.getState();
-        if (st0) before = { cash: Number(st0.cash) || 0, hours: Number(st0.hoursLeft) || 0 };
+        if (st0) before = {
+          cash: Number(st0.cash) || 0,
+          hours: Number(st0.hoursLeft) || 0,
+          rating: st0.reputation ? (Number(st0.reputation.rating) || 0) : null  // §17.2
+        };
       } catch (e) { /* ignore */ }
     }
     var r = UI.tryCall(function () { return Engine.workJob(jobId, mode); });
@@ -99,7 +112,9 @@
         if (st1) {
           var dc = Math.round(((Number(st1.cash) || 0) - before.cash) * 100) / 100;
           var dh = Math.round(((Number(st1.hoursLeft) || 0) - before.hours) * 100) / 100;
-          UI.feedback(dc, dh);
+          var drt = (before.rating !== null && st1.reputation)
+            ? Math.round(((Number(st1.reputation.rating) || 0) - before.rating) * 100) / 100 : 0;  // §17.2
+          UI.feedback(dc, dh, drt);
         }
       } catch (e2) { /* ignore */ }
     }
@@ -280,6 +295,10 @@
 
     if (j.blurb) h += '<div class="blurb">&ldquo;' + esc(j.blurb) + '&rdquo;</div>';
 
+    /* §17.1 — pending decision: the amber card that pauses the job */
+    var decPending = decisionPendingUI(j);
+    if (decPending) h += decisionCardHTML(j);
+
     /* progress (animated across renders, §9.9) */
     h += '<div class="bar-row"><span class="muted small">Progress</span>' +
       animatedBar('job-' + j.id, j.hoursDone, j.hoursRequired, 'wide') +
@@ -325,6 +344,16 @@
           ? ' <span class="chip">' + esc(catLabel(j.fault.partCategory)) + ' part needed</span>'
           : ' <span class="chip">Labor only</span>') +
         '</div>';
+      /* §17.1 — post-diagnosis revised estimate on repairs: labor is the
+       * quoted pay; the parts range is now known (billed +25%). */
+      if (j.type === 'repair' && j.partsEstimate &&
+          j.partsEstimate.min !== null && j.partsEstimate.min !== undefined &&
+          j.partsEstimate.max !== null && j.partsEstimate.max !== undefined) {
+        h += '<div class="meta-row"><span class="revised-est small" title="The quote covers labor; the replacement part is billed to the customer at +25% of what you pay for it">' +
+          'Revised estimate: ' + esc(fm(j.pay)) + ' labor + ~' +
+          esc(fm(j.partsEstimate.min)) + '–' + esc(fm(j.partsEstimate.max)) +
+          ' parts (billed to customer +25%)</span></div>';
+      }
     }
 
     /* §12.4 device repairs: device line + kind chip; NO catalog parts —
@@ -395,13 +424,18 @@
     } else if (!diagFallback && !buildPending) {
       /* §14.8 — four graduated work controls, smallest to largest. "Finish
        * Step" needs a discrete current step to aim at; grey it out (with a
-       * reason) when there isn't one. */
+       * reason) when there isn't one. §17.1 — a pending decision pauses the
+       * bench: the blocked state must read clearly, not error-toast. */
+      var decAttr = decPending
+        ? ' disabled title="Waiting on your decision — pick an option on the card above"'
+        : '';
       var hasCurStep = currentStepIndex(j) >= 0;
-      var tinkerAttr = hourAttr || ' title="Work just 6 minutes — the smallest useful nudge"';
-      var stepAttr = !hasCurStep
+      var tinkerAttr = decAttr || hourAttr || ' title="Work just 6 minutes — the smallest useful nudge"';
+      var stepAttr = decAttr || (!hasCurStep
         ? ' disabled title="No discrete step in progress right now"'
-        : (hourAttr || ' title="Work until the current step is done"');
-      var jobAttr = hourAttr || ' title="Work until the job is finished (or you run out of useful hours)"';
+        : (hourAttr || ' title="Work until the current step is done"'));
+      var jobAttr = decAttr || hourAttr || ' title="Work until the job is finished (or you run out of useful hours)"';
+      hourAttr = decAttr || hourAttr;
       h += '<button type="button" class="btn btn-sm" data-action="work-tinker" data-job="' + j.id + '"' +
         tinkerAttr + '>Tinker (6 min)</button>' +
         '<button type="button" class="btn btn-sm" data-action="work-step" data-job="' + j.id + '"' +
@@ -427,6 +461,42 @@
 
   function speedOpt(j, val, label) {
     return '<option value="' + val + '"' + (j.speed === val ? ' selected' : '') + '>' + esc(label) + '</option>';
+  }
+
+  /* ------------------------------------------------------------------ *
+   * §17.1 — job decision moments. The engine pauses the job with
+   * job.decision = { kind: 'fork'|'approval'|'tuning', chosen: null,
+   * prompt, options: [{id, label, summary}] }; the card shows the honest
+   * trade-offs and resolves through Engine.decideJob (feature-detected).
+   * ------------------------------------------------------------------ */
+  function decisionPendingUI(j) {
+    return !!(j && j.decision && j.decision.chosen === null && has('decideJob') &&
+      Array.isArray(j.decision.options) && j.decision.options.length);
+  }
+
+  var DECISION_META = {
+    fork: { ico: '🔀', title: 'Your call, boss' },
+    approval: { ico: '📞', title: 'Found something — call the customer?' },
+    tuning: { ico: '🎛', title: 'How hard do you push it?' }
+  };
+  function decisionCardHTML(j) {
+    var d = j.decision;
+    var meta = DECISION_META[d.kind] || { ico: '❔', title: 'Decision needed' };
+    var h = '<div class="decision-card" id="decision-' + j.id + '">' +
+      '<div class="dec-head">' + meta.ico + ' <b>' + esc(meta.title) + '</b>' +
+        ' <span class="chip dec-chip">work paused</span></div>' +
+      (d.prompt ? '<div class="dec-prompt">' + esc(d.prompt) + '</div>' : '') +
+      '<div class="dec-options">';
+    d.options.forEach(function (o) {
+      if (!o) return;
+      h += '<button type="button" class="dec-option" data-action="decide" data-job="' + j.id +
+        '" data-option="' + esc(o.id) + '">' +
+        '<b class="dec-label">' + esc(o.label || o.id) + '</b>' +
+        (o.summary ? '<span class="dec-summary small">' + esc(o.summary) + '</span>' : '') +
+        '</button>';
+    });
+    h += '</div></div>';
+    return h;
   }
 
   /* §10.1/§11.3/§11.6 — step checklist: ✓ done, ▶ current (partial %),
@@ -1058,6 +1128,20 @@
     'work-step': function (el, jobId) { workGraduated(jobId, 'step'); },
     'work-hour': function (el, jobId) { workGraduated(jobId, 1); },
     'work-job': function (el, jobId) { workGraduated(jobId, 'job'); },
+    'decide': function (el, jobId) { /* §17.1 — resolve a decision moment */
+      if (!has('decideJob')) { UI.toast('Decisions are not available yet', 'info'); return; }
+      var optId = el.getAttribute('data-option');
+      var chosenLabel = '';
+      var dj = activeJobById(jobId);
+      if (dj && dj.decision && Array.isArray(dj.decision.options)) {
+        dj.decision.options.forEach(function (o) { if (o && o.id === optId) chosenLabel = o.label || o.id; });
+      }
+      var dres = UI.act(function () { return Engine.decideJob(jobId, optId); });
+      if (dres && dres.ok !== false) {
+        UI.toast('Decision made' + (chosenLabel ? ': ' + chosenLabel : '') +
+          (dres.note ? ' — ' + dres.note : ' — the bench is moving again'), 'success', 5000);
+      }
+    },
     'abandon': function (el, jobId) {
       UI.confirm(
         'Abandon this job? The customer will not be happy — your reputation takes a hit.',

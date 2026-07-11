@@ -260,8 +260,15 @@
       Engine.ledgerAdd(state, 'fixedCosts', amount);
       summary.charges.push({ label: label, amount: -amount });
     }
-    // §15.6 difficulty + §15.2 scenario rent modifiers stack multiplicatively
-    var rentMult = Engine.difficultyFor(state).rentMult || 1;
+    // §15.6 difficulty + §15.2 scenario rent modifiers stack multiplicatively.
+    // §17.4: Survival adds compounding quarterly rent creep, capped.
+    var diffSet = Engine.difficultyFor(state);
+    var rentMult = diffSet.rentMult || 1;
+    if (diffSet.rentCreepQuarterly > 0) {
+      var quarters = Math.floor(state.day / 91);
+      rentMult *= Math.min(diffSet.rentCreepCap || 999,
+                           Math.pow(1 + diffSet.rentCreepQuarterly, quarters));
+    }
     var scen = Engine.currentScenario(state);
     if (scen && scen.modifiers && scen.modifiers.rentMult > 0)
       rentMult *= scen.modifiers.rentMult;
@@ -417,14 +424,14 @@
       state.ledger.lifetime.graceDays = (state.ledger.lifetime.graceDays || 0) + 1;
       if (f.graceDeadlineDay == null) {
         f.graceDeadlineDay = state.day + graceDays;
-        Engine.pushNews(state, 'money', 'The account is overdrawn',
+        Engine.pushNews(state, 'warning', 'The account is overdrawn',
           'Creditors give you ' + graceDays + ' days to get back in the black.');
       }
       if (state.day > f.graceDeadlineDay) {
         f.gameOver = true;
         f.gameOverReason = 'Bankruptcy — the creditors called time.';
         summary.gameOver = true;
-        Engine.pushNews(state, 'money', 'Bankrupt',
+        Engine.pushNews(state, 'warning', 'Bankrupt',
           'The shutters come down for the last time.');
         return;
       }
@@ -491,21 +498,21 @@
       if (!rec.warned && state.day >= w.warnDay) {
         // A late warning after the start would read backwards — skip it then.
         if (state.day < w.startDay && t.newsLead) {
-          Engine.pushNews(state, 'event', t.newsLead,
+          Engine.pushNews(state, 'transition', t.newsLead,
             'Industry chatter says a platform shift is coming. Staff will need ' +
             'retraining, and stock on the old standard will bleed value once it lands.');
         }
         rec.warned = true;
       }
       if (!rec.started && state.day >= w.startDay && state.day < w.endDay) {
-        Engine.pushNews(state, 'event', 'Transition underway: ' + (t.name || t.id),
+        Engine.pushNews(state, 'transition', 'Transition underway: ' + (t.name || t.id),
           (t.body || '') + (Engine.transitionBoostTypes(t).length ?
             ' Retrain the crew — unretrained techs work the hot job types at half effect.' : ''));
         rec.started = true;
         rec.warned = true;
       }
       if (!rec.ended && state.day >= w.endDay) {
-        Engine.pushNews(state, 'event', 'The dust settles: ' + (t.name || t.id),
+        Engine.pushNews(state, 'transition', 'The dust settles: ' + (t.name || t.id),
           'The market has moved on. The new platform is simply how things are now.');
         rec.ended = true;
         rec.started = true;
@@ -539,7 +546,8 @@
         reason = 'too many of their jobs failed this month';
       if (!reason) continue;
       accounts.splice(i, 1);
-      Engine.pushScore(state, C.ACCOUNT_CANCEL_SCORE);
+      Engine.pushScore(state, C.ACCOUNT_CANCEL_SCORE,
+        { title: 'Account: ' + acct.name, reasons: ['lost a business account'] });
       Engine.pushNews(state, 'money', 'Account cancelled: ' + acct.name,
         'They pulled the retainer — ' + reason + '. Word travels in business circles.');
       if (summary) summary.expired.push('Business account: ' + acct.name + ' (cancelled)');

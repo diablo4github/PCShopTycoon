@@ -77,6 +77,9 @@
     var scen = Engine.currentScenario(state);
     if (scen && scen.modifiers && scen.modifiers.offerMult > 0)
       count = Math.max(0, Math.round(count * scen.modifiers.offerMult));
+    // §17.4: Survival sees one fewer walk-in a night, floored at 1
+    var offerDelta = Engine.difficultyFor(state).offerDelta || 0;
+    if (offerDelta) count = Math.max(1, count + offerDelta);
     var made = [];
     for (var n = 0; n < count; n++) {
       var job = makeOffer(state);
@@ -241,6 +244,7 @@
       if (!job) continue;
       job.customer = { name: acct.name, type: 'smallbiz' };
       job.accountId = acct.id;
+      job.decision = null; job.decisionPlan = null;   // §17.1: never on retainer work
       job.regular = false; job.regularVisits = null;
       job.taste = null;                       // businesses buy on spec, not fandom
       job.title = job.title + ' (' + acct.name + ')';
@@ -257,6 +261,380 @@
         job.title + ' — on the bench under the retainer.');
     }
   };
+
+  // ------------------------------------------------------------------
+  // §17.1 Job decision moments — forks, approval calls, overclock tuning.
+  // All rolls on the FAULTS stream (§17.5); at most ONE armed plan per job;
+  // never on cleaning/callbacks/business-account auto-jobs. DATA tables
+  // (FORK_TEXT / DISCOVERIES / TUNING_TEXT) are consumed when present, with
+  // engine fallbacks so mock runs and in-flight data edits stay playable.
+  // ------------------------------------------------------------------
+  var FORK_TEXT_FALLBACK = {
+    patchLabel: 'Reseat & patch it', properLabel: 'Replace the failing part',
+    patchDesc: 'Quick and cheap, but patched faults have a way of coming back.',
+    properDesc: 'The full fix at the quoted terms — tested, warranted, done.'
+  };
+  function forkTextFor(job) {
+    var table = Engine.getData().FORK_TEXT || {};
+    var key = job.type === 'device_repair' ? 'device' :
+      ((job.fault && job.fault.partCategory) || 'generic');
+    return table[key] || table.generic || FORK_TEXT_FALLBACK;
+  }
+  var DISCOVERY_FALLBACK = [
+    { category: 'psu', text: 'The power supply is bulging and smells of burnt varnish.',
+      addCategory: 'psu', addLaborHours: 0.4 },
+    { category: 'storage', text: 'That drive bearing whine is not long for this world.',
+      addCategory: 'storage', addLaborHours: 0.4 },
+    { category: 'device', text: 'The battery inside is starting to swell.',
+      addCategory: null, addLaborHours: 0.4 }
+  ];
+  /* Work-context category for discovery selection (DATA contract: `category`
+   * = what you're working ON when the discovery fires; "device" for devices). */
+  function discoveryContextFor(job) {
+    if (job.type === 'device_repair') return 'device';
+    if (job.type === 'upgrade') return job.needs[0] ? job.needs[0].category : null;
+    if (job.type === 'repair') return (job.fault && job.fault.partCategory) || 'generic';
+    if (isBuildJob(job)) return 'motherboard';   // assembly bench context
+    return null;
+  }
+  function pickDiscovery(state, job) {
+    var year = Engine.currentYear(state);
+    var pool = Engine.getData().DISCOVERIES;
+    if (!Array.isArray(pool) || !pool.length) pool = DISCOVERY_FALLBACK;
+    var ctx = discoveryContextFor(job);
+    var inYear = pool.filter(function (d) {
+      if (d.minYear != null && year < d.minYear) return false;
+      if (d.maxYear != null && year > d.maxYear) return false;
+      // A discovery must be sourceable: catalog add-ons need a purchasable part
+      if (d.addCategory && !purchasableByCategory(state, d.addCategory).length) return false;
+      // Device-billed add-ons (addCategory null) only make sense on device jobs
+      if (!d.addCategory && job.type !== 'device_repair') return false;
+      return true;
+    });
+    var matched = inYear.filter(function (d) { return d.category === ctx; });
+    return Engine.pick(matched.length ? matched : inYear, 'faults') || null;
+  }
+  function tuningTextFor(state) {
+    var year = Engine.currentYear(state);
+    var bands = Engine.getData().TUNING_TEXT;
+    if (Array.isArray(bands)) {
+      for (var i = 0; i < bands.length; i++) {
+        var b = bands[i];
+        if (year >= (b.minYear || 0) && year <= (b.maxYear || 9999)) return b;
+      }
+    }
+    return { method: year < 1998 ? 'Jumpers & bus clocks' :
+                     year < 2010 ? 'FSB & multipliers' : 'BCLK & turbo bins',
+             conservative: 'One safe notch up at stock voltage.',
+             balanced: 'A solid bump with an overnight burn-in.',
+             aggressive: 'Push it to the edge — glory or a redo.' };
+  }
+  function midLaborStep(job) {
+    var steps = job.steps || [];
+    var idx = Math.floor(steps.length / 2);
+    while (idx < steps.length && steps[idx].kind === 'wait') idx++;
+    return Math.min(Math.max(1, idx), Math.max(0, steps.length - 1));
+  }
+  /* Arm at most one decision moment at generation (faults stream). */
+  function armDecisionPlan(state, job) {
+    var C = CFG();
+    job.decision = null;
+    job.decisionPlan = null;
+    if (job.type === 'cleaning' || job.type === 'callback' ||
+        job.type === 'business_account' || job.accountId) return;
+    // Overclock: the tuning choice IS the job (§17.1)
+    if (job.type === 'enthusiast' && job.subtype === 'overclock') {
+      if (Engine.chance(C.TUNING_CHANCE, 'faults')) {
+        job.decisionPlan = { kind: 'tuning', stepIndex: midLaborStep(job), fired: false };
+      }
+      return;
+    }
+    var forkable = (job.type === 'repair' && job.fault && job.fault.partCategory) ||
+                   job.type === 'device_repair';
+    var approvable = job.type === 'repair' || job.type === 'upgrade' ||
+                     job.type === 'build' || job.type === 'device_repair';
+    if (!forkable && !approvable) return;   // software/peripheral/dr/contract: none
+    if (!Engine.chance(C.DECISION_CHANCE, 'faults')) return;
+    var kind;
+    if (job.type === 'device_repair') kind = Engine.chance(0.5, 'faults') ? 'fork' : 'approval';
+    else if (job.type === 'repair') kind = forkable ? 'fork' : 'approval';
+    else kind = 'approval';
+    if (kind === 'fork') {
+      job.decisionPlan = { kind: 'fork', fired: false };
+      // Devices skip the diagnosis phase — their fork is live immediately.
+      if (!job.needsDiagnosis) fireForkDecision(state, job);
+    } else {
+      var disc = pickDiscovery(state, job);
+      if (!disc) return;
+      job.decisionPlan = { kind: 'approval', fired: false,
+                           stepIndex: midLaborStep(job),
+                           discovery: { category: disc.category,
+                                        text: disc.text,
+                                        addCategory: disc.addCategory || null,
+                                        addLaborHours: Engine.round1(disc.addLaborHours || 0.5) } };
+    }
+  }
+  Jobs.armDecisionPlan = armDecisionPlan;
+
+  function fireForkDecision(state, job) {
+    var plan = job.decisionPlan;
+    if (!plan || plan.kind !== 'fork' || plan.fired) return;
+    plan.fired = true;
+    var C = CFG();
+    var txt = forkTextFor(job);
+    job.decision = {
+      kind: 'fork', chosen: null,
+      prompt: 'Two ways to fix this — your call.',
+      options: [
+        { id: 'patch', label: txt.patchLabel || FORK_TEXT_FALLBACK.patchLabel,
+          summary: (txt.patchDesc || '') + ' (' +
+            Math.round((1 - C.FORK_PATCH.hoursMult) * 100) + '% less bench time, ' +
+            Math.round((1 - C.FORK_PATCH.payMult) * 100) + '% less pay, no parts — ' +
+            'x' + C.FORK_PATCH.callbackMult + ' callback risk)' },
+        { id: 'proper', label: txt.properLabel || FORK_TEXT_FALLBACK.properLabel,
+          summary: (txt.properDesc || '') + ' (full fix at the quoted terms)' }
+      ]
+    };
+  }
+  Jobs.fireForkDecision = fireForkDecision;
+
+  function fireApprovalDecision(state, job) {
+    var plan = job.decisionPlan;
+    if (!plan || plan.kind !== 'approval' || plan.fired) return;
+    plan.fired = true;
+    var C = CFG();
+    var d = plan.discovery;
+    job.decision = {
+      kind: 'approval', chosen: null,
+      prompt: d.text,
+      discovery: { category: d.addCategory, text: d.text },
+      options: [
+        { id: 'call', label: 'Call the customer (' + C.APPROVAL_CALL_HOURS + 'h)',
+          summary: 'Most say yes — approved work adds parts (billed +25%) and ' +
+                   'labor, and customers love a shop that catches things.' },
+        { id: 'skip', label: 'Leave it',
+          summary: 'Not your problem today — but if it fails under warranty, ' +
+                   'that callback lands on you.' }
+      ]
+    };
+  }
+
+  function fireTuningDecision(state, job) {
+    var plan = job.decisionPlan;
+    if (!plan || plan.kind !== 'tuning' || plan.fired) return;
+    plan.fired = true;
+    var C = CFG();
+    var txt = tuningTextFor(state);
+    job.decision = {
+      kind: 'tuning', chosen: null,
+      prompt: 'How hard do you push it? (' + (txt.method || 'Tuning') + ')',
+      method: txt.method || null,
+      options: [
+        { id: 'conservative', label: 'Conservative',
+          summary: (txt.conservative || '') + ' (+' + C.TUNING.conservative.scoreBonus +
+                   ' rating, no risk)' },
+        { id: 'balanced', label: 'Balanced',
+          summary: (txt.balanced || '') + ' (+' + C.TUNING.balanced.scoreBonus +
+                   ' rating, ' + Math.round(C.TUNING.balanced.risk * 100) + '% instability)' },
+        { id: 'aggressive', label: 'Aggressive',
+          summary: (txt.aggressive || '') + ' (+' + C.TUNING.aggressive.scoreBonus +
+                   ' rating if it holds, ' + Math.round(C.TUNING.aggressive.risk * 100) +
+                   '% instability = redo + rating ding)' }
+      ]
+    };
+  }
+
+  function decisionPending(job) {
+    return !!(job.decision && job.decision.chosen == null);
+  }
+  Jobs.decisionPending = decisionPending;
+
+  /* §17.1 (+PSU gate): resolve a pending decision. */
+  Jobs.decideJob = function (state, jobId, optionId) {
+    var job = Jobs.findActive(state, jobId);
+    if (!job) return err('Job not active');
+    if (!decisionPending(job)) return err('No decision is waiting on this job');
+    var C = CFG();
+    var d = job.decision;
+    var valid = d.options.some(function (o) { return o.id === optionId; });
+    if (!valid) return err('Pick one of the offered options');
+    var year = Engine.currentYear(state);
+
+    if (d.kind === 'fork') {
+      if (optionId === 'patch') {
+        // Labor-only patch: cheaper/faster now, riskier later
+        job.needs = [];
+        if (job.type === 'device_repair') {
+          job.devicePartsCost = Engine.round2(
+            job.devicePartsCost * C.FORK_PATCH.devicePartsMult);
+        }
+        for (var i = job.stepIndex; i < job.steps.length; i++) {
+          var st = job.steps[i];
+          st.needIndex = null;   // no part to wait for on a patch
+          st.hours = Engine.round1(Math.max(0.1, st.hours * C.FORK_PATCH.hoursMult));
+        }
+        recomputeHours(job);
+        job.pay = Math.round((job.pay || 0) * C.FORK_PATCH.payMult);
+        job.callbackRiskMult = (job.callbackRiskMult || 1) * C.FORK_PATCH.callbackMult;
+        job.decisionTaken = { kind: 'fork', option: 'patch' };
+      } else {
+        job.decisionTaken = { kind: 'fork', option: 'proper' };
+      }
+      d.chosen = optionId;
+      return { ok: true, kind: 'fork', option: optionId };
+    }
+
+    if (d.kind === 'approval') {
+      // The coordinator's PSU gate rides this same flow (subkind 'psu').
+      if (optionId === 'skip') {
+        d.chosen = 'skip';
+        if (d.subkind === 'psu') {
+          job.psuSwapDeclined = true;
+          return { ok: true, kind: 'approval', option: 'skip',
+                   note: 'Pick a lighter option for the machine’s supply' };
+        }
+        job.callbackRiskMult = (job.callbackRiskMult || 1) * C.APPROVAL_SKIP_CALLBACK_MULT;
+        job.approvalSkipped = true;
+        job.decisionTaken = { kind: 'approval', option: 'skip' };
+        return { ok: true, kind: 'approval', option: 'skip' };
+      }
+      // 'call': 0.1h on the phone, seeded outcome
+      var sp = Engine.spendHours(state, C.APPROVAL_CALL_HOURS);
+      if (!sp.ok) return sp;   // too exhausted — decision stays pending
+      var approved = Engine.chance(C.APPROVAL_YES_CHANCE, 'faults');
+      d.chosen = 'call';
+      if (!approved) {
+        if (d.subkind === 'psu') {
+          job.psuSwapDeclined = true;
+          return { ok: true, kind: 'approval', option: 'call', approved: false,
+                   note: 'They said no — pick a part their supply can feed' };
+        }
+        job.approvalRefused = true;
+        job.decisionTaken = { kind: 'approval', option: 'call', approved: false };
+        return { ok: true, kind: 'approval', option: 'call', approved: false };
+      }
+      // Approved: add the quoted work
+      if (d.subkind === 'psu') {
+        job.psuSwapApproved = true;
+        var reqW = Math.ceil((d.pendingDraw || 0) * C.PSU_HEADROOM *
+                             C.PSU_SWAP_HEADROOM_MULT);
+        var ffTags = machineMoboTags(job, 'psu');
+        job.needs.push({ category: 'psu', anyOfTags: ffTags, minPerf: null,
+                         minWatts: reqW, qty: 1, filledPartIds: [],
+                         label: 'Approved PSU swap — at least ' + reqW + 'W',
+                         originalPartId: machinePartIdOf(job, 'psu') });
+        appendApprovedStep(state, job, 'Swap in the beefier power supply',
+                           C.PSU_SWAP_HOURS, job.needs.length - 1);
+        job.pay = Math.round((job.pay || 0) +
+                             Engine.laborRate(year) * C.PSU_SWAP_HOURS);
+        job.approvalDelight = true;
+        job.decisionTaken = { kind: 'approval', option: 'call', approved: true, psu: true };
+        return { ok: true, kind: 'approval', option: 'call', approved: true, psu: true };
+      }
+      var disc = (job.decisionPlan && job.decisionPlan.discovery) || {};
+      var addHours = Engine.round1(disc.addLaborHours || C.APPROVAL_ADD_HOURS);
+      if (disc.addCategory) {
+        job.needs.push({ category: disc.addCategory,
+                         anyOfTags: machineMoboTags(job, disc.addCategory),
+                         minPerf: null, qty: 1, filledPartIds: [],
+                         label: 'Approved add-on: ' + disc.addCategory,
+                         originalPartId: machinePartIdOf(job, disc.addCategory) });
+        appendApprovedStep(state, job, 'Fit the approved ' + disc.addCategory,
+                           addHours, job.needs.length - 1);
+        var labor = Engine.laborRate(year) * addHours;
+        // Builds never run the completion parts-markup pass — bill the add-on
+        // part estimate up front for them; needs-billed types get it at 1.25x
+        // automatically at completion.
+        if (isBuildJob(job)) {
+          var estP = medianPartPrice(state, disc.addCategory);
+          job.pay = Math.round((job.pay || 0) + estP * C.PARTS_MARKUP + labor);
+        } else {
+          job.pay = Math.round((job.pay || 0) + labor);
+        }
+      } else {
+        // Device-billed add-on: flat parts money + labor (no catalog part)
+        var addCost = Engine.round2(Engine.laborRate(year) * 1.2);
+        job.devicePartsCost = Engine.round2((job.devicePartsCost || 0) + addCost);
+        appendApprovedStep(state, job, 'Fit the approved add-on', addHours, null);
+        job.pay = Math.round((job.pay || 0) + addCost * C.PARTS_MARKUP +
+                             Engine.laborRate(year) * addHours);
+      }
+      job.approvalDelight = true;
+      job.decisionTaken = { kind: 'approval', option: 'call', approved: true };
+      return { ok: true, kind: 'approval', option: 'call', approved: true };
+    }
+
+    if (d.kind === 'tuning') {
+      var t = C.TUNING[optionId];
+      if (!t) return err('Pick one of the offered options');
+      d.chosen = optionId;
+      job.tuningChoice = optionId;
+      job.tuningUnstable = t.risk > 0 && Engine.chance(t.risk, 'faults');
+      if (job.tuningUnstable) {
+        appendApprovedStep(state, job, 'Back off the clocks & redo the burn-in',
+                           C.TUNING_REDO_HOURS, null);
+      }
+      job.decisionTaken = { kind: 'tuning', option: optionId,
+                            unstable: !!job.tuningUnstable };
+      return { ok: true, kind: 'tuning', option: optionId,
+               unstable: !!job.tuningUnstable };
+    }
+    return err('Unknown decision kind');
+  };
+
+  // Helpers shared by the decision flows
+  function machineMoboTags(job, category) {
+    if (!job.machine) {
+      // Builds: constrain to the committed board's namespace instead
+      if (job.build) {
+        var ids = flattenBuildIds(job.build);
+        for (var b = 0; b < ids.length; b++) {
+          var bp = Engine.partById(ids[b]);
+          if (bp && bp.category === 'motherboard') {
+            var pref0 = Engine.Compat.namespaceForCategory(category);
+            if (!pref0) return null;
+            var t0 = Engine.Compat.tagsInNamespace(bp, pref0);
+            return t0.length ? t0 : null;
+          }
+        }
+      }
+      return null;
+    }
+    var mobo = null;
+    for (var i = 0; i < job.machine.partIds.length; i++) {
+      var mp = Engine.partById(job.machine.partIds[i]);
+      if (mp && mp.category === 'motherboard') mobo = mp;
+    }
+    var prefix = Engine.Compat.namespaceForCategory(category);
+    if (!mobo || !prefix) return null;
+    var tags = Engine.Compat.tagsInNamespace(mobo, prefix);
+    return tags.length ? tags : null;
+  }
+  function machinePartIdOf(job, category) {
+    if (!job.machine) return null;
+    for (var i = 0; i < job.machine.partIds.length; i++) {
+      var p = Engine.partById(job.machine.partIds[i]);
+      if (p && p.category === category) return p.id;
+    }
+    return null;
+  }
+  function medianPartPrice(state, category) {
+    var prices = purchasableByCategory(state, category).map(function (p) {
+      return P().priceOf(p, state);
+    }).sort(function (a, b) { return a - b; });
+    return prices.length ? prices[Math.floor(prices.length / 2)] : 0;
+  }
+  function appendApprovedStep(state, job, label, hours, needIndex) {
+    var insertAt = Math.min(job.stepIndex + 1, job.steps.length);
+    job.steps.splice(insertAt, 0, {
+      id: 'x' + (job.steps.length + 1), label: label,
+      hours: Engine.round1(Math.max(0.1, hours)),
+      done: false, progress: 0, needIndex: needIndex,
+      kind: 'labor', running: false
+    });
+    for (var r = 0; r < job.steps.length; r++) job.steps[r].id = 's' + (r + 1);
+    recomputeHours(job);
+  }
 
   // §9.2: era-gated customer types, intersected with CUSTOMER_JOB_AFFINITY for
   // the job's most specific key ("build:<useCase>" / "type:subtype" / "type").
@@ -1460,6 +1838,7 @@
     }
     // §10.6: deadlines never land on Sunday
     if (job.deadlineDay != null) job.deadlineDay = shiftOffSunday(state, job.deadlineDay);
+    armDecisionPlan(state, job);   // §17.1: at most one decision moment per job
     return job;
   }
 
@@ -1763,7 +2142,11 @@
           need.originalPartId = job.machine.partIds[job.machine.faultPartIdx];
       }
       job.needs = [need];
+      // §17.1: post-diagnosis estimate update — rough parts range for the card
+      job.partsEstimate = needPartsEstimate(state, need);
     }
+    // §17.1: an armed diagnosis fork goes live the moment the fault is known
+    fireForkDecision(state, job);
     // Append the repair phase (dedupe already happened at assembly, §11.3)
     if (job.pendingSteps && job.pendingSteps.length) {
       job.steps = job.steps.concat(job.pendingSteps);
@@ -1826,6 +2209,10 @@
       return part.name + ' is the wrong flavor — the customer wants any ' +
              Jobs.osFamilyLabel(need.osFamily);
     }
+    if (need.minWatts && (part.watts || 0) < need.minWatts) {
+      return part.name + ' (' + (part.watts || 0) + 'W) is under the quoted ' +
+             need.minWatts + 'W supply';
+    }
     if (!meetsMinPerf(part, need)) {
       return part.name + ' is below the required spec — needs at least ' +
              minPerfText(need.minPerf);
@@ -1841,6 +2228,7 @@
     }
     if (need.osExactId && part.id !== need.osExactId) return false;   // §11.4
     if (need.osFamily && osFamilyOf(part) !== need.osFamily) return false;
+    if (need.minWatts && (part.watts || 0) < need.minWatts) return false;   // §17.1
     return true;
   }
   // Category/tag fit only — below-spec parts still appear in pickers, greyed (§9.3),
@@ -1858,6 +2246,19 @@
     if (need.osFamily && osFamilyOf(part) !== need.osFamily) return false;
     return true;
   }
+
+  /* §16.3c/§17.1: rough market range of the parts that could satisfy a need
+   * (min = cheapest qualifying, max = 75th percentile). Whole dollars. */
+  function needPartsEstimate(state, need) {
+    var prices = purchasableByCategory(state, need.category).filter(function (p) {
+      return candidateListed(p, need, state) && meetsMinPerf(p, need);
+    }).map(function (p) { return P().priceOf(p, state); })
+      .sort(function (a, b) { return a - b; });
+    if (!prices.length) return null;
+    var hi = prices[Math.min(prices.length - 1, Math.ceil((prices.length - 1) * 0.75))];
+    return { min: Math.round(prices[0]), max: Math.round(hi) };
+  }
+  Jobs.needPartsEstimate = needPartsEstimate;
 
   Jobs.getJobNeeds = function (state, jobId) {
     var job = Jobs.findActive(state, jobId);
@@ -1909,7 +2310,8 @@
           replaces: replaces,                             // §10.4
           vsOriginal: vsOriginal,                          // §14.2
           overspend: overspendGrade != null,               // §10.4 back-compat bool
-          overspendGrade: overspendGrade                   // §14.2: null|"mild"|"hard"
+          overspendGrade: overspendGrade,                  // §14.2: null|"mild"|"hard"
+          overPsu: overPsuFor(job, need, part)             // §17.1 PSU gate (UI amber flag)
         };
         options.push(opt);
       }
@@ -1927,7 +2329,9 @@
       }
       out.push({ index: i, label: need.label, category: need.category,
                  qty: need.qty, filled: need.filledPartIds.length,
-                 assigned: assigned, replaces: replaces, options: options });
+                 assigned: assigned, replaces: replaces, options: options,
+                 machinePsuWatts: machinePsuWatts(job) || null,   // §17.1
+                 minWatts: need.minWatts || null });
     }
     return out;
   };
@@ -1954,6 +2358,40 @@
   /* §10.3: ASSIGN a part to a need — reserves it from stock or orders it from
    * the market (cash out now). The physical install happens when the matching
    * step completes. installPart remains as a deprecated alias. */
+  /* §17.1 PSU gate (overseer audit): a customer machine's supply must feed
+   * what the shop installs. Draw after the swap = machine total − replaced
+   * original + candidate; over watts/PSU_HEADROOM needs an approved PSU swap. */
+  function machinePsuWatts(job) {
+    if (!job.machine) return 0;
+    for (var i = 0; i < job.machine.partIds.length; i++) {
+      var p = Engine.partById(job.machine.partIds[i]);
+      if (p && p.category === 'psu') return p.watts || 0;
+    }
+    return 0;
+  }
+  function machineDrawAfterSwap(job, need, candidate) {
+    var draw = 0;
+    for (var i = 0; i < job.machine.partIds.length; i++) {
+      var p = Engine.partById(job.machine.partIds[i]);
+      if (!p || p.category === 'psu') continue;
+      draw += p.powerDraw || 0;
+    }
+    var orig = need.originalPartId ? Engine.partById(need.originalPartId) : null;
+    if (orig && orig.category !== 'psu') draw -= orig.powerDraw || 0;
+    draw += candidate.powerDraw || 0;
+    return Math.max(0, draw);
+  }
+  /* Over-PSU when the machine has a rated supply and the post-swap draw needs
+   * more than it provides (same §5.1 headroom rule the build path enforces). */
+  function overPsuFor(job, need, candidate) {
+    if (!job.machine || !candidate || candidate.category === 'psu') return false;
+    if (job.psuSwapApproved) return false;   // beefier supply already quoted
+    var watts = machinePsuWatts(job);
+    if (!watts) return false;
+    var draw = machineDrawAfterSwap(job, need, candidate);
+    return Math.ceil(draw * CFG().PSU_HEADROOM) > watts;
+  }
+
   Jobs.assignPart = function (state, jobId, needIndex, partId) {
     var job = Jobs.findActive(state, jobId);
     if (!job) return err('Job not active');
@@ -1965,6 +2403,34 @@
     var part = Engine.partById(partId);
     var problem = candidateProblem(part, need, state);
     if (problem) return err(problem);
+    // §17.1 PSU gate: an over-draw part needs the PSU swap approved first.
+    if (overPsuFor(job, need, part)) {
+      var psuW = machinePsuWatts(job);
+      var drawAfter = machineDrawAfterSwap(job, need, part);
+      if (job.psuSwapDeclined) {
+        return err('Their ' + psuW + 'W supply can’t feed ' + part.name +
+                   ' (needs ~' + Math.ceil(drawAfter * CFG().PSU_HEADROOM) +
+                   'W) and the PSU swap was declined — pick a lighter option');
+      }
+      if (!decisionPending(job)) {
+        job.decision = {
+          kind: 'approval', subkind: 'psu', chosen: null,
+          pendingDraw: drawAfter,
+          prompt: 'Their ' + psuW + 'W supply can’t feed ' + part.name +
+                  ' — quote a PSU swap too?',
+          options: [
+            { id: 'call', label: 'Call & quote the PSU swap (' +
+                CFG().APPROVAL_CALL_HOURS + 'h)',
+              summary: 'Approved: adds a PSU need (billed +25%) and a little labor.' },
+            { id: 'skip', label: 'Pick a lighter part instead',
+              summary: 'No call — heavy options stay off the table for this machine.' }
+          ]
+        };
+      }
+      return err('Their ' + psuW + 'W supply can’t feed ' + part.name +
+                 ' (needs ~' + Math.ceil(drawAfter * CFG().PSU_HEADROOM) +
+                 'W) — decide on the PSU swap first');
+    }
 
     var C = CFG();
     var equip = Engine.equipEffects(state);
@@ -2374,8 +2840,16 @@
   // §14.8: singleStep=true stops after the CURRENT step alone (mode "step").
   function workableStdHours(job, singleStep) {
     var total = 0, barrier = null;
+    // §17.1: a pending decision blocks everything; an armed-but-unfired
+    // approval/tuning plan blocks AT its marked step (fired in workJob).
+    if (decisionPending(job)) return { hours: 0, barrier: 'decision' };
+    var plan = job.decisionPlan;
+    var planStep = (plan && !plan.fired &&
+                    (plan.kind === 'approval' || plan.kind === 'tuning')) ?
+                   plan.stepIndex : null;
     for (var i = job.stepIndex; i < job.steps.length; i++) {
       var st = job.steps[i];
+      if (planStep != null && i >= planStep) { barrier = 'decision-plan'; break; }
       if (st.kind === 'wait') { barrier = 'wait'; break; }
       if (st.needIndex != null) {
         var nd = job.needs[st.needIndex];
@@ -2399,6 +2873,7 @@
   function advanceSteps(state, job, stdHours) {
     var left = stdHours + 1e-9;
     while (left > 0 && job.stepIndex < job.steps.length) {
+      if (decisionPending(job)) break;   // §17.1: a fork just fired mid-session
       var st = job.steps[job.stepIndex];
       if (st.kind === 'wait') break;   // §11.6: waits advance in parallel only
       if (st.needIndex != null) {
@@ -2549,6 +3024,23 @@
       wk = workableStdHours(job, singleStep);   // a diag hook may have appended labor steps
     }
     if (wk.hours <= 1e-9) {
+      // §17.1: decisions gate the bench readably
+      if (wk.barrier === 'decision')
+        return err('Waiting on your decision — pick an option on the job card');
+      if (wk.barrier === 'decision-plan') {
+        // The work has reached the marked step — surface the moment now.
+        var dplan = job.decisionPlan;
+        if (dplan.kind === 'approval') fireApprovalDecision(state, job);
+        else if (dplan.kind === 'tuning') fireTuningDecision(state, job);
+        if (decisionPending(job)) {
+          return { ok: true, hoursSpent: 0, completed: false,
+                   decisionPending: true,
+                   decisionPrompt: job.decision.prompt || null };
+        }
+        // plan couldn't fire (no text/etc.) — disarm and continue next call
+        job.decisionPlan = null;
+        return { ok: true, hoursSpent: 0, completed: false };
+      }
       if (wk.barrier === 'assign') return err('Assign a replacement part first');
       if (wk.barrier === 'wait') {
         var wst = job.steps[job.stepIndex];
@@ -2707,6 +3199,33 @@
                      '% (' + Engine.fmtMoney(payout - before) + ')');
         }
       }
+      // §17.1: decision outcomes shape the rating
+      if (job.tuningChoice) {
+        var tc = C.TUNING[job.tuningChoice];
+        if (job.tuningUnstable) {
+          score -= C.TUNING_UNSTABLE_SCORE;
+          notes.push('The ' + job.tuningChoice + ' tune didn’t hold — backed off and redone');
+          reasons.push('unstable overclock');
+        } else if (tc && tc.scoreBonus) {
+          score += tc.scoreBonus;
+          notes.push('The ' + job.tuningChoice + ' tune holds beautifully');
+          reasons.push(job.tuningChoice + ' tune held');
+        }
+      }
+      if (job.approvalDelight) {
+        score += C.APPROVAL_DELIGHT_SCORE;
+        notes.push('“Glad you caught that before it blew.”');
+        reasons.push('caught a problem early');
+      }
+      if (job.approvalRefused)
+        notes.push('Customer declined the add-on — noted on the ticket');
+      if (job.approvalSkipped)
+        notes.push('You left the discovered problem alone — hope it holds');
+      if (job.decisionTaken && job.decisionTaken.kind === 'fork' &&
+          job.decisionTaken.option === 'patch') {
+        notes.push('Patched rather than replaced — cheaper today, riskier tomorrow');
+        reasons.push('quick patch');
+      }
       // §14.2: symmetric "did the shop do right by the part?" check for
       // repair/upgrade/device_repair — downgrade (installed something worse
       // than the original) and graded overspend (installed something far
@@ -2861,7 +3380,8 @@
       var cb = (mtx.base + mtx.perDiff * (job.difficulty || 2) * esdTerm) *
                avgReliabilityFactor(state, job) *
                Engine.equipEffects(state).callbackMult *
-               Engine.certCallbackMult(state);   // §13.4
+               Engine.certCallbackMult(state) *  // §13.4
+               (job.callbackRiskMult || 1);      // §17.1 patch/skip risk
       cb = Engine.clamp(cb, C.CALLBACK_MIN, C.CALLBACK_MAX);
       var fired = Engine.chance(cb, 'misc');
       state.jobs.completedRecent.push({
@@ -2877,7 +3397,8 @@
     job.status = 'done';
     job.result = { onTime: job.deadlineDay == null || state.day <= job.deadlineDay,
                    score: score, payout: payout, notes: notes,
-                   tasteMatched: tasteMatched, qualityFlags: qualityFlags };
+                   tasteMatched: tasteMatched, qualityFlags: qualityFlags,
+                   ratingDelta: ratingDelta };   // §17.2
     removeFrom(state.jobs.active, job);
     return job.result;
   }
@@ -2927,10 +3448,10 @@
         'Stripped for parts — recovered ' + Engine.fmtMoney(scrap) + '.');
       return { ok: true, scrapped: scrap };
     }
-    recordJobFailure(state, job, CFG().SCORE_ABANDON);   // §15.4 harsher for regulars
+    recordJobFailure(state, job, CFG().SCORE_ABANDON, 'abandoned');   // §15.4/§17.2
     Engine.pushNews(state, 'job', 'Job abandoned: ' + job.title,
       job.customer.name + ' will not be recommending the shop.');
-    return { ok: true };
+    return { ok: true, ratingDelta: Jobs._lastFailRatingDelta };
   };
 
   // Deadline sweep + offer expiry (overnight step 4)
@@ -2941,9 +3462,10 @@
       job = state.jobs.active[i];
       if (job.deadlineDay != null && state.day > job.deadlineDay && job.status === 'active') {
         state.jobs.active.splice(i, 1);
-        var failScore = recordJobFailure(state, job, C.SCORE_LATE);   // §15.4
+        var failScore = recordJobFailure(state, job, C.SCORE_LATE, 'late');   // §15.4
         job.status = 'done';
         job.result = { onTime: false, score: failScore, payout: 0,
+                       ratingDelta: Jobs._lastFailRatingDelta,   // §17.2
                        notes: job.regular ?
                          ['Missed the deadline', 'A loyal regular, let down'] :
                          ['Missed the deadline'] };

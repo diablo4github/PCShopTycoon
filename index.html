@@ -88,7 +88,16 @@
   <script src="js/engine/api.js"></script>
   <script src="js/ui/ui.js"></script>
   <script src="js/ui/audio.js"></script>
-  <script src="js/ui/tabs.js"></script>
+  <!-- §17.3 — tabs.js split into per-tab modules; tabs-core.js first,
+       feature modules after it, all before tutorial.js/screens.js -->
+  <script src="js/ui/tabs/tabs-core.js"></script>
+  <script src="js/ui/tabs/tabs-offers.js"></script>
+  <script src="js/ui/tabs/tabs-workbench.js"></script>
+  <script src="js/ui/tabs/tabs-market.js"></script>
+  <script src="js/ui/tabs/tabs-wiki.js"></script>
+  <script src="js/ui/tabs/tabs-shop.js"></script>
+  <script src="js/ui/tabs/tabs-ledger.js"></script>
+  <script src="js/ui/tabs/tabs-news-system.js"></script>
   <script src="js/ui/tutorial.js"></script>
   <script src="js/ui/screens.js"></script>
   <script>

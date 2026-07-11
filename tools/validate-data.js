@@ -1101,6 +1101,9 @@ console.log('v0.5 Education: Chronicle ' + CHRON.length + ' entries (' + (CHRON.
 console.log('v0.6 Long Arc: Transitions ' + TRANS.length + ' (' +
   TRANS.map(function (t) { return t.id; }).join(', ') + ') | Scenarios ' + SCEN.length + '/4 | Business names ' +
   ((FL.businessNames || []).length));
+console.log('v0.7 Craft: Discoveries ' + DISC.length + ' (' + Object.keys(discCatSeen).length + ' contexts, ' +
+  discGated + ' era-gated) | Fork text ' + Object.keys(FORK).length + ' categories | Tuning bands ' + TUNE.length +
+  ' (' + TUNE.map(function (b) { return b.method || '?'; }).join(' / ') + ')');
 
 if (warnings.length) {
   console.log('\nWARNINGS (' + warnings.length + '):');

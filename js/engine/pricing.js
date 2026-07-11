@@ -156,7 +156,7 @@
       }
       if (!Pricing.isReleased(part, state)) continue;
       var n = state.market.noise[part.id] || 1;
-      n *= 1 + Engine.uniform(-C.NOISE_STEP, C.NOISE_STEP);
+      n *= 1 + Engine.uniform(-C.NOISE_STEP, C.NOISE_STEP, 'prices');   // §17.5
       n = Engine.clamp(n, C.NOISE_MIN, C.NOISE_MAX);
       state.market.noise[part.id] = Engine.round2(n * 10000) / 10000; // keep tidy
       Pricing.recordPrice(state, part);

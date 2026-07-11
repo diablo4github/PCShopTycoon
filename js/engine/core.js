@@ -329,19 +329,48 @@
     // Balance guards stay pinned to standard.
     DIFFICULTY: {
       relaxed:  { cashMult: 1.3, rentMult: 0.85, payMult: 1.1,  graceDays: 21,
-                  negEventMult: 0.7 },
+                  negEventMult: 0.7,
+                  rentCreepQuarterly: 0, rentCreepCap: 1, offerDelta: 0, storageMult: 1 },
       standard: { cashMult: 1.0, rentMult: 1.0,  payMult: 1.0,  graceDays: 14,
-                  negEventMult: 1.0 },
-      survival: { cashMult: 0.8, rentMult: 1.15, payMult: 0.95, graceDays: 10,
-                  negEventMult: 1.3 }
-    }
+                  negEventMult: 1.0,
+                  rentCreepQuarterly: 0, rentCreepCap: 1, offerDelta: 0, storageMult: 1 },
+      // §17.4: Survival got real teeth — compounding rent creep, a 7-day
+      // grace window, one fewer nightly offer, harsher negative events, and
+      // a 25% tighter free-storage threshold. Standard/Relaxed untouched.
+      survival: { cashMult: 0.8, rentMult: 1.15, payMult: 0.95, graceDays: 7,
+                  negEventMult: 1.5,
+                  rentCreepQuarterly: 0.02, rentCreepCap: 1.6,
+                  offerDelta: -1, storageMult: 0.75 }
+    },
+
+    // §17.1 job decision moments — at most ONE per job, rolled at generation
+    // on the faults stream. Chances/effects all tunable here.
+    DECISION_CHANCE: 0.35,          // eligible jobs that get a fork/approval armed
+    TUNING_CHANCE: 1.0,             // overclock jobs: the tuning choice IS the job
+    FORK_PATCH: { hoursMult: 0.6, payMult: 0.85, callbackMult: 2.2,
+                  devicePartsMult: 0.3 },
+    APPROVAL_CALL_HOURS: 0.1,       // the customer call (0.1h grid, overtime rules)
+    APPROVAL_YES_CHANCE: 0.8,       // seeded on the faults stream
+    APPROVAL_ADD_HOURS: 1,          // labor added by an approved add-on
+    APPROVAL_DELIGHT_SCORE: 0.2,    // "glad you caught that" completion bonus
+    APPROVAL_SKIP_CALLBACK_MULT: 1.5, // leaving a discovery alone raises callback risk
+    TUNING: {
+      conservative: { scoreBonus: 0.15, risk: 0 },
+      balanced:     { scoreBonus: 0.3,  risk: 0.08 },
+      aggressive:   { scoreBonus: 0.5,  risk: 0.18 }
+    },
+    TUNING_UNSTABLE_SCORE: 0.2,     // rating ding when a hot tune doesn't hold
+    TUNING_REDO_HOURS: 1,           // bench time to back off & re-burn-in
+    // §17.1 PSU gate (overseer audit): an upgrade part pushing machine draw
+    // past watts/PSU_HEADROOM needs an approved PSU swap first.
+    PSU_SWAP_HOURS: 0.5,            // labor for the quoted PSU swap (0.1h grid)
+    PSU_SWAP_HEADROOM_MULT: 1.35    // the quoted replacement PSU's watts margin
   };
 
   // ------------------------------------------------------------------
   // Live state reference (set by api.js newGame/importSave)
   // ------------------------------------------------------------------
-  Engine.VERSION = '0.6.1';      // §16: parseFloat-compatible with the UI's >=0.4 gate;
-                                  // NO save-shape change — state.version stays 7
+  Engine.VERSION = '0.7';        // §17: parseFloat-compatible with the UI's >=0.4 gate
   Engine._state = null;
   Engine.getData = function () { return root.DATA || {}; };
 
@@ -625,6 +654,8 @@
     var used = 0;
     for (var i = 0; i < state.inventory.length; i++) used += state.inventory[i].qty;
     var slots = Engine.tierInfo(state).storageSlots || 20;
+    // §17.4: Survival tightens the free-storage threshold by 25%
+    slots = Math.max(1, Math.floor(slots * (Engine.difficultyFor(state).storageMult || 1)));
     var year = Engine.currentYear(state);
     return {
       used: used,
@@ -983,14 +1014,24 @@
     return out.trim();
   };
 
-  // Rating = mean of last 25 scores.
-  Engine.pushScore = function (state, score) {
+  // Rating = mean of the last 25 outcome scores. §17.2: history entries are
+  // now {score, day, jobId?, title, reasons[]} so the player can SEE why the
+  // stars moved (v8 migration wraps old plain numbers; the mean tolerates
+  // both shapes defensively).
+  Engine.entryScore = function (e) { return typeof e === 'number' ? e : (e ? e.score : 0); };
+  Engine.pushScore = function (state, score, meta) {
     score = Engine.clamp(Engine.round2(score), 0, 5);
     var h = state.reputation.history;
-    h.push(score);
+    h.push({
+      score: score,
+      day: state.day,
+      jobId: meta && meta.jobId != null ? meta.jobId : null,
+      title: (meta && meta.title) || null,
+      reasons: (meta && Array.isArray(meta.reasons)) ? meta.reasons.slice() : []
+    });
     while (h.length > Engine.CONFIG.RATING_HISTORY) h.shift();
     var sum = 0;
-    for (var i = 0; i < h.length; i++) sum += h[i];
+    for (var i = 0; i < h.length; i++) sum += Engine.entryScore(h[i]);
     state.reputation.rating = Engine.round2(sum / h.length);
     return score;
   };

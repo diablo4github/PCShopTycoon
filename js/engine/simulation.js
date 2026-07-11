@@ -193,7 +193,7 @@
       if (year < (t.minYear || 0) || year > (t.maxYear || 9999)) continue;
       var chance = C.RANDOM_EVENT_NIGHTLY_CHANCE * (t.weight || 1) / 2;
       if (negMult !== 1 && Sim.isNegativeEventTemplate(t)) chance *= negMult;
-      if (!Engine.chance(chance)) continue;
+      if (!Engine.chance(chance, 'market')) continue;   // §17.5
       Sim.fireRandomEvent(state, t);
     }
   };
@@ -212,16 +212,16 @@
   function copyEffect(ef) {
     var out = { categories: (ef.categories || []).slice(), priceMult: ef.priceMult };
     if (Array.isArray(ef.priceMult))
-      out.priceMult = Engine.round2(Engine.uniform(ef.priceMult[0], ef.priceMult[1]));
+      out.priceMult = Engine.round2(Engine.uniform(ef.priceMult[0], ef.priceMult[1], 'market'));
     if (ef.tags) out.tags = ef.tags.slice();
     return out;
   }
 
   Sim.fireRandomEvent = function (state, t, durationOverride) {
     var dur = durationOverride ||
-      (Array.isArray(t.durationDays) ? Engine.randInt(t.durationDays[0], t.durationDays[1])
+      (Array.isArray(t.durationDays) ? Engine.randInt(t.durationDays[0], t.durationDays[1], 'market')
                                      : (t.durationDays || 30));
-    var headline = Array.isArray(t.headlines) ? Engine.pick(t.headlines)
+    var headline = Array.isArray(t.headlines) ? Engine.pick(t.headlines, 'market')
                                               : (t.headlines || t.headline || t.id);
     var inst = {
       id: t.id + '#' + state.day, kind: 'random', name: headline, headline: headline,
@@ -323,16 +323,16 @@
       return r.minYear == null || year >= r.minYear;
     });
     if (!roles.length) { state.staffMarket = []; return; }
-    var n = Engine.randInt(C.STAFF_CANDIDATES_MIN, C.STAFF_CANDIDATES_MAX);
+    var n = Engine.randInt(C.STAFF_CANDIDATES_MIN, C.STAFF_CANDIDATES_MAX, 'misc');
     var out = [];
     for (var i = 0; i < n; i++) {
-      var role = Engine.pick(roles);
-      var level = Engine.randInt(1, C.STAFF_CANDIDATE_MAX_LEVEL);
+      var role = Engine.pick(roles, 'misc');
+      var level = Engine.randInt(1, C.STAFF_CANDIDATE_MAX_LEVEL, 'misc');
       var skill = Engine.staffSkillFor(level);
       out.push({
         id: 'c' + (state.staffNextId = (state.staffNextId || 1) + 1),
-        name: (Engine.pick(F.firstNames || ['Jo']) || 'Jo') + ' ' +
-              (Engine.pick(F.lastNames || ['Doe']) || 'Doe'),
+        name: (Engine.pick(F.firstNames || ['Jo'], 'misc') || 'Jo') + ' ' +
+              (Engine.pick(F.lastNames || ['Doe'], 'misc') || 'Doe'),
         role: role.id,
         level: level,
         xp: C.STAFF_LEVEL_THRESHOLDS[level - 1],

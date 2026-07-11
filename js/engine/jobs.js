@@ -107,8 +107,8 @@
       C.REGULAR_CHANCE_BASE +
       C.REGULAR_CHANCE_PER_STAR * (state.reputation.rating - 3),
       0, C.REGULAR_CHANCE_MAX);
-    if (!Engine.chance(chance)) return;
-    var reg = Engine.pick(regs);
+    if (!Engine.chance(chance, 'offers')) return;   // §17.5
+    var reg = Engine.pick(regs, 'offers');
     if (!reg) return;
     job.customer = { name: reg.name, type: reg.type || job.customer.type };
     job.regular = true;
@@ -167,11 +167,11 @@
       // Prefer a name not already under contract
       var taken = (state.accounts || []).map(function (a) { return a.name; });
       var fresh = pool.filter(function (n) { return taken.indexOf(n) === -1; });
-      var name = Engine.pick(fresh.length ? fresh : pool);
+      var name = Engine.pick(fresh.length ? fresh : pool, 'offers');
       if (name) return name;
     }
     // Fallback while DATA's business pool is in flight
-    var last = Engine.pick(F.lastNames || ['Meridian']) || 'Meridian';
+    var last = Engine.pick(F.lastNames || ['Meridian'], 'offers') || 'Meridian';
     return last + ' & Associates';
   }
   function maybeAccountOffer(state) {
@@ -180,11 +180,11 @@
     if ((state.accounts || []).length >= C.ACCOUNT_MAX_ACTIVE) return null;
     if (state.jobs.offers.some(function (o) { return o.type === 'business_account'; }))
       return null;   // one retainer on the table at a time
-    if (!Engine.chance(C.ACCOUNT_OFFER_CHANCE)) return null;
+    if (!Engine.chance(C.ACCOUNT_OFFER_CHANCE, 'offers')) return null;
     var year = Engine.currentYear(state);
     var name = businessNameFor(state);
     var fee = Math.round(Engine.laborRate(year) * C.ACCOUNT_FEE_LABOR_MULT);
-    var jobsPerMonth = Engine.randInt(C.ACCOUNT_JOBS_MIN, C.ACCOUNT_JOBS_MAX);
+    var jobsPerMonth = Engine.randInt(C.ACCOUNT_JOBS_MIN, C.ACCOUNT_JOBS_MAX, 'offers');
     var minRating = Engine.round2(Engine.clamp(
       Math.round((state.reputation.rating - C.ACCOUNT_MIN_RATING_DELTA) * 10) / 10,
       C.ACCOUNT_MIN_RATING_FLOOR, C.ACCOUNT_MIN_RATING_CAP));
@@ -232,7 +232,7 @@
     for (var i = 0; i < accounts.length; i++) {
       var acct = accounts[i];
       if ((acct.jobsThisMonth || 0) >= acct.jobsPerMonth) continue;
-      if (!Engine.chance(acct.jobsPerMonth / 24)) continue;   // ~jobsPerMonth per ~24 open days
+      if (!Engine.chance(acct.jobsPerMonth / 24, 'offers')) continue;   // ~jobsPerMonth per ~24 open days
       var job = null, tries = 0;
       while (!job && tries++ < 8) {
         var cand = makeOffer(state);
@@ -245,7 +245,7 @@
       job.taste = null;                       // businesses buy on spec, not fandom
       job.title = job.title + ' (' + acct.name + ')';
       job.deadlineDay = shiftOffSunday(state,
-        state.day + Engine.randInt(C.ACCOUNT_DEADLINE_MIN, C.ACCOUNT_DEADLINE_MAX));
+        state.day + Engine.randInt(C.ACCOUNT_DEADLINE_MIN, C.ACCOUNT_DEADLINE_MAX, 'offers'));
       job.status = 'active';
       state.jobs.active.push(job);            // auto-accepted retainer work
       acct.jobsThisMonth = (acct.jobsThisMonth || 0) + 1;
@@ -279,9 +279,9 @@
       var narrowed = types.filter(function (t) { return allowed.indexOf(t.id) !== -1; });
       if (narrowed.length) types = narrowed;
     }
-    var t = Engine.pick(types) || { id: 'home' };
-    var name = (Engine.pick(F.firstNames || ['Sam']) || 'Sam') + ' ' +
-               (Engine.pick(F.lastNames || ['Doe']) || 'Doe');
+    var t = Engine.pick(types, 'offers') || { id: 'home' };
+    var name = (Engine.pick(F.firstNames || ['Sam'], 'offers') || 'Sam') + ' ' +
+               (Engine.pick(F.lastNames || ['Doe'], 'offers') || 'Doe');
     return { name: name, type: t.id };
   }
   // §9.2: blurbs may be plain strings (v1 data) or { text, customers } (v2).
@@ -294,7 +294,7 @@
       if (b.customers == null) return true;
       return b.customers.indexOf(customerType) !== -1;
     });
-    var chosen = Engine.pick(fitting.length ? fitting : list);
+    var chosen = Engine.pick(fitting.length ? fitting : list, 'offers');
     if (chosen == null) return '';
     return typeof chosen === 'string' ? chosen : String(chosen.text || '');
   }
@@ -311,7 +311,7 @@
       return null;
     if (job.type === 'repair') return job.fault ? job.fault.partCategory : null;
     if (job.type === 'upgrade') return job.needs[0] ? job.needs[0].category : null;
-    if (job.build) return Engine.pick(['cpu', 'gpu', 'case']);
+    if (job.build) return Engine.pick(['cpu', 'gpu', 'case'], 'offers');
     if (job.type === 'software' && job.subtype === 'os_install') return 'os';
     if (job.type === 'enthusiast' && job.subtype === 'overclock') return 'cooling';
     if (job.type === 'contract') return job.needs[0] ? job.needs[0].category : null;
@@ -319,7 +319,7 @@
   }
   function maybeTaste(state, job) {
     var C = CFG();
-    if (!Engine.chance(C.TASTE_CHANCE)) return null;
+    if (!Engine.chance(C.TASTE_CHANCE, 'offers')) return null;
     var cat = tasteCategoryFor(job);
     if (!cat) return null;
     var parts = purchasableByCategory(state, cat);
@@ -329,10 +329,10 @@
       if (b && brands.indexOf(b) === -1) brands.push(b);
     }
     if (!brands.length) return null;   // v1 catalogs have no brands — no tastes
-    var brand = Engine.pick(brands);
+    var brand = Engine.pick(brands, 'offers');
     return {
       brand: brand, category: cat,
-      bonusPct: Engine.randInt(C.TASTE_BONUS_MIN, C.TASTE_BONUS_MAX),
+      bonusPct: Engine.randInt(C.TASTE_BONUS_MIN, C.TASTE_BONUS_MAX, 'offers'),
       label: 'Swears by ' + brand + ' ' + (TASTE_PLURAL[cat] || cat)
     };
   }
@@ -345,7 +345,7 @@
     var cpus = purchasableByCategory(state, 'cpu').filter(function (p) {
       return year - p.introYear <= 9;
     });
-    var c = Engine.pick(cpus.length ? cpus : purchasableByCategory(state, 'cpu'));
+    var c = Engine.pick(cpus.length ? cpus : purchasableByCategory(state, 'cpu'), 'offers');
     return c ? c.name + ' system' : 'aging system';
   }
 
@@ -604,14 +604,14 @@
   // ------------------------------------------------------------------
   // §10.4 Customer machines (repair/upgrade carry an era-plausible PC)
   // ------------------------------------------------------------------
-  function assembleMachineParts(state) {
+  function assembleMachineParts(state, stream) {
     var C = CFG();
     var year = Engine.currentYear(state);
     var mobos = purchasableByCategory(state, 'motherboard').filter(function (m) {
       return year - m.introYear <= C.ASIS_MAX_AGE_YEARS;
     });
     if (!mobos.length) mobos = purchasableByCategory(state, 'motherboard');
-    var mobo = Engine.pick(mobos);
+    var mobo = Engine.pick(mobos, stream);
     if (!mobo) return null;
     var partIds = [mobo.id];
     var cats = ['cpu', 'ram', 'storage', 'psu', 'case'];
@@ -619,7 +619,7 @@
       var options = purchasableByCategory(state, cats[c]).filter(function (p) {
         return Engine.Compat.fits(p, mobo).fits;
       });
-      var part = Engine.pick(options);
+      var part = Engine.pick(options, stream);
       if (!part) return null;   // can't assemble an era machine
       partIds.push(part.id);
     }
@@ -628,7 +628,7 @@
         // §12.2: a 3D add-on (Voodoo2) is never a machine's only video card
         return !p.addonOnly && Engine.Compat.fits(p, mobo).fits;
       });
-      var gpu = Engine.pick(gpus);
+      var gpu = Engine.pick(gpus, stream);
       if (gpu) partIds.push(gpu.id);
     }
     return { partIds: partIds, mobo: mobo };
@@ -670,7 +670,7 @@
   /* Customer's PC for repair/upgrade jobs (§10.4). targetCategory (the fault
    * or upgrade slot) is guaranteed present; faultPartIdx points at it. */
   function customerMachineFor(state, targetCategory) {
-    var built = assembleMachineParts(state);
+    var built = assembleMachineParts(state, 'offers');   // §17.5
     if (!built) return null;
     var partIds = built.partIds, mobo = built.mobo;
     var year = Engine.currentYear(state);
@@ -684,7 +684,7 @@
         var extras = purchasableByCategory(state, targetCategory).filter(function (p) {
           return Engine.Compat.fits(p, mobo).fits;
         });
-        var extra = Engine.pick(extras);
+        var extra = Engine.pick(extras, 'offers');
         if (extra) { partIds.push(extra.id); idx = partIds.length - 1; }
       }
     }
@@ -694,7 +694,7 @@
       if (pj && pj.category === 'cpu') { cpuName = pj.name; break; }
     }
     var machineYear = Engine.clamp(
-      Engine.randInt(mobo.introYear, Math.min(year, (mobo.eolYear || year) + 2)),
+      Engine.randInt(mobo.introYear, Math.min(year, (mobo.eolYear || year) + 2), 'offers'),
       mobo.introYear, year);
     return {
       name: (cpuName || 'Aging') + ' system', year: machineYear,
@@ -990,7 +990,7 @@
 
     var total = 0, i;
     for (i = 0; i < pool.length; i++) total += pool[i].w;
-    var r = Engine.rand() * total, choice = pool[0];
+    var r = Engine.rand('offers') * total, choice = pool[0];
     for (i = 0; i < pool.length; i++) { r -= pool[i].w; if (r <= 0) { choice = pool[i]; break; } }
 
     var job = {
@@ -1001,7 +1001,7 @@
       customer: null,             // assigned after the switch (affinity, §9.2)
       taste: null,
       pay: 0,
-      offeredDay: state.day, deadlineDay: state.day + Engine.randInt(C.DEADLINE_MIN, C.DEADLINE_MAX),
+      offeredDay: state.day, deadlineDay: state.day + Engine.randInt(C.DEADLINE_MIN, C.DEADLINE_MAX, 'offers'),
       difficulty: 2,              // derived after assembly (§10.2)
       speed: 'standard',
       status: 'offer',
@@ -1028,7 +1028,7 @@
       case 'repair': {
         // §10.5 fault-first: fault template + machine first, copy derived from it
         var cat = pickFaultCategory(faultCats);
-        var tmpl = Engine.pick((F.faults || {})[cat] || [{ desc: 'Mystery gremlins', laborHours: 2 }]);
+        var tmpl = Engine.pick((F.faults || {})[cat] || [{ desc: 'Mystery gremlins', laborHours: 2 }], 'faults');
         job.fault = {
           desc: tmpl.desc,
           partCategory: cat === 'laborOnly' ? null : cat,
@@ -1039,11 +1039,11 @@
         job.machine = customerMachineFor(state, job.fault.partCategory);   // §10.4
         // §14.2: a slice of repairs are explicit budget/for-parts asks —
         // waives the downgrade penalty (they WANT the cheapest working part).
-        job.budgetAsk = Engine.chance(C.BUDGET_REPAIR_CHANCE);
+        job.budgetAsk = Engine.chance(C.BUDGET_REPAIR_CHANCE, 'offers');
         var repairBox = (job.machine && job.machine.name) || machineFlavor(state, year);
         job.title = 'Repair: ' + repairBox + ' — ' + tmpl.desc;
         if (Array.isArray(tmpl.complaints) && tmpl.complaints.length)
-          job.blurbOverride = Engine.pick(tmpl.complaints);   // §10.5 complaint copy
+          job.blurbOverride = Engine.pick(tmpl.complaints, 'offers');   // §10.5 complaint copy
         break;
       }
       case 'upgrade': {
@@ -1059,7 +1059,7 @@
         // guarantees a strictly-better purchasable part; else skip the offer.
         var tryCats = upgCats.slice();
         for (var sc = tryCats.length - 1; sc > 0; sc--) {
-          var sj = Engine.randInt(0, sc);
+          var sj = Engine.randInt(0, sc, 'offers');
           var tmpCat = tryCats[sc]; tryCats[sc] = tryCats[sj]; tryCats[sj] = tmpCat;
         }
         var picked = null;
@@ -1163,11 +1163,11 @@
           // or your recommendation (10%). Always satisfiable: the rolled target
           // part is itself purchasable today.
           var osParts = purchasableByCategory(state, 'os');
-          var osTarget = Engine.pick(osParts);
+          var osTarget = Engine.pick(osParts, 'offers');
           var osNeed = { category: 'os', anyOfTags: null, minPerf: null, qty: 1,
                          filledPartIds: [], label: 'Operating system',
                          osExactId: null, osFamily: null };
-          var osRoll = Engine.rand();
+          var osRoll = Engine.rand('offers');
           if (osTarget && osRoll < 0.6) {
             osNeed.osFamily = osFamilyOf(osTarget);
             osNeed.label = 'Install ' + osTarget.name + ' — any ' +
@@ -1188,13 +1188,13 @@
         break;
       }
       case 'cleaning': {
-        if (year >= 1997 && Engine.chance(0.4)) {
+        if (year >= 1997 && Engine.chance(0.4, 'offers')) {
           job.subtype = 'thermal_paste';
           job.title = 'Cleaning: dust-out & fresh thermal paste';
           job.hoursRequired = 1;
         } else {
           job.title = 'Cleaning: full dust-out';
-          job.hoursRequired = Engine.pick([0.5, 1]);
+          job.hoursRequired = Engine.pick([0.5, 1], 'offers');
         }
         break;
       }
@@ -1204,19 +1204,19 @@
           if (year < (it.minYear || 0) || year > (it.maxYear || 9999)) return false;
           return peripheralKindOf(it) !== 'crt' || year <= 2005;
         });
-        var item = Engine.pick(items) || { name: 'printer', kind: 'printer' };
+        var item = Engine.pick(items, 'offers') || { name: 'printer', kind: 'printer' };
         var kind = peripheralKindOf(item);
         job.subtype = kind;
         job.crt = kind === 'crt';
         job.peripheral = { name: item.name, kind: kind };
         var faultDesc = (Array.isArray(item.faultDescs) && item.faultDescs.length) ?
-          Engine.pick(item.faultDescs) : 'Worn out and misbehaving inside';
+          Engine.pick(item.faultDescs, 'faults') : 'Worn out and misbehaving inside';
         job.fault = { desc: faultDesc, partCategory: null, laborHours: 2 };
         job.needsDiagnosis = true; job.diagnosed = false;   // fault revealed on diagnosis
         job.hoursRequired = 1.5;   // fallback-step sizing only
         job.title = 'Peripheral: ' + item.name + ' repair';
         if (Array.isArray(item.complaints) && item.complaints.length)
-          job.blurbOverride = Engine.pick(item.complaints);
+          job.blurbOverride = Engine.pick(item.complaints, 'offers');
         break;
       }
       case 'data_recovery': {
@@ -1227,11 +1227,11 @@
       }
       case 'build': {
         var budget = Math.round(bl.buildBudget *
-          Engine.uniform(C.BUILD_BUDGET_SPREAD_MIN, C.BUILD_BUDGET_SPREAD_MAX));
+          Engine.uniform(C.BUILD_BUDGET_SPREAD_MIN, C.BUILD_BUDGET_SPREAD_MAX, 'offers'));
         var cases = Object.keys(C.USECASE_TARGETS).filter(function (u) {
           return u !== 'gaming' || year >= 1993;
         });
-        var useCase = Engine.pick(cases);
+        var useCase = Engine.pick(cases, 'offers');
         var t = C.USECASE_TARGETS[useCase];
         job.build = {
           budget: budget, useCase: useCase,
@@ -1246,7 +1246,7 @@
         if (useCase === 'gaming') {
           var inV2 = year >= C.VOODOO2_WINDOW[0] && year <= C.VOODOO2_WINDOW[1];
           var inSLI = year >= C.SLI_WINDOW[0] && year <= C.SLI_WINDOW[1];
-          if ((inV2 || inSLI) && Engine.chance(C.MULTI_GPU_CHANCE)) {
+          if ((inV2 || inSLI) && Engine.chance(C.MULTI_GPU_CHANCE, 'offers')) {
             var pairReq = bestPairRequest(state, inV2 && !inSLI);
             if (pairReq) {
               job.build.minPerf.gpu = pairReq.minGpu;   // implies the pair (§12.2)
@@ -1255,7 +1255,7 @@
               job.build.multiGpuLabel = pairReq.label;
             }
           }
-        } else if (year >= 2003 && Engine.chance(C.RAM_HEAVY_CHANCE)) {
+        } else if (year >= 2003 && Engine.chance(C.RAM_HEAVY_CHANCE, 'offers')) {
           // §12.2 office/server RAM-maxed contract build (3+ sticks by design)
           var rhPlan = ramHeavyPlan(state);
           if (rhPlan && rhPlan.target > (job.build.minPerf.ramMB || 0)) {
@@ -1267,7 +1267,7 @@
         if (!ensureBuildFeasible(state, job)) return null;   // §11.1: unbuildable
         job.hoursRequired = C.BUILD_HOURS +
           (job.build.budget > bl.buildBudget * 1.15 ? C.BUILD_HOURS_PREMIUM_EXTRA : 0);
-        job.deadlineDay = state.day + Engine.randInt(4, C.DEADLINE_MAX);
+        job.deadlineDay = state.day + Engine.randInt(4, C.DEADLINE_MAX, 'offers');
         if (job.build.wantsMultiGpu) {
           job.title = 'Custom build: ' + job.build.multiGpuLabel + ' gaming rig (' +
             Engine.fmtMoney(job.build.budget) + ' budget)';
@@ -1287,7 +1287,7 @@
                          filledPartIds: [], label: 'Beefier cooling' }];
           job.title = 'Enthusiast: overclock & cooling job';
         } else { // aesthetic: a build with a style bar
-          var abudget = Math.round(bl.buildBudget * Engine.uniform(1.0, 1.5));
+          var abudget = Math.round(bl.buildBudget * Engine.uniform(1.0, 1.5, 'offers'));
           var at = C.USECASE_TARGETS.gaming;
           job.build = {
             budget: abudget, useCase: 'gaming',
@@ -1302,7 +1302,7 @@
           job.pay = abudget;
           if (!ensureBuildFeasible(state, job)) return null;   // §11.1
           job.hoursRequired = C.BUILD_HOURS + 1;
-          job.deadlineDay = state.day + Engine.randInt(4, C.DEADLINE_MAX);
+          job.deadlineDay = state.day + Engine.randInt(4, C.DEADLINE_MAX, 'offers');
           job.title = 'Enthusiast: showpiece build (' +
             Engine.fmtMoney(job.build.budget) + ')';
         }
@@ -1310,10 +1310,10 @@
       }
       case 'contract': {
         state.lastContractDay = state.day;
-        job.units = Engine.randInt(C.CONTRACT_UNITS_MIN, C.CONTRACT_UNITS_MAX);
+        job.units = Engine.randInt(C.CONTRACT_UNITS_MIN, C.CONTRACT_UNITS_MAX, 'offers');
         job.hoursRequired = 1.5;   // per-unit fallback-step sizing; x units in assembly
-        job.deadlineDay = state.day + Engine.randInt(C.CONTRACT_DEADLINE_MIN, C.CONTRACT_DEADLINE_MAX);
-        var buildContract = state.customBuildsUnlocked && equip.enablesBuilds && Engine.chance(0.5);
+        job.deadlineDay = state.day + Engine.randInt(C.CONTRACT_DEADLINE_MIN, C.CONTRACT_DEADLINE_MAX, 'offers');
+        var buildContract = state.customBuildsUnlocked && equip.enablesBuilds && Engine.chance(0.5, 'offers');
         if (buildContract) {
           job.subtype = 'contract_build';
           job.needs = ['ram', 'storage'].filter(function (c) {
@@ -1327,7 +1327,7 @@
           job.subtype = 'contract_upgrade';
           var cc = Engine.pick(['ram', 'storage'].filter(function (c) {
             return purchasableByCategory(state, c).length > 0;
-          })) || 'ram';
+          }), 'offers') || 'ram';
           job.needs = [{ category: cc, anyOfTags: null, minPerf: null, qty: job.units,
                          filledPartIds: [], label: 'Per-unit ' + cc + ' upgrade' }];
           job.title = 'Contract: upgrade ' + job.units + ' office machines';
@@ -1340,7 +1340,7 @@
         // line charged at completion.
         var laborRateNow = Engine.laborRate(year);
         if (choice.subtype === 'apple') {
-          var adev = Engine.pick(appleMachinesActive(state));
+          var adev = Engine.pick(appleMachinesActive(state), 'offers');
           if (!adev) return null;
           // Upgrade-ish fault categories only where the flags allow (§12.4:
           // no CPU work ever; RAM/HDD only where upgradable/serviceable).
@@ -1351,7 +1351,7 @@
             return true;
           });
           if (!acats.length) acats = ['logic-board'];
-          var ainfo = appleFaultInfo(Engine.pick(acats));
+          var ainfo = appleFaultInfo(Engine.pick(acats, 'faults'));
           var modern = (adev.introYear || 0) >= C.APPLE_MODERN_YEAR;
           job.subtype = 'apple';
           job.device = { id: adev.id, name: adev.name, kind: 'apple',
@@ -1368,13 +1368,13 @@
           job.devicePartsCost = Engine.round2(
             (ainfo.partsCostFactor != null ? ainfo.partsCostFactor : 0.3) * avalue *
             (modern ? C.APPLE_MODERN_PARTS_MULT : 1));
-          job.devicePayBase = Math.round(Engine.uniform(arange[0], arange[1]));
+          job.devicePayBase = Math.round(Engine.uniform(arange[0], arange[1], 'offers'));
           job.hoursRequired = job.fault.laborHours;
           job.title = 'Device repair: ' + adev.name + ' — ' + ainfo.desc;
           if (Array.isArray(ainfo.complaints) && ainfo.complaints.length)
-            job.blurbOverride = Engine.pick(ainfo.complaints);
+            job.blurbOverride = Engine.pick(ainfo.complaints, 'offers');
         } else {
-          var mdev = Engine.pick(mobileDevicesActive(state));
+          var mdev = Engine.pick(mobileDevicesActive(state), 'offers');
           if (!mdev) return null;
           var mf = mobileFaultEntry(mdev.kind);
           if (!mf) return null;
@@ -1383,7 +1383,7 @@
                          year: mdev.introYear || year,
                          family: null, tier: mdev.tier || 'mainstream' };
           var mdesc = mf.tpl.desc ||
-            (Array.isArray(mf.tpl.faultDescs) ? Engine.pick(mf.tpl.faultDescs) : null) ||
+            (Array.isArray(mf.tpl.faultDescs) ? Engine.pick(mf.tpl.faultDescs, 'faults') : null) ||
             (mf.key.charAt(0).toUpperCase() + mf.key.slice(1) + ' failure');
           job.fault = { desc: mdesc, partCategory: null,
                         laborHours: Engine.clamp(Math.round(mf.tpl.laborHours || 2), 1, 3) };
@@ -1397,7 +1397,7 @@
           job.hoursRequired = job.fault.laborHours;
           job.title = 'Device repair: ' + mdev.name + ' — ' + mdesc;
           if (Array.isArray(mf.tpl.complaints) && mf.tpl.complaints.length)
-            job.blurbOverride = Engine.pick(mf.tpl.complaints);
+            job.blurbOverride = Engine.pick(mf.tpl.complaints, 'offers');
         }
         break;
       }
@@ -1446,13 +1446,13 @@
     // customer-appropriate period-software title (seeded RNG, deterministic).
     // Runs on every generated title/blurb regardless of where the token came
     // from (fault desc, item complaint, generic blurb...).
-    var copyCtx = { year: year, customerType: job.customer.type };
+    var copyCtx = { year: year, customerType: job.customer.type, stream: 'offers' };
     job.title = Engine.fillCopyTokens(job.title, copyCtx);
     job.blurb = Engine.fillCopyTokens(job.blurb, copyCtx);
 
     // Rush jobs: repair/software/upgrade, 8%: due today, pay x1.8 (§5.4)
     if ((job.type === 'repair' || job.type === 'software' || job.type === 'upgrade') &&
-        Engine.chance(C.RUSH_CHANCE)) {
+        Engine.chance(C.RUSH_CHANCE, 'offers')) {
       job.rush = true;
       job.deadlineDay = job.offeredDay;
       job.pay = Math.round(job.pay * C.RUSH_PAY_MULT);
@@ -1534,7 +1534,7 @@
   function appleFaultInfo(cat) {
     var table = Engine.getData().APPLE_FAULTS || {};
     var entry = table[cat];
-    if (Array.isArray(entry)) entry = Engine.pick(entry);
+    if (Array.isArray(entry)) entry = Engine.pick(entry, 'faults');
     return entry || APPLE_FAULT_FALLBACK[cat] ||
            { desc: 'Hardware fault', laborHours: 2, partsCostFactor: 0.3, complaints: [] };
   }
@@ -1545,9 +1545,9 @@
       return e && (Array.isArray(e) ? e.length : true);
     });
     if (!keys.length) return null;
-    var key = Engine.pick(keys);
+    var key = Engine.pick(keys, 'faults');
     var entry = table[key];
-    if (Array.isArray(entry)) entry = Engine.pick(entry);
+    if (Array.isArray(entry)) entry = Engine.pick(entry, 'faults');
     if (!entry) return null;
     return { key: key, tpl: entry };
   }
@@ -1650,7 +1650,7 @@
   function pickFaultCategory(cats) {
     var total = 0, i;
     for (i = 0; i < cats.length; i++) total += cats[i].w;
-    var r = Engine.rand() * total;
+    var r = Engine.rand('faults') * total;
     for (i = 0; i < cats.length; i++) { r -= cats[i].w; if (r <= 0) return cats[i].cat; }
     return cats.length ? cats[cats.length - 1].cat : 'laborOnly';
   }
@@ -1717,7 +1717,8 @@
     removeFrom(state.jobs.offers, job);
     state.declinesToday = (state.declinesToday || 0) + 1;
     if (state.declinesToday === CFG().DECLINES_FREE_PER_DAY + 1) {
-      Engine.pushScore(state, CFG().DECLINE_DING_SCORE); // word gets around
+      Engine.pushScore(state, CFG().DECLINE_DING_SCORE,
+        { reasons: ['turned away too many customers in one day'] }); // word gets around
       Engine.pushNews(state, 'job', 'Turning away a lot of work',
         'Word gets around when the shop keeps saying no.');
     }
@@ -2001,7 +2002,7 @@
         paid = buyPrice;
       }
       // ESD / handling mishap while prepping: part destroyed, must re-source (§5.5)
-      if (Engine.chance(mishapP)) {
+      if (Engine.chance(mishapP, 'misc')) {
         mishaps++;
         if (state.shop.insurance) {
           var refund = Engine.round2(chargePrice * C.INSURANCE_COVER);
@@ -2506,7 +2507,7 @@
     var C = CFG();
     var equip = Engine.equipEffects(state);
     // CRT safety: working a CRT job without the discharge kit risks injury (§5.5)
-    if (job.crt && !equip.crtSafe && Engine.chance(C.MISHAP_CRT)) {
+    if (job.crt && !equip.crtSafe && Engine.chance(C.MISHAP_CRT, 'misc')) {
       var year = Engine.currentYear(state);
       var medical = Engine.round2(Engine.laborRate(year) * C.CRT_MEDICAL_LABOR_HOURS);
       var covered = state.shop.insurance ? Engine.round2(medical * C.INSURANCE_COVER) : 0;
@@ -2621,6 +2622,7 @@
   function completeJob(state, job) {
     var C = CFG();
     var notes = [];
+    var reasons = [];        // §17.2: short tags explaining the rating outcome
     var qualityFlags = [];   // §14.2: [{partId, kind, origPerfLabel, newPerfLabel}]
     var payout = 0;
     var year = Engine.currentYear(state);
@@ -2630,7 +2632,7 @@
     if (job.type === 'refurb') {
       job.status = 'done';
       job.machine.condition = Engine.round2(
-        Engine.uniform(C.REFURB_COND_MIN, C.REFURB_COND_MAX));
+        Engine.uniform(C.REFURB_COND_MIN, C.REFURB_COND_MAX, 'market'));
       job.result = { onTime: true, score: null, payout: 0,
                      notes: ['Machine repaired — ready to sell'] };
       Engine.pushNews(state, 'job', 'Refurb ready: ' + job.machine.name,
@@ -2639,6 +2641,8 @@
     }
 
     var score = 5.0 + speed.scoreDelta;
+    if (job.speed === 'quick') reasons.push('quick work');           // §17.2
+    else if (job.speed === 'meticulous') reasons.push('meticulous work');
     var drFailed = false;
 
     if (job.type === 'data_recovery') {
@@ -2648,9 +2652,10 @@
                  + (job.speed === 'quick' ? C.DR_QUICK : 0)
                  + (job.speed === 'meticulous' ? C.DR_MET : 0);
       chance = Engine.clamp(chance, C.DR_MIN, C.DR_MAX);
-      if (!Engine.chance(chance)) {
+      if (!Engine.chance(chance, 'misc')) {
         drFailed = true;
         score = C.SCORE_DR_FAIL;
+        reasons.push('data unrecoverable');
         notes.push('Data unrecoverable — no charge');
         Engine.pushNews(state, 'job', 'Data recovery failed',
           'Some platters keep their secrets. The customer left empty-handed.');
@@ -2697,6 +2702,7 @@
           var before = payout;
           payout = Engine.round2(payout * (1 + job.taste.bonusPct / 100));
           score += C.TASTE_SCORE_BONUS;
+          reasons.push('taste matched');
           notes.push(job.taste.label + ' — delighted! +' + job.taste.bonusPct +
                      '% (' + Engine.fmtMoney(payout - before) + ')');
         }
@@ -2744,6 +2750,7 @@
           if (qIsDowngrade) {
             if (!job.budgetAsk) {
               score -= C.DOWNGRADE_SCORE;
+              reasons.push('downgrade part');
               notes.push('"The replacement ' + qNd.category +
                          ' is smaller/slower than what we had..."');
             }
@@ -2767,6 +2774,7 @@
             var qWaived = job.type === 'enthusiast' || tasteMatchesPart(job.taste, qNewPart);
             if (!qWaived) {
               score -= qHard ? C.OVERSPEND_SCORE_HARD : C.OVERSPEND_SCORE_MILD;
+              reasons.push(qHard ? 'overspent hard on a part' : 'a bit pricey on a part');
               notes.push(qHard ?
                 ('"Did it really need a ' + Engine.fmtMoney(qUsed.price) +
                  ' part? The old one was worth ' + Engine.fmtMoney(qOrigVal) + '..."') :
@@ -2792,12 +2800,12 @@
         if (mp.gpu > 0) ratio = Math.min(ratio, v.perf.gpu / mp.gpu);
         if (mp.ramMB > 0) ratio = Math.min(ratio, v.perf.ramMB / mp.ramMB);
         if (mp.storageGB > 0) ratio = Math.min(ratio, v.perf.storageGB / mp.storageGB);
-        if (ratio >= C.BUILD_PERF_BONUS_AT) { score += C.BUILD_PERF_BONUS; notes.push('Overdelivered on performance'); }
+        if (ratio >= C.BUILD_PERF_BONUS_AT) { score += C.BUILD_PERF_BONUS; notes.push('Overdelivered on performance'); reasons.push('overdelivered performance'); }
         var spentOnParts = 0;
         for (var b = 0; b < (job.partsUsed || []).length; b++)
           spentOnParts += job.partsUsed[b].price;
         if (job.build.budget > 0 && spentOnParts <= job.build.budget * C.BUILD_BUDGET_BONUS_AT) {
-          score += C.BUILD_BUDGET_BONUS; notes.push('Came in well under budget');
+          score += C.BUILD_BUDGET_BONUS; notes.push('Came in well under budget'); reasons.push('under budget');
         }
         Engine.pushNews(state, 'job', 'Custom build delivered',
           job.title + ' — ' + Engine.fmtMoney(payout));
@@ -2818,7 +2826,11 @@
 
     if (job.units > 1) job.unitsDone = job.units;
     score = Engine.clamp(score, 0, 5);
-    Engine.pushScore(state, score);
+    if (!reasons.length) reasons.push('solid work');
+    var ratingBefore = state.reputation.rating;                       // §17.2
+    Engine.pushScore(state, score, { jobId: job.id, title: job.title,
+                                     reasons: reasons });
+    var ratingDelta = Engine.round2(state.reputation.rating - ratingBefore);
     state.reputation.jobsCompleted++;
     state.ledger.lifetime.jobsCompleted++;
 
@@ -2851,11 +2863,11 @@
                Engine.equipEffects(state).callbackMult *
                Engine.certCallbackMult(state);   // §13.4
       cb = Engine.clamp(cb, C.CALLBACK_MIN, C.CALLBACK_MAX);
-      var fired = Engine.chance(cb);
+      var fired = Engine.chance(cb, 'misc');
       state.jobs.completedRecent.push({
         jobId: job.id, title: job.title, day: state.day,
         callbackRolledDay: fired ?
-          state.day + Engine.randInt(C.CALLBACK_DELAY_MIN, C.CALLBACK_DELAY_MAX) : null,
+          state.day + Engine.randInt(C.CALLBACK_DELAY_MIN, C.CALLBACK_DELAY_MAX, 'misc') : null,
         callbackChance: Engine.round2(cb * 1000) / 1000,
         fired: fired,
         origHours: job.hoursRequired
@@ -2874,11 +2886,16 @@
   /* §15.4: shared fail bookkeeping — regulars fail HARSHER (extra score
    * reduction), account-job fails count toward the account's monthly cancel
    * threshold, and contract fails feed the §15.2 contractsFailed counter. */
-  function recordJobFailure(state, job, baseFailScore) {
+  function recordJobFailure(state, job, baseFailScore, reason) {
     var C = CFG();
     var score = baseFailScore;
-    if (job.regular) score = Math.max(0, score - C.REGULAR_FAIL_EXTRA);
-    Engine.pushScore(state, score);
+    var reasons = [reason || 'failed'];
+    if (job.regular) { score = Math.max(0, score - C.REGULAR_FAIL_EXTRA);
+                       reasons.push('let a regular down'); }
+    var ratingBefore = state.reputation.rating;
+    Engine.pushScore(state, score, { jobId: job.id, title: job.title,
+                                     reasons: reasons });
+    Jobs._lastFailRatingDelta = Engine.round2(state.reputation.rating - ratingBefore);
     state.reputation.jobsFailed++;
     state.ledger.lifetime.jobsFailed++;
     if (job.type === 'contract') {
@@ -2973,7 +2990,8 @@
         assembleSteps(state, job);   // §10.1 (callback template or fallback)
         state.jobs.active.push(job);      // auto-accepted, pay 0
         state.reputation.callbacks++;
-        Engine.pushScore(state, C.CALLBACK_ARRIVAL_SCORE);  // rep ding on arrival
+        Engine.pushScore(state, C.CALLBACK_ARRIVAL_SCORE,
+          { title: 'Callback: ' + e.title, reasons: ['warranty callback'] });  // rep ding on arrival
         Engine.pushNews(state, 'job', 'Warranty callback: ' + e.title,
           'The fix did not hold. Make it right for free.');
         summary.callbacks.push(e.title);
@@ -3023,7 +3041,7 @@
   function generateMachine(state) {
     var C = CFG();
     var year = Engine.currentYear(state);
-    var built = assembleMachineParts(state);
+    var built = assembleMachineParts(state, 'market');   // §17.5
     if (!built) return null;
     var partIds = built.partIds, mobo = built.mobo;
     // §9.6: dealers keep machines above the era's build-budget class for
@@ -3035,23 +3053,23 @@
     if (!downvalueMachine(state, partIds, mobo, cap)) return null; // true big iron
     // Fault: usually one dead part (never the board — replacements must fit it)
     var faultIdx = null;
-    if (Engine.chance(0.75)) {
+    if (Engine.chance(0.75, 'market')) {
       var faultable = [];
       for (var i = 1; i < partIds.length; i++) {
         var fp = Engine.partById(partIds[i]);
         if (fp && ['cpu', 'ram', 'storage', 'gpu', 'psu'].indexOf(fp.category) !== -1)
           faultable.push(i);
       }
-      if (faultable.length) faultIdx = Engine.pick(faultable);
+      if (faultable.length) faultIdx = Engine.pick(faultable, 'market');
     }
     var hints = {
       cpu: 'halts at POST', ram: 'beeping at boot', storage: 'drive grinds horribly',
       gpu: 'no video on boot', psu: 'completely dead', none: 'just needs some love'
     };
     var faultCat = faultIdx != null ? Engine.partById(partIds[faultIdx]).category : 'none';
-    var adjective = Engine.pick((FLAVOR().machineAdjectives || ['dusty'])) || 'dusty';
+    var adjective = Engine.pick((FLAVOR().machineAdjectives || ['dusty']), 'market') || 'dusty';
     var machineYear = Engine.clamp(
-      Engine.randInt(mobo.introYear, Math.min(year, (mobo.eolYear || year) + 2)),
+      Engine.randInt(mobo.introYear, Math.min(year, (mobo.eolYear || year) + 2), 'market'),
       mobo.introYear, year);
     var value = machinePartsValue(state, { partIds: partIds });
     // Dealers price big iron closer to its real worth, and machines that
@@ -3059,7 +3077,7 @@
     var span = C.ASIS_ASK_MAX - C.ASIS_ASK_MIN;
     var bl = Engine.baselineFor(year);
     var sizeT = Engine.clamp(value / Math.max(1, bl.buildBudget), 0, 1);
-    var frac = C.ASIS_ASK_MIN + span * (0.35 * Engine.rand() + 0.65 * sizeT);
+    var frac = C.ASIS_ASK_MIN + span * (0.35 * Engine.rand('market') + 0.65 * sizeT);
     if (faultIdx == null) frac = Math.min(C.ASIS_ASK_MAX, frac + 0.04);
     var ask = Engine.round2(value * frac);
     return {
@@ -3080,9 +3098,9 @@
   Jobs.refreshAsIsMarket = function (state) {
     var C = CFG();
     for (var i = state.asIsMarket.length - 1; i >= 0; i--) {
-      if (Engine.chance(C.ASIS_CHURN)) state.asIsMarket.splice(i, 1);
+      if (Engine.chance(C.ASIS_CHURN, 'market')) state.asIsMarket.splice(i, 1);
     }
-    if (state.asIsMarket.length < C.ASIS_MAX && Engine.chance(C.ASIS_ARRIVAL_CHANCE)) {
+    if (state.asIsMarket.length < C.ASIS_MAX && Engine.chance(C.ASIS_ARRIVAL_CHANCE, 'market')) {
       var m = generateMachine(state);
       if (m) state.asIsMarket.push(m);
     }
@@ -3091,7 +3109,7 @@
   // Initial stock at newGame.
   Jobs.seedAsIsMarket = function (state) {
     var C = CFG();
-    var n = Engine.randInt(C.ASIS_START_MIN, C.ASIS_START_MAX);
+    var n = Engine.randInt(C.ASIS_START_MIN, C.ASIS_START_MAX, 'market');
     var guard = 0;
     while (state.asIsMarket.length < n && guard++ < 10) {
       var m = generateMachine(state);
@@ -3195,7 +3213,7 @@
       var part = Engine.partById(pid);
       if (!part) continue;
       var isFaulty = job.machine.faultPartIdx === i && !job.machine.faultRepaired;
-      if (isFaulty || !Engine.chance(survival)) {
+      if (isFaulty || !Engine.chance(survival, 'misc')) {
         lost.push(pid);
         continue;
       }
@@ -3255,7 +3273,7 @@
     // real flip risk; some sales underperform, the best ones stay lucrative.
     var base = refurbEstimate(state, job);
     var price = Math.max(0, Engine.round2(
-      base * Engine.uniform(1 - C.REFURB_VARIANCE_SPREAD, 1 + C.REFURB_VARIANCE_SPREAD)));
+      base * Engine.uniform(1 - C.REFURB_VARIANCE_SPREAD, 1 + C.REFURB_VARIANCE_SPREAD, 'market')));
     Engine.addCash(state, price);
     Engine.ledgerAdd(state, 'revenue', price);
     state.ledger.lifetime.refurbsSold++;

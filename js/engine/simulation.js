@@ -478,14 +478,18 @@
       var press = null;
       for (var i = 0; i < templates.length; i++)
         if (templates[i].id === 'press-coverage') press = templates[i];
-      // §17.5: player-earned promotion — draws ride 'misc', not 'market'
-      if (press) Sim.fireRandomEvent(state, press, null, 'misc');
+      // §17.5: player-earned promotion — draws ride 'misc', not 'market'.
+      // PRESS_BOOST_DAYS governs PROMOTION-fired press (the data template's
+      // own 14-30d range stays authoritative for world-rolled instances):
+      // early tiers land close together, and back-to-back 20-30d boosts
+      // overlapped into a near-permanent +1..+2 offer ramp at 1983.
+      if (press) Sim.fireRandomEvent(state, press, C.PRESS_BOOST_DAYS, 'misc');
       else Sim.fireRandomEvent(state, {
         id: 'press-coverage', headlines: ['Local press covers the rising shop'],
         body: 'A nice write-up brings the customers in.',
         durationDays: [C.PRESS_BOOST_DAYS, C.PRESS_BOOST_DAYS],
         effects: [], jobVolumeMult: C.PRESS_BOOST_MULT
-      }, null, 'misc');
+      }, C.PRESS_BOOST_DAYS, 'misc');
     }
   };
 

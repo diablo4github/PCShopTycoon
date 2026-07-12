@@ -66,11 +66,13 @@
     // smaller flip premium so flips land 1.2-1.8x the jobs $/hour, not 3x+)
     ASIS_MAX: 4,                 // listing cap
     ASIS_CHURN: 0.08,            // nightly chance each listing churns (~2wk shelf life)
-    // §17: 0.33 -> 0.42 (~1 per 2.4 nights). Decision moments (§17.1 approvals
-    // / PSU swaps) raised the dedicated-jobs lane's $/day; the flip lane is
-    // supply-capped, so arrivals get a matching nudge to hold the long-standing
-    // "jobs never out-earn a dedicated flipper by more than 3x" band.
-    ASIS_ARRIVAL_CHANCE: 0.42,   // <=1 new arrival/night below cap
+    // §17: 0.33 -> 0.42 -> 0.46. Decision moments (§17.1 approvals / PSU
+    // swaps) raised the dedicated-jobs lane's $/day, and the diagnose-wedge
+    // fix raised it again (the 0.42 calibration was measured against the
+    // bug-taxed lane). The flip lane is supply-capped, so arrivals get a
+    // matching nudge to hold the long-standing "jobs never out-earn a
+    // dedicated flipper by more than 3x" band.
+    ASIS_ARRIVAL_CHANCE: 0.46,   // <=1 new arrival/night below cap
     ASIS_START_MIN: 2, ASIS_START_MAX: 4,     // listings seeded at newGame
     ASIS_ASK_MIN: 0.45, ASIS_ASK_MAX: 0.55,   // ask vs part value (§9.6: 40-55%)
     // §14.3: retuned 0.66 -> 0.75 alongside the new used-market saturation
@@ -232,7 +234,11 @@
       { jobs: 100, rating: 4.0, label: 'Renowned' },
       { jobs: 250, rating: 4.5, label: 'Legendary' }
     ],
-    PRESS_BOOST_MULT: 1.35, PRESS_BOOST_DAYS: 21,   // fired on prestige-up
+    // Promotion press: 21 -> 14 days after the §17.1 diagnose-wedge fix.
+    // Faster job flow reaches tiers 1-2 within ~20 days of a 1983 start;
+    // 21d boosts overlapped into an always-on ramp (median 3.77 offers/day
+    // vs the 3.6 band). 14d keeps the celebration, ends the overlap.
+    PRESS_BOOST_MULT: 1.35, PRESS_BOOST_DAYS: 14,   // fired on prestige-up
 
     // Workstations
     SOFT_CAP_HOURS_MULT: 1.5,    // jobs beyond slots worked same day take +50% hours
@@ -356,7 +362,11 @@
     APPROVAL_CALL_HOURS: 0.1,       // the customer call (0.1h grid, overtime rules)
     APPROVAL_YES_CHANCE: 0.8,       // seeded on the faults stream
     APPROVAL_ADD_HOURS: 1,          // labor added by an approved add-on
-    APPROVAL_DELIGHT_SCORE: 0.2,    // "glad you caught that" completion bonus
+    // "glad you caught that" completion bonus. 0.2 -> 0.1 after the §17.1
+    // diagnose-wedge fix: with diagnoses flowing at full speed, 0.2
+    // compounded through rating -> prestige -> offer ramp and pushed the
+    // 1983 guard median past its 3.6/day band. Delight texture stays.
+    APPROVAL_DELIGHT_SCORE: 0.1,
     APPROVAL_SKIP_CALLBACK_MULT: 1.5, // leaving a discovery alone raises callback risk
     TUNING: {
       conservative: { scoreBonus: 0.15, risk: 0 },

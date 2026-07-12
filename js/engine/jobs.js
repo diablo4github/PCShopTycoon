@@ -2163,6 +2163,16 @@
       job.pendingSteps = [];
       for (var r = 0; r < job.steps.length; r++) job.steps[r].id = 's' + (r + 1);
     }
+    // §17.1 fix: an approval/tuning plan marked at generation only saw the
+    // intake+diagnose checklist. Now that the real repair steps exist,
+    // re-mark it to the midpoint of the remaining work so the "found
+    // something else" call fires mid-repair — never during diagnosis.
+    var dplan = job.decisionPlan;
+    if (dplan && !dplan.fired && dplan.stepIndex != null &&
+        job.stepIndex < job.steps.length) {
+      dplan.stepIndex = job.stepIndex +
+        Math.floor((job.steps.length - job.stepIndex) / 2);
+    }
     recomputeHours(job);
   }
 
@@ -2186,8 +2196,15 @@
     var effNeeded = Engine.round1(Math.max(0.5, Math.ceil(needStd * m * 10 - 1e-9) / 10));
     var r = Jobs.workJob(state, jobId, effNeeded);
     if (!r.ok) return r;
-    if (!job.diagnosed)
+    if (!job.diagnosed) {
+      // §17.1 defense: if a decision somehow fired mid-phase, surface THAT —
+      // "ran out of steam" is reserved for a genuinely exhausted day.
+      if (r.decisionPending) {
+        return { ok: true, hoursSpent: r.hoursSpent, fault: null,
+                 decisionPending: true, decisionPrompt: r.decisionPrompt || null };
+      }
       return err('Ran out of steam mid-diagnosis — finish it tomorrow');
+    }
     var fault = job.fault || { desc: 'No fault found', partCategory: null };
     var out = { ok: true, hoursSpent: r.hoursSpent,
                 fault: { desc: fault.desc, partCategory: fault.partCategory } };
@@ -2864,6 +2881,13 @@
     var planStep = (plan && !plan.fired &&
                     (plan.kind === 'approval' || plan.kind === 'tuning')) ?
                    plan.stepIndex : null;
+    // §17.1 fix: discoveries/tuning belong to the REPAIR phase. A plan armed
+    // at generation only knew the intake+diagnose checklist, so its marked
+    // step could land ON the diagnose step — the barrier then starved
+    // diagnoseJob's hour budget and it reported "ran out of steam" on a
+    // fresh 8h day (hard wedge). Never barrier before diagnosis;
+    // performDiagnosis re-marks the plan against the real repair steps.
+    if (job.needsDiagnosis && !job.diagnosed) planStep = null;
     for (var i = job.stepIndex; i < job.steps.length; i++) {
       var st = job.steps[i];
       if (planStep != null && i >= planStep) { barrier = 'decision-plan'; break; }

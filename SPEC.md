@@ -1773,3 +1773,108 @@ assertions; §17.5 stream determinism + median-of-5 guards green; prior guards i
 Overseer E2E: a fork decision appears and both options resolve; approval call flow;
 tuning choice; rating float + reputation log; news filters; tabs.js split smoke (all
 tabs render identically); Survival pressure boot; no console errors.
+
+---
+
+# v0.8 Addendum — Supply Lines & Sound
+
+Binding; wins on conflict. Save `version` → **9** (distributor state; chain-migrate
+v1-v8). `Engine.VERSION = "0.8"`. AGENTS.md bar applies.
+
+## 18.1 Distributor deals (ENGINE + DATA + UI)
+Real prestige perks: wholesale supply relationships with lead times and loyalty.
+- **DATA `DATA.DISTRIBUTORS`** (eras.js): 6-8 era-banded distributors
+  `{ id, name, minYear, maxYear?, minPrestige (0-3), blurb (1-2 sentences of period
+  flavor — mail-order houses of the 80s, the 90s regional wholesaler, 2000s online
+  supply, 2010s dropship platforms), baseDiscount (0.04-0.08), leadDays (2-5),
+  specialty: [categories] | null (deeper discounts there), grayMarket: false }`.
+  Include ONE `grayMarket: true` channel per broad era (swap-meet / auction-site /
+  dropshipper flavor): minPrestige 0, big discount (0.15-0.22), leadDays 1-2, BUT
+  parts arrive with a reliability penalty (engine applies −10 reliability when
+  consumed, floor 40 — higher callback risk, the honest tradeoff).
+- **ENGINE mechanics**:
+  - `getDistributors()` → unlocked view: `{id, name, blurb, relationship (0-3:
+    New/Regular/Preferred/Partner), effDiscount, leadDays, specialty, grayMarket,
+    deals: [...this week's], lockedReason?}` (locked ones listed with reason).
+  - **Bulk orders**: `placeOrder(distributorId, partId, qty)` → `{ok, unitCost,
+    total, arrivesDay}`. Quantity discount tiers on top of baseDiscount+relationship:
+    qty ≥5 +3%, ≥10 +6%, ≥25 +10% (CONFIG). Paid upfront; 0.2h paperwork; arrives via
+    the overnight pipeline into inventory (storage rules apply — oversize orders can
+    push overage fees: the stockpiling tradeoff stays real). `state.pendingOrders`
+    with a morning-summary delivery line and a cancel API (before ship day only,
+    10% restocking fee).
+  - **Weekly deals**: each Monday per unlocked distributor, 1-2 rotating deals on the
+    offers/market stream: `{partId, dealDiscount (0.12-0.25), maxQty, expiresDay}` —
+    stack with relationship but not bulk tiers. Deals lean into the era: glut
+    categories get deeper cuts; during an active shortage event affecting a category,
+    deals on it vanish EXCEPT relationship ≥ Preferred keeps a small allocation
+    (maxQty 2-3 at list — "priority allocation", the loyalty payoff).
+  - **Relationship**: per-distributor lifetime spend thresholds (year-scaled) promote
+    New→Regular→Preferred→Partner: +1%/+2%/+3% discount, −1 leadDay at Partner
+    (min 1), shortage allocation at Preferred+. News note on promotion.
+  - Balance: distributors must not obsolete the retail market — retail is instant,
+    distributors are cheaper-but-slower; sim asserts a distributor-using bot beats
+    retail-only by a MODEST margin (3-10% net over 60 days at 1996), guards re-verified.
+- **UI**: Market tab gains sub-tabs (§16.1 component): **Retail** (today's market,
+  unchanged) · **Suppliers** (distributor cards: relationship stars, discount/lead,
+  this-week's deals with Buy, bulk-order form with live unit-cost preview, pending
+  orders list with ETA + cancel, gray-market channel visually distinct with an honest
+  "no warranty — higher callback risk" note) — feature-detected.
+
+## 18.2 Era-authentic music (UI + overseer-authored scores)
+The soundtrack follows PC audio history, like the era skins. **`js/ui/music-scores.js`
+is OVERSEER-AUTHORED CONTENT (already on disk): integrate it, do not rewrite the
+notes.** Loads before audio.js in index.html.
+- **Score schema** (as shipped): `UI.MUSIC_SCORES[] = { id, name, eraSkin: 'early'|
+  '90s'|'00s'|'modern', bpm, bars (4/4 loop), channels: [{voice, gain, mode,
+  notes?: [[bar, beat, note, durBeats, vel]], chords?: [perBar noteName arrays]}],
+  drums: 'none'|'hats8'|'lofiKit' }`. Note names use sharps only. Mode expansion
+  (deterministic): `notes` = play as written; `pad` = hold each bar's chord for the
+  bar; `offbeat` = chord stabs on beats 1.5 & 3.5 (0-based: 1 and 3), short; `arp8` =
+  up through chord in 8ths, cycling; `arpUpDown8` = up-down 8ths; `root8` = chord[0]
+  pulsing 8ths; `rootFifth8` = alternate root & +7 semitones 8ths; `whole` = chord[0]
+  held per bar.
+- **Voices (synthesis techniques by era — this is the education):**
+  - `beeper` — PC-speaker: ONE plain square oscillator, no filter, fixed modest gain
+    envelope (fast attack, flat, quick release), NO polyphony (engine enforces mono
+    for eraSkin 'early': a new note cuts the previous — authentic).
+  - `fmBass`/`fmEP`/`fmBell` — OPL2-style 2-operator FM (sine carrier + sine
+    modulator via a GainNode into carrier.frequency): fmBass ratio ~1:1 high-index
+    fast-decay; fmEP ratio ~1:14ish tine (or 1:7 — tune by ear for a DX/OPL e-piano
+    feel), index decays; fmBell ratio ~1:3.5, long shimmer decay. Tune params freely;
+    keep the technique honestly FM.
+  - `sawLead`/`sawPad` — subtractive: sawtooth(s) → lowpass (env-swept for lead,
+    slow/gentle for pad), pad = 2 saws detuned ±6 cents.
+  - `softPad` — modern: 3 detuned saws + sine sub octave, slow attack (~0.8s),
+    gentle feedback delay; `subBass` — sine + a touch of triangle; `bellArp` — sine +
+    2.76× partial, fast decay (tine-ish sparkle).
+  - Drums: `hats8` = short highpassed-noise ticks on 8ths (accent 1 & 3 lightly);
+    `lofiKit` = soft sine-drop kick on 1 & 3, bandpassed-noise snare on 2 & 4 at low
+    gain, hats sparse. Keep all drums quiet (≤0.08 gain).
+- **Scheduler/integration** (audio.js): replace the old generative loops with score
+  playback: pick from the era's scores, ALTERNATE between them (switch on each loop
+  end or in-game day change) so long sessions don't repeat one piece; crossfade ~2s
+  on era-skin change; respect existing music volume/mute settings and the
+  first-gesture AudioContext rule. **Testability requirement**: the synth render path
+  must accept an explicit (ctx, destination) so an OfflineAudioContext can render a
+  score headlessly — expose `UI.audio.renderScore(scoreId, offlineCtx)` returning a
+  promise; the overseer renders WAVs with it for review.
+  - System tab audio card gains a "Now playing" line: score name + technique label
+    ("2-op FM synthesis — how AdLib/Sound Blaster music worked in 1991").
+- **DATA**: one new Wiki ARTICLE (flavor.js, ARTICLES table): "Beeps to Bitstreams:
+  how PC audio grew up" — PC speaker → AdLib OPL2 FM → Sound Blaster → General
+  MIDI/wavetable → onboard HD audio; unlockYear ~1998; mention that the game's own
+  soundtrack re-creates these techniques. Validator count updates.
+
+## 18.3 Testing
+validator: DISTRIBUTORS schema (era bands, discounts sane, exactly the gray-market
+flags intended, blurbs); new article. sim: bulk order lifecycle (place→lead
+days→delivery→inventory; cancel+fee), deal rotation Mondays + shortage allocation
+gating, relationship promotion + effects, gray-market reliability penalty flows into
+callback risk, retail-vs-distributor margin band, guards green (median-of-5). UI
+smoke: suppliers sub-tab, order form math, pending ETA, deals render; music: every
+score renders offline without exception, correct duration (bars×4×60/bpm ±0.1s),
+peak level < 0.9 (no clipping), 'early' scores stay mono. Overseer E2E: place a bulk
+order → arrives after lead days; a deal purchase; music engine boots, era switch
+crossfades without console errors; renders all 8 scores to WAV via OfflineAudioContext
+and ships them to the user for listening review.

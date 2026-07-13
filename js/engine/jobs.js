@@ -297,6 +297,27 @@
     if (isBuildJob(job)) return 'motherboard';   // assembly bench context
     return null;
   }
+  // §20.4 (#6): a catalog add-on discovery only qualifies when ≥1 purchasable
+  // part in that category is actually COMPATIBLE with the job's machine (tags
+  // via machineMoboTags) — merely purchasable in-era isn't enough (a part
+  // whose socket/bus/form-factor can't fit this machine is never a real
+  // "approved add-on"). Permissive when there's no constraint info to check
+  // against (no machine/board known yet — e.g. a fresh build's motherboard
+  // slot isn't picked): the part being merely purchasable is enough then.
+  function discoveryMachineCompatible(state, job, category) {
+    var list = purchasableByCategory(state, category);
+    if (!list.length) return false;
+    var tags = machineMoboTags(job, category);
+    if (!tags) return true;
+    var prefix = Engine.Compat.namespaceForCategory(category);
+    for (var i = 0; i < list.length; i++) {
+      var need = prefix ? Engine.Compat.tagsInNamespace(list[i], prefix) : [];
+      if (!need.length) return true;   // this part declares no requirement — fits anything
+      for (var j = 0; j < need.length; j++)
+        if (tags.indexOf(need[j]) !== -1) return true;
+    }
+    return false;
+  }
   function pickDiscovery(state, job) {
     var year = Engine.currentYear(state);
     var pool = Engine.getData().DISCOVERIES;
@@ -305,14 +326,25 @@
     var inYear = pool.filter(function (d) {
       if (d.minYear != null && year < d.minYear) return false;
       if (d.maxYear != null && year > d.maxYear) return false;
-      // A discovery must be sourceable: catalog add-ons need a purchasable part
-      if (d.addCategory && !purchasableByCategory(state, d.addCategory).length) return false;
-      // Device-billed add-ons (addCategory null) only make sense on device jobs
-      if (!d.addCategory && job.type !== 'device_repair') return false;
       return true;
     });
-    var matched = inYear.filter(function (d) { return d.category === ctx; });
-    return Engine.pick(matched.length ? matched : inYear, 'faults') || null;
+    // §20.4 (#6): device_repair jobs are device-billed ONLY — filter to
+    // addCategory==null BEFORE the context match, with NO fallback across
+    // this line. If nothing device-billed matches the context, no discovery
+    // fires at all (the plan simply isn't armed) — a device job must never
+    // fall through to a catalog add-on discovery meant for hardware repairs.
+    if (job.type === 'device_repair') {
+      var deviceOnly = inYear.filter(function (d) { return d.addCategory == null; });
+      var deviceMatched = deviceOnly.filter(function (d) { return d.category === ctx; });
+      return Engine.pick(deviceMatched, 'faults') || null;
+    }
+    // Non-device jobs never take a device-billed (addCategory==null) add-on,
+    // and a catalog add-on must be sourceable AND machine-compatible.
+    var sourceable = inYear.filter(function (d) {
+      return !!d.addCategory && discoveryMachineCompatible(state, job, d.addCategory);
+    });
+    var matched = sourceable.filter(function (d) { return d.category === ctx; });
+    return Engine.pick(matched.length ? matched : sourceable, 'faults') || null;
   }
   function tuningTextFor(state) {
     var year = Engine.currentYear(state);
@@ -2542,9 +2574,12 @@
         onOrder += po.qty;
         if (orderEta == null || po.arrivesDay < orderEta) orderEta = po.arrivesDay;
       });
+      // §20.2: units earmarked in the shopping cart for this exact slot
+      var inCart = Engine.cartQtyForNeed(state, job.id, i);
       var entry = { index: i, label: need.label, category: need.category,
                  qty: need.qty, filled: need.filledPartIds.length,
                  onOrder: onOrder, arrivesDay: orderEta,   // §19.3
+                 inCart: inCart,                            // §20.2
                  assigned: assigned, replaces: replaces, options: options,
                  machinePsuWatts: machinePsuWatts(job) || null,   // §17.1
                  minWatts: need.minWatts || null };
@@ -2557,7 +2592,8 @@
         entry.sumAssigned = summedAssigned(need);
         entry.sumLabel = fmtPerfReq(need.sumKey, entry.sumAssigned);
         entry.satisfied = needSatisfied(need);
-        entry.slotsFree = Math.max(0, need.qty - need.filledPartIds.length - onOrder);
+        // §20.2: slotsFree = qty - filled - onOrder - inCart
+        entry.slotsFree = Math.max(0, need.qty - need.filledPartIds.length - onOrder - inCart);
         options.forEach(function (o5) {
           var p5 = Engine.partById(o5.partId);
           if (p5) o5.countToMeet = countToMeet(p5, need);
@@ -2670,18 +2706,19 @@
     var C = CFG();
     var equip = Engine.equipEffects(state);
     var mishapP = C.MISHAP_PART_DAMAGE * equip.mishapMult;
-    // §19.3: units already ordered for this slot count as committed — no
-    // double-buying by an impatient second click (or a looping bot).
+    // §19.3/§20.2: units already ordered OR already sitting in the cart for
+    // this slot count as committed — no double-buying/double-carting by an
+    // impatient second click (or a looping bot).
     var onOrder = 0;
     (state.pendingOrders || []).forEach(function (po) {
       if (po.jobId === job.id && po.needIndex === idx) onOrder += po.qty;
     });
-    var toFill = need.qty - need.filledPartIds.length - onOrder;
+    var inCartQty = Engine.cartQtyForNeed(state, job.id, idx);
+    var toFill = need.qty - need.filledPartIds.length - onOrder - inCartQty;
     // §19.5: summable needs fill one unit per action ("Add another" flow)
     if (need.summable) toFill = Math.min(toFill, 1);
     if (toFill <= 0) {
-      return err('Parts for this slot are already on the truck — arriving ' +
-                 'tomorrow morning');
+      return err('Parts for this slot are already on the truck or in the cart');
     }
     // §19.3 rush: explicit {rush:true}, or a RUSH job whose 2.2x premium
     // bakes same-day shipping in at no extra charge.
@@ -2761,49 +2798,26 @@
       Engine.ledgerAdd(state, 'other', surcharge);
       spent = Engine.round2(spent + surcharge);
     }
-    // §19.3/§19.1: order the remainder at list — arrives tomorrow morning and
-    // auto-fills this slot. Paid up front; affordability caps the quantity
-    // (partial fills stay readable and inventory-conserving).
-    var remaining = need.qty - need.filledPartIds.length - onOrder;
-    var orderedQty = 0, arrivesDay = null;
+    // §20.2: whatever's still unfilled (not rush, not already on order) goes
+    // into the shopping cart as a retail line carrying a jobLink — NO charge,
+    // NO time spent, until the player checks out. Replaces the old "order it
+    // now, charge it now" behavior for un-stocked parts.
+    var remaining = need.qty - need.filledPartIds.length - onOrder - inCartQty;
+    var itemId = null, cartQty = 0;
     if (!rush && remaining > 0) {
-      var listPrice = P().priceOf(part, state, { buy: true });
-      var affordable = listPrice > 0 ?
-        Math.floor((state.cash + 1e-9) / listPrice) : remaining;
-      orderedQty = Math.max(0, Math.min(remaining, affordable));
-      if (orderedQty > 0) {
-        var run2 = supplyRun(state);
-        if (!run2.ok) {
-          if (!filledNow && !mishaps) return run2;
-          orderedQty = 0;
-        } else {
-          var orderTotal = Engine.round2(listPrice * orderedQty);
-          Engine.addCash(state, -orderTotal);
-          Engine.ledgerAdd(state, 'partsCost', orderTotal);
-          spent = Engine.round2(spent + orderTotal);
-          arrivesDay = state.day + C.RETAIL_LEAD_DAYS;
-          state.nextOrderId = state.nextOrderId || 1;
-          state.pendingOrders = state.pendingOrders || [];
-          state.pendingOrders.push({
-            id: state.nextOrderId++, source: 'retail', distributorId: null,
-            partId: part.id, partName: part.name, distName: 'Retail market',
-            qty: orderedQty, unitCost: listPrice, total: orderTotal,
-            placedDay: state.day, arrivesDay: arrivesDay, gray: false,
-            jobId: job.id, needIndex: idx
-          });
-        }
-      } else if (!filledNow && !mishaps) {
-        return err('Not enough cash for ' + part.name + ' (' +
-                   Engine.fmtMoney(listPrice) + ')');
-      }
+      var addRes = Engine.cartAddJobLink(state, job.id, idx, part.id, remaining);
+      itemId = addRes.itemId;
+      cartQty = remaining;
     }
-    return { ok: true, cost: spent, filledNow: filledNow,
-             mishap: mishaps > 0, mishaps: mishaps,
-             filled: need.filledPartIds.length, qty: need.qty,
-             remaining: Engine.round2(need.qty - need.filledPartIds.length -
-                                      onOrder - orderedQty),
-             orderedQty: orderedQty, arrivesDay: arrivesDay,
-             rush: rush && rushBuyTotal > 0, surcharge: surcharge };
+    var result = { ok: true, cost: spent, filledNow: filledNow,
+                   mishap: mishaps > 0, mishaps: mishaps,
+                   filled: need.filledPartIds.length, qty: need.qty,
+                   remaining: Engine.round2(need.qty - need.filledPartIds.length -
+                                            onOrder - inCartQty - cartQty),
+                   inCart: (inCartQty + cartQty) > 0,
+                   rush: rush && rushBuyTotal > 0, surcharge: surcharge };
+    if (itemId != null) result.itemId = itemId;
+    return result;
   };
   Jobs.installPart = Jobs.assignPart;   // deprecated alias (one release, §10.3)
 
@@ -2846,7 +2860,13 @@
     var idx = Number(needIndex);
     var need = job.needs[idx];
     if (!need) return err('No such part slot');
-    if (!need.filledPartIds.length) return err('Nothing assigned to that slot');
+    if (!need.filledPartIds.length) {
+      // §20.2: nothing installed yet, but there may be an in-cart reservation
+      // for this slot (assignPart's un-stocked path) — release that instead.
+      var rel = Engine.cartReleaseNeedLink(state, job.id, idx, partId || null);
+      if (rel.ok) return { ok: true, unlinkedFromCart: true, returned: rel.partId, qty: rel.qty };
+      return err('Nothing assigned to that slot');
+    }
     var st = installStepFor(job, idx);
     if (st && st.done) return err('Already installed — too late to unassign');
     var pid = partId != null ? String(partId) :
@@ -3900,6 +3920,7 @@
                    tasteMatched: tasteMatched, qualityFlags: qualityFlags,
                    ratingDelta: ratingDelta };   // §17.2
     removeFrom(state.jobs.active, job);
+    Engine.cartUnlinkJob(state, job.id);   // §20.2: no orphan jobLinks, ever
     return job.result;
   }
   Jobs.completeJob = completeJob;
@@ -3935,10 +3956,22 @@
   }
   Jobs.recordJobFailure = recordJobFailure;
 
+  // §20.4 (#4): job.customer is a plain string for stock builds ("Shop
+  // project") but {name,type} for every customer-facing job — never assume
+  // the object shape when rendering a name into news copy.
+  function customerNameOf(job) {
+    var c = job && job.customer;
+    if (c && typeof c === 'object' && c.name) return c.name;
+    if (typeof c === 'string' && c) return c;
+    return 'The customer';
+  }
+  Jobs.customerNameOf = customerNameOf;
+
   Jobs.abandonJob = function (state, jobId) {
     var job = Jobs.findActive(state, jobId);
     if (!job) return err('Job not active');
     removeFrom(state.jobs.active, job);
+    Engine.cartUnlinkJob(state, job.id);   // §20.2: no orphan jobLinks, ever
     if (job.type === 'refurb') {
       var value = machinePartsValue(state, job.machine);
       var scrap = Engine.round2(value * CFG().REFURB_SCRAP_RATIO);
@@ -3948,9 +3981,23 @@
         'Stripped for parts — recovered ' + Engine.fmtMoney(scrap) + '.');
       return { ok: true, scrapped: scrap };
     }
+    // §20.4 (#4): abandoning a shop project (stockBuild) is never a customer
+    // failure — no rating ding, and every assigned/committed part goes back
+    // to inventory (conservation invariant holds; parts back on the shelf).
+    if (job.stockBuild) {
+      var returned = [];
+      (job.partsUsed || []).forEach(function (pu) {
+        var basis = pu.cost != null ? pu.cost : (pu.price || 0);
+        Engine.inventoryAdd(state, pu.partId, 1, basis);
+        returned.push(pu.partId);
+      });
+      Engine.pushNews(state, 'job', 'Shop project shelved',
+        'Shop project shelved — parts back on the shelf.');
+      return { ok: true, returned: returned };
+    }
     recordJobFailure(state, job, CFG().SCORE_ABANDON, 'abandoned');   // §15.4/§17.2
     Engine.pushNews(state, 'job', 'Job abandoned: ' + job.title,
-      job.customer.name + ' will not be recommending the shop.');
+      customerNameOf(job) + ' will not be recommending the shop.');
     return { ok: true, ratingDelta: Jobs._lastFailRatingDelta };
   };
 
@@ -3962,6 +4009,7 @@
       job = state.jobs.active[i];
       if (job.deadlineDay != null && state.day > job.deadlineDay && job.status === 'active') {
         state.jobs.active.splice(i, 1);
+        Engine.cartUnlinkJob(state, job.id);   // §20.2: no orphan jobLinks, ever
         var failScore = recordJobFailure(state, job, C.SCORE_LATE, 'late');   // §15.4
         job.status = 'done';
         job.result = { onTime: false, score: failScore, payout: 0,
@@ -3970,7 +4018,7 @@
                          ['Missed the deadline', 'A loyal regular, let down'] :
                          ['Missed the deadline'] };
         Engine.pushNews(state, 'job', 'Deadline missed: ' + job.title,
-          job.customer.name + ' took their machine elsewhere.');
+          customerNameOf(job) + ' took their machine elsewhere.');
         summary.expired.push(job.title + ' (deadline missed)');
       }
     }
@@ -4243,6 +4291,7 @@
       recovered.push(pid);
     }
     removeFrom(state.jobs.active, job);
+    Engine.cartUnlinkJob(state, job.id);   // §20.2: no orphan jobLinks, ever
     Engine.recordAchievementEvent(state, 'strip');   // §15.5
     Engine.pushNews(state, 'job', 'Stripped for parts: ' + job.machine.name,
       recovered.length + ' part' + (recovered.length === 1 ? '' : 's') +
@@ -4342,6 +4391,7 @@
     });
     job.status = 'sold';
     removeFrom(state.jobs.active, job);
+    Engine.cartUnlinkJob(state, job.id);   // §20.2: no orphan jobLinks, ever
     Engine.pushNews(state, 'money',
       (job.machine.stockBuild ? 'Stock build sold: ' : 'Refurb sold: ') +
       job.machine.name,

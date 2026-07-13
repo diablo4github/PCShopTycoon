@@ -313,6 +313,19 @@ function botFillOpts(E, job) {
   return slack <= 2 ? { rush: true } : undefined;
 }
 
+// §20.1: a reasonable player checks the cart out once it has grown a line —
+// otherwise non-rush assignPart calls just sit unconverted in the cart
+// forever (§20.2 replaced the old "order it now" behavior with "add to cart
+// now"). Cheap (0.2h) and safe to call repeatedly (no-op on an empty cart);
+// waits for affordability rather than forcing a checkout the bot can't pay.
+function botCheckoutCart(E) {
+  var cart = E.getCart();
+  if (!cart.count) return false;
+  if (cart.total > E.getState().cash + 1e-6) return false;
+  var r = E.checkoutCart({ retailShipping: 'next-day' });
+  return !!(r && r.ok);
+}
+
 function botDay(E, mem) {
   var s = E.getState();
 
@@ -520,9 +533,11 @@ function botDay(E, mem) {
         var ir = tracked(E, mem, isFlip, function () {
           return E.assignPart(job.id, need.index, opt.partId, botFillOpts(E, job));
         });
-        if (ir.ok && (ir.filledNow > 0 || ir.mishap || ir.orderedQty > 0)) progress = true;
+        if (ir.ok && (ir.filledNow > 0 || ir.mishap || ir.inCart)) progress = true;
         if (!ir.ok) blocked = true;
       }
+      // §20.1: convert this job's cart-linked needs into next-morning orders
+      if (tracked(E, mem, isFlip, function () { return botCheckoutCart(E); })) progress = true;
       if (botResolveDecision(E, job)) progress = true;   // §17.1
       var w = tracked(E, mem, isFlip, function () { return E.workJob(job.id); });
       if (w.ok && w.decisionPending && botResolveDecision(E, job)) progress = true;
@@ -856,10 +871,11 @@ function runDedicatedBot(era, mode, seed) {
           var opt = chooseOption(E, job, need);
           if (!opt) continue;
           if (opt.source === 'market' && opt.price > E.getState().cash - 200) continue;
-          if (need.onOrder > 0) continue;   // §19.3: it's on the truck
+          if (need.onOrder > 0 || need.inCart > 0) continue;   // §19.3/§20.2: already inbound
           var ir = E.assignPart(job.id, need.index, opt.partId, botFillOpts(E, job));
           if (ir.ok) progress = true;
         }
+        if (botCheckoutCart(E)) progress = true;   // §20.1
         if (botResolveDecision(E, job)) progress = true;   // §17.1
         var w = E.workJob(job.id, 'job');
         if (w.ok && w.decisionPending && botResolveDecision(E, job)) progress = true;
@@ -5013,7 +5029,7 @@ function runSupplyBot(era, seed, useDist) {
           // §18.1 supply strategy: with stock on hand, assign it. Otherwise,
           // if the deadline comfortably covers a lead time, order wholesale
           // and keep working other jobs; only tight deadlines pay retail.
-          if (need.onOrder > 0) continue;   // §19.3: retail truck inbound
+          if (need.onOrder > 0 || need.inCart > 0) continue;   // §19.3/§20.2: already inbound
           if (useDist && opt.source === 'market') {
             var ordered = s.pendingOrders.some(function (o2) {
               return need.options.some(function (o4) {
@@ -5081,6 +5097,7 @@ function runSupplyBot(era, seed, useDist) {
           if (opt.source === 'market' && opt.price > s.cash - 200) continue;
           if (E.assignPart(job.id, need.index, opt.partId, botFillOpts(E, job)).ok) progress = true;
         }
+        if (botCheckoutCart(E)) progress = true;   // §20.1
         if (botResolveDecision(E, job)) progress = true;
         var w = E.workJob(job.id, 'job');
         if (w.ok && w.decisionPending && botResolveDecision(E, job)) progress = true;
@@ -5255,10 +5272,11 @@ function phantomFillScenario() {
           return;
         }
         E.getJobNeeds(jb.id).forEach(function (nd) {
-          if (nd.filled >= nd.qty || nd.onOrder > 0) return;
+          if (nd.filled >= nd.qty || nd.onOrder > 0 || nd.inCart > 0) return;
           var op = chooseOption(E, jb, nd);
           if (op && E.assignPart(jb.id, nd.index, op.partId).ok) progress = true;
         });
+        if (botCheckoutCart(E)) progress = true;   // §20.1
         var w = E.workJob(jb.id, 'job');
         if (w.ok && w.hoursSpent > 0) progress = true;
         if (w.ok && w.decisionPending && botResolveDecision(E, jb)) progress = true;

@@ -438,13 +438,18 @@
 
     // §19.7 primary-vs-removable storage
     PRIMARY_STORAGE_YEAR: 1988,     // builds need a non-removable drive from here
-    MACHINE_FLOPPY_YEARS: [1983, 1995]  // era-typical extra floppy in customer machines
+    MACHINE_FLOPPY_YEARS: [1983, 1995],  // era-typical extra floppy in customer machines
+
+    // v0.9.1 shopping cart — one flat checkout cost regardless of line count
+    // (cheaper than the old 0.5h SUPPLY_RUN_HOURS habit it replaces for part
+    // purchases). Courier fee reuses RUSH_SURCHARGE_MIN/PCT at cart level.
+    CHECKOUT_HOURS: 0.2
   };
 
   // ------------------------------------------------------------------
   // Live state reference (set by api.js newGame/importSave)
   // ------------------------------------------------------------------
-  Engine.VERSION = '0.9';        // §19: parseFloat-compatible with the UI's >=0.4 gate
+  Engine.VERSION = '0.9.1';      // v0.9.1: parseFloat-compatible with the UI's >=0.4 gate
   Engine._state = null;
   Engine.getData = function () { return root.DATA || {}; };
 
@@ -762,6 +767,136 @@
     }
     return true;
   };
+  // ------------------------------------------------------------------
+  // v0.9.1 shopping cart — shared low-level state-shape helpers used by
+  // jobs.js (assignPart job-linking) and api.js (the cart mutators
+  // themselves). No dependency on Pricing/Sim so this can live in core.js.
+  // ------------------------------------------------------------------
+  Engine.cartOf = function (state) {
+    if (!state.cart || typeof state.cart !== 'object') state.cart = { nextId: 1, items: [] };
+    if (!Array.isArray(state.cart.items)) state.cart.items = [];
+    if (state.cart.nextId == null) state.cart.nextId = 1;
+    return state.cart;
+  };
+  // Units of `partId` already sitting in the cart earmarked for this exact
+  // job/need slot (summed across every cart line that carries a link to it).
+  Engine.cartQtyForNeed = function (state, jobId, needIndex) {
+    var cart = state.cart;
+    if (!cart || !Array.isArray(cart.items)) return 0;
+    var total = 0;
+    for (var i = 0; i < cart.items.length; i++) {
+      var links = cart.items[i].jobLinks || [];
+      for (var j = 0; j < links.length; j++) {
+        if (links[j].jobId === jobId && links[j].needIndex === needIndex) total += links[j].qty;
+      }
+    }
+    return total;
+  };
+  // Add (or top up) a RETAIL cart line carrying a job link — the un-stocked
+  // half of assignPart (§20.2). Merges into an existing retail+partId line
+  // exactly like a manual addToCart would, and folds into any existing link
+  // for the SAME job/need rather than creating a duplicate entry.
+  Engine.cartAddJobLink = function (state, jobId, needIndex, partId, qty) {
+    var cart = Engine.cartOf(state);
+    var item = null;
+    for (var i = 0; i < cart.items.length; i++) {
+      if (cart.items[i].source === 'retail' && cart.items[i].partId === partId) {
+        item = cart.items[i]; break;
+      }
+    }
+    if (!item) {
+      item = { id: cart.nextId++, source: 'retail', partId: partId, qty: 0, jobLinks: [] };
+      cart.items.push(item);
+    }
+    item.qty += qty;
+    var link = null;
+    for (var j = 0; j < item.jobLinks.length; j++) {
+      if (item.jobLinks[j].jobId === jobId && item.jobLinks[j].needIndex === needIndex) {
+        link = item.jobLinks[j]; break;
+      }
+    }
+    if (link) link.qty += qty;
+    else item.jobLinks.push({ jobId: jobId, needIndex: needIndex, qty: qty });
+    return { ok: true, itemId: item.id };
+  };
+  // §20.2: release ONE unit of a job's cart-linked (not-yet-filled) retail
+  // reservation for a need — unassignPart's counterpart for an in-cart slot.
+  // Matches the first cart item carrying a jobLink for {jobId, needIndex}
+  // (optionally constrained to a specific partId); shrinks/removes that link
+  // and the cart line's qty together, removing the line entirely at zero.
+  Engine.cartReleaseNeedLink = function (state, jobId, needIndex, partId, qty) {
+    qty = qty || 1;
+    var cart = state.cart;
+    if (!cart || !Array.isArray(cart.items)) return { ok: false, error: 'Nothing in the cart for that slot' };
+    for (var i = 0; i < cart.items.length; i++) {
+      var item = cart.items[i];
+      if (partId != null && item.partId !== partId) continue;
+      var links = item.jobLinks || [];
+      for (var j = 0; j < links.length; j++) {
+        if (links[j].jobId !== jobId || links[j].needIndex !== needIndex) continue;
+        var take = Math.min(qty, links[j].qty);
+        links[j].qty -= take;
+        item.qty -= take;
+        if (links[j].qty <= 0) links.splice(j, 1);
+        if (item.qty <= 0) cart.items.splice(i, 1);
+        return { ok: true, qty: take, partId: item.partId };
+      }
+    }
+    return { ok: false, error: 'Nothing in the cart for that slot' };
+  };
+  // A job left the active list (completed/abandoned/deadline-swept/etc) —
+  // strip every cart jobLink that points at it. The cart LINE itself (and its
+  // qty) survives; it just stops being "for" a job that no longer exists.
+  // Never leaves an orphan jobLink behind (sim-test invariant, §20.2).
+  Engine.cartUnlinkJob = function (state, jobId) {
+    var cart = state.cart;
+    if (!cart || !Array.isArray(cart.items)) return [];
+    var unlinked = [];
+    for (var i = 0; i < cart.items.length; i++) {
+      var links = cart.items[i].jobLinks;
+      if (!links || !links.length) continue;
+      for (var j = links.length - 1; j >= 0; j--) {
+        if (links[j].jobId === jobId) {
+          unlinked.push({ jobId: links[j].jobId, needIndex: links[j].needIndex });
+          links.splice(j, 1);
+        }
+      }
+    }
+    return unlinked;
+  };
+  // Push one pendingOrder, auto-incrementing nextOrderId. `base` carries
+  // source-specific fields (source, distributorId, partId, partName,
+  // distName, gray); jobId/needIndex may be null for plain shop stock.
+  Engine.pushPendingOrder = function (state, base, qty, unitCost, arrivesDay, jobId, needIndex) {
+    state.nextOrderId = state.nextOrderId || 1;
+    state.pendingOrders = state.pendingOrders || [];
+    var order = {
+      id: state.nextOrderId++, source: base.source, distributorId: base.distributorId,
+      partId: base.partId, partName: base.partName, distName: base.distName,
+      qty: qty, unitCost: unitCost, total: Engine.round2(unitCost * qty),
+      placedDay: state.day, arrivesDay: arrivesDay, gray: !!base.gray,
+      jobId: jobId != null ? jobId : null, needIndex: needIndex != null ? needIndex : null
+    };
+    state.pendingOrders.push(order);
+    return order;
+  };
+  // Split a qty across jobLinks [{jobId,needIndex,qty}], with any remainder
+  // landing as a plain-stock order. unitCost/arrivesDay are shared across the
+  // whole split — bulk/deal pricing is computed once on the FULL qty, never
+  // re-quoted per chunk, so what the cart showed is exactly what's charged.
+  Engine.pushSplitOrders = function (state, base, qty, unitCost, arrivesDay, jobLinks) {
+    var orders = [], allocated = 0;
+    (jobLinks || []).forEach(function (jl) {
+      var q = Math.min(jl.qty, qty - allocated);
+      if (q <= 0) return;
+      allocated += q;
+      orders.push(Engine.pushPendingOrder(state, base, q, unitCost, arrivesDay, jl.jobId, jl.needIndex));
+    });
+    var leftover = qty - allocated;
+    if (leftover > 0) orders.push(Engine.pushPendingOrder(state, base, leftover, unitCost, arrivesDay, null, null));
+    return orders;
+  };
+
   Engine.storageInfo = function (state) {
     var used = 0;
     for (var i = 0; i < state.inventory.length; i++) used += state.inventory[i].qty;

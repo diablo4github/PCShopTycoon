@@ -899,6 +899,57 @@
              deal: isDeal, allocation: isAlloc, gray: !!dist.grayMarket };
   };
 
+  // Is this era-active distributor unlocked for the shop's current prestige?
+  // (Trivial public wrapper over distUnlockInfo — §20.3's getSourceCatalog
+  // needs a locked/unlocked read without duplicating the prestige-gate logic.)
+  Sim.distUnlocked = function (state, distributorId) {
+    var d = distById(state, distributorId);
+    if (!d) return false;
+    return distUnlockInfo(state, d).unlocked;
+  };
+
+  /* §20.1: the money/relationship/deal/pendingOrders side of a distributor
+   * order, factored out of placeOrder so the shopping cart's checkout can
+   * reuse it WITHOUT re-charging cash or re-spending hours (the cart bills
+   * one flat CHECKOUT_HOURS for the whole checkout, not per line). Splits
+   * the quoted qty across jobLinks (§20.2 job-linked cart lines) — placeOrder
+   * itself always passes [] (whole qty, no job attribution, exactly the old
+   * single-pendingOrder shape). Callers charge q.total themselves. */
+  Sim.applyOrderExecution = function (state, dist, part, q, jobLinks) {
+    var C = CFG();
+    var base = { source: 'dist', distributorId: dist.id, partId: part.id,
+                 partName: part.name, distName: dist.name, gray: !!dist.grayMarket };
+    var orders = Engine.pushSplitOrders(state, base, q.qty, q.unitCost, q.arrivesDay, jobLinks);
+    var ds = Sim.distState(state);
+    var dealRemaining = null;
+    if (q.deal) {
+      var rel0 = Sim.distRelationship(state, dist.id);
+      var live = liveDealFor(state, dist, part.id, rel0);
+      if (live) {
+        live.dl.bought = (live.dl.bought || 0) + q.qty;
+        // §19.9 (#11): the caller re-renders the row from this, immediately
+        var after = resolveDeal(state, live.dl, rel0);
+        dealRemaining = after ? after.remaining : 0;
+      }
+    }
+    // Relationship accrual + sticky promotion
+    ds.spend[dist.id] = Engine.round2((ds.spend[dist.id] || 0) + q.total);
+    var before = ds.tier[dist.id] || 0;
+    var now = computedRelTier(state, dist.id);
+    var promoted = null;
+    if (now > before) {
+      ds.tier[dist.id] = now;
+      promoted = C.DIST_REL_LABELS[now];
+      Engine.pushNews(state, 'prestige',
+        dist.name + ' upgraded you to ' + promoted,
+        'Lifetime business earned it: ' +
+        (C.DIST_REL_DISCOUNTS[now] * 100).toFixed(0) + '% loyalty discount' +
+        (now >= 3 ? ', a day off every lead time,' : '') +
+        (now >= 2 ? ' and priority allocation during shortages.' : '.'));
+    }
+    return { orders: orders, dealRemaining: dealRemaining, promoted: promoted };
+  };
+
   Sim.placeOrder = function (state, distributorId, partId, qty) {
     var C = CFG();
     var q = Sim.quoteOrder(state, distributorId, partId, qty);
@@ -911,44 +962,15 @@
     if (!sp.ok) return sp;
     Engine.addCash(state, -q.total);
     Engine.ledgerAdd(state, 'partsCost', q.total);
-    var ds = Sim.distState(state);
     var dist = distById(state, distributorId);
     var part = Engine.partById(partId);
-    var order = { id: state.nextOrderId++, distributorId: dist.id,
-                  partId: part.id, partName: part.name, distName: dist.name,
-                  qty: q.qty, unitCost: q.unitCost, total: q.total,
-                  placedDay: state.day, arrivesDay: q.arrivesDay,
-                  gray: !!dist.grayMarket };
-    state.pendingOrders.push(order);
-    var dealRemaining = null;
-    if (q.deal) {
-      var rel0 = Sim.distRelationship(state, dist.id);
-      var live = liveDealFor(state, dist, partId, rel0);
-      if (live) {
-        live.dl.bought = (live.dl.bought || 0) + q.qty;
-        // §19.9 (#11): the caller re-renders the row from this, immediately
-        var after = resolveDeal(state, live.dl, rel0);
-        dealRemaining = after ? after.remaining : 0;
-      }
-    }
-    // Relationship accrual + sticky promotion
-    ds.spend[dist.id] = Engine.round2((ds.spend[dist.id] || 0) + q.total);
-    var before = ds.tier[dist.id] || 0;
-    var now = computedRelTier(state, dist.id);
-    if (now > before) {
-      ds.tier[dist.id] = now;
-      Engine.pushNews(state, 'prestige',
-        dist.name + ' upgraded you to ' + C.DIST_REL_LABELS[now],
-        'Lifetime business earned it: ' +
-        (C.DIST_REL_DISCOUNTS[now] * 100).toFixed(0) + '% loyalty discount' +
-        (now >= 3 ? ', a day off every lead time,' : '') +
-        (now >= 2 ? ' and priority allocation during shortages.' : '.'));
-    }
-    return { ok: true, orderId: order.id, unitCost: q.unitCost, total: q.total,
-             arrivesDay: order.arrivesDay, leadDays: q.leadDays,
+    var res = Sim.applyOrderExecution(state, dist, part, q, []);
+    return { ok: true, orderId: res.orders[0] ? res.orders[0].id : null,
+             unitCost: q.unitCost, total: q.total,
+             arrivesDay: q.arrivesDay, leadDays: q.leadDays,
              deal: q.deal, allocation: q.allocation,
-             dealRemaining: dealRemaining,   // §19.9 (#11)
-             promoted: now > before ? C.DIST_REL_LABELS[now] : null };
+             dealRemaining: res.dealRemaining,   // §19.9 (#11)
+             promoted: res.promoted };
   };
 
   /* Cancel before ship day only (an order arriving tomorrow is on the truck).

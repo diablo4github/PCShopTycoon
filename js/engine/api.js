@@ -65,7 +65,7 @@
     if (!isFinite(seed)) seed = 42;
     var startDi = null;
     var state = {
-      version: 10,
+      version: 11,
       seed: seed,
       rng: Engine.seedRngStreams(seed),   // §17.5 five named streams
       shopName: String(opts.shopName ||
@@ -123,7 +123,10 @@
       distributors: { spend: {}, tier: {}, deals: {}, lastDealDay: -1 },
       pendingOrders: [],
       grayStock: {},
-      nextOrderId: 1
+      nextOrderId: 1,
+      // §20.1 shopping cart — engine-owned, persisted; nothing charged/spent
+      // until checkoutCart.
+      cart: { nextId: 1, items: [] }
     };
     Engine._state = state;
     startDi = Engine.dateInfo(0, state);
@@ -472,11 +475,21 @@
     if (!obj.arrivedToday || typeof obj.arrivedToday !== 'object') obj.arrivedToday = {};
     return obj;
   }
+  // v10 -> v11 migration (§20.5): the shopping cart is a fresh, empty block —
+  // an older save simply hasn't started shopping yet. Never rejects a valid
+  // v10 save.
+  function migrateV10toV11(obj) {
+    obj.version = 11;
+    if (!obj.cart || typeof obj.cart !== 'object') obj.cart = { nextId: 1, items: [] };
+    if (!Array.isArray(obj.cart.items)) obj.cart.items = [];
+    if (obj.cart.nextId == null) obj.cart.nextId = 1;
+    return obj;
+  }
   Engine.importSave = function (str) {
     var obj;
     try { obj = JSON.parse(String(str)); }
     catch (e) { return err('Not valid save JSON'); }
-    if (!obj || [1, 2, 3, 4, 5, 6, 7, 8, 9, 10].indexOf(obj.version) === -1)
+    if (!obj || [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11].indexOf(obj.version) === -1)
       return err('Unsupported save version');
     // §17.5: v8 saves carry rng streams instead of the old single rngState
     var required = ['seed', 'eraId', 'startDate', 'day', 'cash',
@@ -494,6 +507,7 @@
     if (obj.version === 7) migrateV7toV8(obj);
     if (obj.version === 8) migrateV8toV9(obj);
     if (obj.version === 9) migrateV9toV10(obj);
+    if (obj.version === 10) migrateV10toV11(obj);
     Engine._state = obj;
     return { ok: true };
   };
@@ -605,52 +619,47 @@
   Engine.getMarket = function (filter) {
     return S() ? Engine.Pricing.getMarket(S(), filter) : [];
   };
+  // §20.1: a thin back-compat wrapper over the same internal checkout path
+  // as a synthetic single-line, never-touches-the-real-cart "cart" — 0.2h
+  // (CHECKOUT_HOURS) every call now, same as the real cart. The v0.4-era
+  // supply-run gate (supplyRunDoneToday) no longer applies to part purchases.
   Engine.buyPart = function (partId, qty, opts) {
     var bad = needLive(); if (bad) return bad;
     var state = S();
+    var C = Engine.CONFIG;
     qty = Math.max(1, Math.floor(Number(qty) || 1));
     var part = Engine.partById(partId);
     if (!part) return err('Unknown part');
     if (!Engine.Pricing.isReleased(part, state) || Engine.Pricing.isPruned(part, state))
       return err(part.name + ' is not on the market');
+    var rush = !!(opts && opts.rush);
     var unit = Engine.Pricing.priceOf(part, state, { buy: true });
     var cost = Engine.round2(unit * qty);
-    if (state.cash < cost) return err('Not enough cash (' + Engine.fmtMoney(cost) + ' needed)');
-    if (!state.supplyRunDoneToday) {
-      var run = Engine.spendHours(state, Engine.CONFIG.SUPPLY_RUN_HOURS); // overtime rules (§9.4)
-      if (!run.ok) return run;
-      state.supplyRunDoneToday = true;
+    var surcharge = rush ? Engine.round2(Math.max(C.RUSH_SURCHARGE_MIN,
+                                                   cost * C.RUSH_SURCHARGE_PCT)) : 0;
+    var grand = Engine.round2(cost + surcharge);
+    if (state.cash < grand) {
+      return err(rush ? 'Not enough cash for rush shipping (' + Engine.fmtMoney(grand) + ' all-in)'
+                       : 'Not enough cash (' + Engine.fmtMoney(cost) + ' needed)');
     }
+    var sp = Engine.spendHours(state, C.CHECKOUT_HOURS);   // overtime rules (§9.4)
+    if (!sp.ok) return sp;
     Engine.addCash(state, -cost);
     Engine.ledgerAdd(state, 'partsCost', cost);
     // §19.3: retail buys ship overnight by default; rush pays the same-day
     // premium and lands in stock immediately.
-    if (opts && opts.rush) {
-      var surcharge = Engine.round2(Math.max(Engine.CONFIG.RUSH_SURCHARGE_MIN,
-                                             cost * Engine.CONFIG.RUSH_SURCHARGE_PCT));
-      if (state.cash < surcharge) {
-        // roll the base purchase back — refuse cleanly rather than half-charge
-        Engine.addCash(state, cost);
-        Engine.ledgerAdd(state, 'partsCost', -cost);
-        return err('Not enough cash for rush shipping (' +
-                   Engine.fmtMoney(cost + surcharge) + ' all-in)');
+    if (rush) {
+      if (surcharge > 0) {
+        Engine.addCash(state, -surcharge);
+        Engine.ledgerAdd(state, 'other', surcharge);
       }
-      Engine.addCash(state, -surcharge);
-      Engine.ledgerAdd(state, 'other', surcharge);
       Engine.inventoryAdd(state, part.id, qty, unit);
-      return { ok: true, cost: Engine.round2(cost + surcharge),
-               rush: true, surcharge: surcharge };
+      return { ok: true, cost: grand, rush: true, surcharge: surcharge };
     }
-    state.nextOrderId = state.nextOrderId || 1;
-    state.pendingOrders = state.pendingOrders || [];
-    var arrives = state.day + Engine.CONFIG.RETAIL_LEAD_DAYS;
-    state.pendingOrders.push({
-      id: state.nextOrderId++, source: 'retail', distributorId: null,
-      partId: part.id, partName: part.name, distName: 'Retail market',
-      qty: qty, unitCost: unit, total: cost,
-      placedDay: state.day, arrivesDay: arrives, gray: false,
-      jobId: null, needIndex: null
-    });
+    var arrives = state.day + C.RETAIL_LEAD_DAYS;
+    Engine.pushSplitOrders(state, { source: 'retail', distributorId: null, partId: part.id,
+                                    partName: part.name, distName: 'Retail market', gray: false },
+                          qty, unit, arrives, []);
     return { ok: true, cost: cost, ordered: true, arrivesDay: arrives };
   };
   Engine.sellPart = function (partId, qty) {
@@ -692,6 +701,314 @@
   };
   Engine.getPriceHistory = function (partId) {
     return S() ? Engine.Pricing.getPriceHistory(S(), partId) : [];
+  };
+
+  // ------------------------------------------------------------------
+  // §20.1/§20.3 Shopping cart + Parts Market drilldown browse feed.
+  // state.cart = { nextId, items: [{id, source:'retail'|distributorId, partId,
+  // qty, jobLinks:[{jobId,needIndex,qty}]}] }. NOTHING is priced/stored on the
+  // cart item — every line prices LIVE at render and again at checkout (retail
+  // via Pricing.priceOf buy-side; supplier lines via the §18.1 quoteOrder
+  // machinery), so a cart held overnight reprices silently.
+  // ------------------------------------------------------------------
+  function distObjForEra(state, source) {
+    var list = Engine.Sim.eraDistributors(state);
+    for (var i = 0; i < list.length; i++) if (list[i].id === source) return list[i];
+    return null;
+  }
+  function sourceDisplayName(state, source) {
+    if (source === 'retail') return 'Retail Market';
+    var d = distObjForEra(state, source);
+    return d ? d.name : String(source);
+  }
+  function sourceIsGray(state, source) {
+    if (source === 'retail') return false;
+    var d = distObjForEra(state, source);
+    return !!(d && d.grayMarket);
+  }
+  // Live-price a cart-shaped line (source/partId/qty), no side effects.
+  // Returns {ok, unitPrice, lineTotal, leadDays|null, quote?} or {ok:false,error}.
+  function priceCartLine(state, source, partId, qty) {
+    var part = Engine.partById(partId);
+    if (!part) return { ok: false, error: 'Unknown part' };
+    if (source === 'retail') {
+      if (!Engine.Pricing.isReleased(part, state) || Engine.Pricing.isPruned(part, state))
+        return { ok: false, error: part.name + ' is not on the market' };
+      var unit = Engine.Pricing.priceOf(part, state, { buy: true });
+      return { ok: true, unitPrice: unit, lineTotal: Engine.round2(unit * qty), leadDays: null };
+    }
+    var q = Engine.Sim.quoteOrder(state, source, partId, qty);
+    if (!q.ok) return { ok: false, error: q.error };
+    return { ok: true, unitPrice: q.unitCost, lineTotal: q.total, leadDays: q.leadDays, quote: q };
+  }
+
+  Engine.getCart = function () {
+    var state = S();
+    if (!state) return { items: [], groups: [], total: 0, count: 0 };
+    var cart = Engine.cartOf(state);
+    var items = [];
+    var groupOrder = [], groupMap = {};
+    var total = 0, count = 0, retailSubtotal = 0;
+    for (var i = 0; i < cart.items.length; i++) {
+      var it = cart.items[i];
+      var part = Engine.partById(it.partId);
+      if (!part) continue;   // defensive: data drift under a stale save
+      var pl = priceCartLine(state, it.source, it.partId, it.qty);
+      var unitPrice = pl.ok ? pl.unitPrice : 0;
+      var lineTotal = pl.ok ? pl.lineTotal : 0;
+      var inv = Engine.inventoryEntry(state, it.partId);
+      var jobLinks = (it.jobLinks || []).map(function (l) {
+        var job = Engine.Jobs.findActive(state, l.jobId);
+        return { jobId: l.jobId, jobTitle: job ? job.title : null,
+                 needIndex: l.needIndex, qty: l.qty };
+      });
+      items.push({ id: it.id, source: it.source, sourceName: sourceDisplayName(state, it.source),
+                   gray: sourceIsGray(state, it.source), partId: part.id, name: part.name,
+                   category: part.category, qty: it.qty, unitPrice: unitPrice,
+                   lineTotal: lineTotal, inStockQty: inv ? inv.qty : 0, jobLinks: jobLinks });
+      var gKey = String(it.source);
+      if (!groupMap[gKey]) {
+        groupMap[gKey] = { source: it.source, sourceName: sourceDisplayName(state, it.source),
+                            gray: sourceIsGray(state, it.source),
+                            leadDays: it.source === 'retail' ? null : (pl.leadDays || null),
+                            subtotal: 0, shipping: null };
+        groupOrder.push(gKey);
+      }
+      groupMap[gKey].subtotal = Engine.round2(groupMap[gKey].subtotal + lineTotal);
+      if (it.source === 'retail') retailSubtotal = Engine.round2(retailSubtotal + lineTotal);
+      total = Engine.round2(total + lineTotal);
+      count += it.qty;
+    }
+    if (groupMap.retail) {
+      var fee = Engine.round2(Math.max(Engine.CONFIG.RUSH_SURCHARGE_MIN,
+                                       Engine.CONFIG.RUSH_SURCHARGE_PCT * retailSubtotal));
+      groupMap.retail.shipping = [
+        { id: 'same-day', label: 'Same-day courier', fee: fee },
+        { id: 'next-day', label: 'Next morning', fee: 0 }
+      ];
+    }
+    var groups = groupOrder.map(function (k) { return groupMap[k]; });
+    groups.sort(function (a, b) {
+      if (a.source === 'retail') return -1;
+      if (b.source === 'retail') return 1;
+      return 0;
+    });
+    return { items: items, groups: groups, total: total, count: count };
+  };
+
+  Engine.addToCart = function (source, partId, qty) {
+    var bad = needLive(); if (bad) return bad;
+    var state = S();
+    qty = Math.max(1, Math.floor(Number(qty) || 1));
+    var part = Engine.partById(partId);
+    if (!part) return err('Unknown part');
+    var pl = priceCartLine(state, source, part.id, qty);
+    if (!pl.ok) return err(pl.error);
+    var cart = Engine.cartOf(state);
+    var existing = null;
+    for (var i = 0; i < cart.items.length; i++) {
+      if (cart.items[i].source === source && cart.items[i].partId === part.id) {
+        existing = cart.items[i]; break;
+      }
+    }
+    if (existing) {
+      var mergedQty = existing.qty + qty;
+      var plMerged = priceCartLine(state, source, part.id, mergedQty);
+      if (!plMerged.ok) return err(plMerged.error);
+      existing.qty = mergedQty;
+      return { ok: true, itemId: existing.id };
+    }
+    var item = { id: cart.nextId++, source: source, partId: part.id, qty: qty, jobLinks: [] };
+    cart.items.push(item);
+    return { ok: true, itemId: item.id };
+  };
+
+  Engine.setCartQty = function (itemId, qty) {
+    var bad = needLive(); if (bad) return bad;
+    var state = S();
+    var cart = Engine.cartOf(state);
+    var item = null;
+    for (var i = 0; i < cart.items.length; i++) {
+      if (cart.items[i].id === Number(itemId)) { item = cart.items[i]; break; }
+    }
+    if (!item) return err('No such cart line');
+    qty = Math.floor(Number(qty));
+    if (!(qty >= 0)) return err('Enter a quantity of zero or more');
+    if (qty === 0) return Engine.removeCartItem(itemId);
+    var linkedTotal = (item.jobLinks || []).reduce(function (a, l) { return a + l.qty; }, 0);
+    if (qty < linkedTotal) {
+      return err('Can’t drop below ' + linkedTotal +
+                 ' — already promised to a job on the bench');
+    }
+    var pl = priceCartLine(state, item.source, item.partId, qty);
+    if (!pl.ok) return err(pl.error);
+    item.qty = qty;
+    return { ok: true };
+  };
+
+  Engine.removeCartItem = function (itemId) {
+    var bad = needLive(); if (bad) return bad;
+    var state = S();
+    var cart = Engine.cartOf(state);
+    var idx = -1;
+    for (var i = 0; i < cart.items.length; i++) {
+      if (cart.items[i].id === Number(itemId)) { idx = i; break; }
+    }
+    if (idx === -1) return err('No such cart line');
+    var item = cart.items[idx];
+    var unlinked = (item.jobLinks || []).map(function (l) {
+      return { jobId: l.jobId, needIndex: l.needIndex };
+    });
+    cart.items.splice(idx, 1);
+    return { ok: true, unlinked: unlinked };
+  };
+
+  Engine.clearCart = function () {
+    var bad = needLive(); if (bad) return bad;
+    var state = S();
+    var cart = Engine.cartOf(state);
+    var unlinked = [];
+    cart.items.forEach(function (it) {
+      (it.jobLinks || []).forEach(function (l) {
+        unlinked.push({ jobId: l.jobId, needIndex: l.needIndex });
+      });
+    });
+    cart.items = [];
+    return { ok: true, unlinked: unlinked };
+  };
+
+  /* §20.1: ATOMIC checkout — validate EVERYTHING first (line pricing/
+   * availability + funds for lines + courier fee); only then spend the flat
+   * CHECKOUT_HOURS, charge, and execute. Any failure leaves cash/cart/hours
+   * completely untouched. */
+  Engine.checkoutCart = function (opts) {
+    var bad = needLive(); if (bad) return bad;
+    var state = S();
+    var C = Engine.CONFIG;
+    var cart = Engine.cartOf(state);
+    if (!cart.items.length) return err('Your cart is empty');
+    var shipping = (opts && opts.retailShipping) || 'next-day';
+    if (shipping !== 'same-day' && shipping !== 'next-day')
+      return err('Choose a shipping option for retail lines');
+
+    // ---- validate every line, price everything, no mutation yet ----
+    var lines = [], retailSubtotal = 0, i;
+    for (i = 0; i < cart.items.length; i++) {
+      var it = cart.items[i];
+      var part = Engine.partById(it.partId);
+      if (!part) return err('A cart line references a part that no longer exists');
+      var pl = priceCartLine(state, it.source, it.partId, it.qty);
+      if (!pl.ok) return err(part.name + ' (' + sourceDisplayName(state, it.source) + '): ' + pl.error);
+      if (it.source === 'retail') retailSubtotal = Engine.round2(retailSubtotal + pl.lineTotal);
+      lines.push({ item: it, part: part, unitPrice: pl.unitPrice,
+                   lineTotal: pl.lineTotal, quote: pl.quote || null });
+    }
+    var hasRetail = lines.some(function (l) { return l.item.source === 'retail'; });
+    var courierFee = (hasRetail && shipping === 'same-day') ?
+      Engine.round2(Math.max(C.RUSH_SURCHARGE_MIN, C.RUSH_SURCHARGE_PCT * retailSubtotal)) : 0;
+    var grandTotal = Engine.round2(
+      lines.reduce(function (a, l) { return a + l.lineTotal; }, 0) + courierFee);
+    if (state.cash < grandTotal - 1e-9)
+      return err('Not enough cash for checkout (' + Engine.fmtMoney(grandTotal) + ' needed)');
+
+    // ---- funds/hours confirmed — spend the flat fee, then execute ----
+    var sp = Engine.spendHours(state, C.CHECKOUT_HOURS);
+    if (!sp.ok) return sp;
+
+    var orders = [], filledNow = 0, partsCostTotal = 0;
+    for (i = 0; i < lines.length; i++) {
+      var L = lines[i];
+      var isRetail = L.item.source === 'retail';
+      partsCostTotal = Engine.round2(partsCostTotal + L.lineTotal);
+      if (isRetail && shipping === 'same-day') {
+        // Instant: auto-fill every linked need right now, leftover to stock.
+        var landedTotal = 0;
+        (L.item.jobLinks || []).forEach(function (l) {
+          var rec = Engine.Jobs.receiveOrderedParts(state,
+            { jobId: l.jobId, partId: L.part.id, needIndex: l.needIndex,
+              qty: l.qty, unitCost: L.unitPrice });
+          landedTotal += rec.landed;
+          filledNow += rec.landed;
+        });
+        var leftover = L.item.qty - landedTotal;
+        if (leftover > 0) {
+          Engine.inventoryAdd(state, L.part.id, leftover, L.unitPrice);
+          state.arrivedToday = state.arrivedToday || {};
+          state.arrivedToday[L.part.id] = true;
+        }
+      } else if (isRetail) {
+        var arrivesDay = state.day + C.RETAIL_LEAD_DAYS;
+        var retailBase = { source: 'retail', distributorId: null, partId: L.part.id,
+                            partName: L.part.name, distName: 'Retail market', gray: false };
+        orders = orders.concat(Engine.pushSplitOrders(state, retailBase, L.item.qty,
+                                                      L.unitPrice, arrivesDay, L.item.jobLinks));
+      } else {
+        var dist = distObjForEra(state, L.item.source);
+        var execRes = Engine.Sim.applyOrderExecution(state, dist, L.part, L.quote, L.item.jobLinks);
+        orders = orders.concat(execRes.orders);
+      }
+    }
+    Engine.addCash(state, -grandTotal);
+    if (partsCostTotal > 0) Engine.ledgerAdd(state, 'partsCost', partsCostTotal);
+    if (courierFee > 0) Engine.ledgerAdd(state, 'other', courierFee);
+    cart.items = [];   // every line just checked out
+
+    return { ok: true, hoursSpent: C.CHECKOUT_HOURS, charged: grandTotal,
+             courierFee: courierFee, orders: orders.map(function (o) { return o.id; }),
+             filledNow: filledNow };
+  };
+
+  // §20.3: the Parts Market drilldown's ONLY browse feed — era-filtered,
+  // source-priced, deals surfaced. UI renders ONLY what this returns.
+  var CATALOG_CAT_LABELS = { cpu: 'CPU', motherboard: 'Motherboard', ram: 'RAM',
+    gpu: 'GPU', storage: 'Storage', psu: 'PSU', 'case': 'Case', cooling: 'Cooling',
+    os: 'OS', peripheral: 'Peripheral', expansion: 'Expansion' };
+  var CATALOG_CAT_ORDER = ['cpu', 'motherboard', 'ram', 'gpu', 'storage', 'psu',
+                          'case', 'cooling', 'os', 'peripheral', 'expansion'];
+  Engine.getSourceCatalog = function (source, opts) {
+    var state = S();
+    if (!state) return { categories: [], rows: [] };
+    var catFilter = (opts && opts.category) || null;
+    var isRetail = source === 'retail';
+    if (!isRetail && !Engine.Sim.distUnlocked(state, source))
+      return { categories: [], rows: [] };
+    var parts = Engine.getData().PARTS || [];
+    var counts = {}, rows = [];
+    for (var i = 0; i < parts.length; i++) {
+      var part = parts[i];
+      if (!Engine.Pricing.isReleased(part, state) || Engine.Pricing.isPruned(part, state)) continue;
+      counts[part.category] = (counts[part.category] || 0) + 1;
+      if (catFilter && part.category !== catFilter) continue;
+      var inv = Engine.inventoryEntry(state, part.id);
+      var unitPrice, deal = null;
+      if (isRetail) {
+        unitPrice = Engine.Pricing.priceOf(part, state, { buy: true });
+      } else {
+        var q = Engine.Sim.quoteOrder(state, source, part.id, 1);
+        if (q.ok) {
+          unitPrice = q.unitCost;
+          if (q.deal) deal = { discount: q.discount, allocation: q.allocation };
+        } else {
+          unitPrice = Engine.Pricing.priceOf(part, state, { buy: true });
+        }
+      }
+      rows.push({
+        partId: part.id, name: part.name, category: part.category,
+        year: part.introYear, tier: part.tier || 'mainstream',
+        brand: part.brand || null, perf: part.perf || {}, watts: part.watts || null,
+        tags: (part.platformTags || []).slice(),
+        unitPrice: unitPrice, inStockQty: inv ? inv.qty : 0, deal: deal
+      });
+    }
+    var categories = Object.keys(counts).map(function (id) {
+      return { id: id, label: CATALOG_CAT_LABELS[id] || id, count: counts[id] };
+    }).sort(function (a, b) {
+      var ia = CATALOG_CAT_ORDER.indexOf(a.id); if (ia === -1) ia = 999;
+      var ib = CATALOG_CAT_ORDER.indexOf(b.id); if (ib === -1) ib = 999;
+      return ia - ib;
+    });
+    rows.sort(function (a, b) { return a.unitPrice - b.unitPrice; });
+    return { categories: categories, rows: rows };
   };
 
   // ------------------------------------------------------------------

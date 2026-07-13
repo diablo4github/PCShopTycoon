@@ -129,6 +129,62 @@
     }
   ];
 
+  // §18.1 — era-banded wholesale distributors. grayMarket channels: minPrestige 0,
+  // deep discount, short lead — but the engine applies a −10 reliability penalty
+  // (floor 40) on consumed parts; the blurb states the no-warranty tradeoff honestly.
+  // Exactly ONE gray channel is available in any year 1983-2025 (bands tile, no overlap),
+  // and every year also has at least one legitimate channel.
+  DATA.DISTRIBUTORS = [
+    {
+      id: "compupost", name: "Compu-Post Catalog Supply",
+      minYear: 1983, maxYear: 1996, minPrestige: 0,
+      blurb: "A toll-free number, a fat newsprint catalog, and a warehouse in New Hampshire. Everything ships parcel post — allow a few days, and read the RMA policy twice.",
+      baseDiscount: 0.05, leadDays: 4, specialty: null, grayMarket: false
+    },
+    {
+      id: "heartland", name: "Heartland Components Wholesale",
+      minYear: 1991, maxYear: 2004, minPrestige: 1,
+      blurb: "A regional two-step distributor with a sales rep who knows your name and a dock full of whitebox staples. Net terms appear once they trust you.",
+      baseDiscount: 0.06, leadDays: 3, specialty: ["motherboard", "cpu", "ram"], grayMarket: false
+    },
+    {
+      id: "nexlink", name: "NexLink Online Supply",
+      minYear: 1998, maxYear: 2012, minPrestige: 1,
+      blurb: "The web storefront that put the paper catalogs out to pasture — live stock counts, overnight options, and prices that change while your coffee cools.",
+      baseDiscount: 0.07, leadDays: 2, specialty: ["storage", "gpu"], grayMarket: false
+    },
+    {
+      id: "summit", name: "Summit Broadline Distribution",
+      minYear: 2001, minPrestige: 2,
+      blurb: "A national broadliner with genuine allocation muscle — the outfit the big chains buy through. High minimums, professional terms, and first call when stock runs tight.",
+      baseDiscount: 0.08, leadDays: 3, specialty: null, grayMarket: false
+    },
+    {
+      id: "fulfillhub", name: "FulfillHub Dropship Platform",
+      minYear: 2013, minPrestige: 1,
+      blurb: "Plug the shop into the platform and skip the shelf: they hold the stock, you keep the margin. The fees nibble, but the catalog is bottomless.",
+      baseDiscount: 0.05, leadDays: 2, specialty: ["peripheral", "expansion"], grayMarket: false
+    },
+    {
+      id: "swapmeet", name: "Fairgrounds Swap Meet",
+      minYear: 1983, maxYear: 1999, minPrestige: 0,
+      blurb: "Folding tables of pulls, surplus, and 'new' parts in unmarked boxes at prices no distributor can touch. No receipts, no warranty — what you carry home is what you own.",
+      baseDiscount: 0.18, leadDays: 1, specialty: null, grayMarket: true
+    },
+    {
+      id: "bidwire", name: "BidWire Online Auctions",
+      minYear: 2000, maxYear: 2012, minPrestige: 0,
+      blurb: "Gray-import and liquidation lots, one bid away and cheaper than any invoice you could show a rep. Seller ratings are the only warranty on offer.",
+      baseDiscount: 0.2, leadDays: 2, specialty: null, grayMarket: true
+    },
+    {
+      id: "pacrim-direct", name: "PacRim Direct Dropship",
+      minYear: 2013, minPrestige: 0,
+      blurb: "Factory-adjacent stock shipped straight from overseas at prices that make reps wince. No warranty, no returns, occasional mystery firmware — the savings are the whole story.",
+      baseDiscount: 0.2, leadDays: 2, specialty: null, grayMarket: true
+    }
+  ];
+
   // §2.5 — shop tiers
   DATA.SHOP_TIERS = [
     {

@@ -733,8 +733,8 @@ CHRON.forEach(function (e) {
 // ---------------------------------------------------------------- v0.5 §13.2 ARTICLES
 var ART_CATS = ['buses', 'storage', 'cpu', 'gpu', 'memory', 'os', 'form-factor', 'culture', 'business'];
 var ARTS = DATA.ARTICLES || [];
-if (!Array.isArray(ARTS) || ARTS.length < 16 || ARTS.length > 24) {
-  err('ARTICLES: need 16-24 articles (§13.2), have ' + (Array.isArray(ARTS) ? ARTS.length : 'none'));
+if (!Array.isArray(ARTS) || ARTS.length < 17 || ARTS.length > 24) {
+  err('ARTICLES: need 17-24 articles (§13.2 range bumped by §18.2 audio article), have ' + (Array.isArray(ARTS) ? ARTS.length : 'none'));
 }
 var artIds = {};
 ARTS.forEach(function (a, i) {
@@ -1049,6 +1049,60 @@ for (var ty = 1997; ty <= 2025; ty++) {
   if (!covered) { err('TUNING_TEXT: no band covers year ' + ty + ' (overclock jobs run 1997+)'); break; }
 }
 
+// ---------------------------------------------------------------- v0.8 §18.1 DISTRIBUTORS
+var DIST = DATA.DISTRIBUTORS || [];
+if (!Array.isArray(DIST) || DIST.length < 6 || DIST.length > 8) {
+  err('DISTRIBUTORS: need 6-8 era-banded distributors (§18.1), have ' + (Array.isArray(DIST) ? DIST.length : 'none'));
+}
+var distIds = {};
+DIST.forEach(function (d, i) {
+  var l = 'DISTRIBUTORS[' + i + '] (' + (d && d.id ? d.id : '?') + ')';
+  if (!isStr(d.id) || !/^[a-z0-9-]+$/.test(d.id)) err(l + ': id must be kebab-case');
+  else { if (distIds[d.id]) err(l + ': duplicate id'); distIds[d.id] = true; }
+  if (!isStr(d.name)) err(l + ': name required');
+  if (!isStr(d.blurb) || d.blurb.length < 60) err(l + ': blurb must be 1-2 sentences of period flavor (>= 60 chars)');
+  if (!isInt(d.minYear) || d.minYear < 1983 || d.minYear > 2025) err(l + ': minYear must be int in 1983-2025');
+  if (d.maxYear !== undefined && (!isInt(d.maxYear) || d.maxYear < d.minYear)) err(l + ': maxYear must be >= minYear when present');
+  if (!isInt(d.minPrestige) || d.minPrestige < 0 || d.minPrestige > 3) err(l + ': minPrestige must be int 0-3');
+  if (typeof d.grayMarket !== 'boolean') err(l + ': grayMarket boolean required (explicit false on legit channels)');
+  if (d.specialty !== null) {
+    if (!Array.isArray(d.specialty) || !d.specialty.length) err(l + ': specialty must be null or a non-empty category array');
+    else d.specialty.forEach(function (c) { if (CATEGORIES.indexOf(c) === -1) err(l + ': specialty "' + c + '" is not a part category'); });
+  }
+  if (d.grayMarket === true) {
+    if (d.minPrestige !== 0) err(l + ': gray-market channels must be minPrestige 0 (§18.1)');
+    if (!isNum(d.baseDiscount) || d.baseDiscount < 0.15 || d.baseDiscount > 0.22) err(l + ': gray-market baseDiscount must be in [0.15, 0.22]');
+    if (!isInt(d.leadDays) || d.leadDays < 1 || d.leadDays > 2) err(l + ': gray-market leadDays must be 1-2');
+    if (!/no warrant|only warranty|no returns|no receipts/i.test(d.blurb)) err(l + ': gray-market blurb must honestly state the no-warranty tradeoff');
+  } else {
+    if (!isNum(d.baseDiscount) || d.baseDiscount < 0.04 || d.baseDiscount > 0.08) err(l + ': baseDiscount must be in [0.04, 0.08]');
+    if (!isInt(d.leadDays) || d.leadDays < 2 || d.leadDays > 5) err(l + ': leadDays must be 2-5');
+  }
+});
+// coverage 1983-2025: exactly ONE gray channel per year (bands tile, no overlap/gap),
+// and every year keeps >= 1 legitimate channel
+for (var dy = 1983; dy <= 2025; dy++) {
+  var openGray = 0, openLegit = 0;
+  DIST.forEach(function (d) {
+    var open = d.minYear <= dy && (d.maxYear === undefined || dy <= d.maxYear);
+    if (!open) return;
+    if (d.grayMarket) openGray++; else openLegit++;
+  });
+  if (openGray !== 1) err('DISTRIBUTORS: year ' + dy + ' has ' + openGray + ' gray-market channel(s), need exactly 1 (§18.1)');
+  if (openLegit < 1) err('DISTRIBUTORS: year ' + dy + ' has no legitimate channel');
+}
+
+// ---------------------------------------------------------------- v0.8 §18.2 audio article
+var audioArt = ARTS.filter(function (a) { return a && a.id === 'article-pc-audio'; })[0];
+if (!audioArt) err('ARTICLES: missing "article-pc-audio" (Beeps to Bitstreams, §18.2)');
+else {
+  if (!isInt(audioArt.unlockYear) || audioArt.unlockYear < 1996 || audioArt.unlockYear > 2000) err('article-pc-audio: unlockYear should be ~1998');
+  if (!/soundtrack/i.test(audioArt.body || '')) err('article-pc-audio: body must mention the game\'s own soundtrack re-creating the techniques (§18.2)');
+  ['PC speaker|square', 'AdLib|OPL2|\\bFM\\b', 'Sound Blaster', 'General MIDI|wavetable', 'HD Audio|onboard|AC.97'].forEach(function (pat) {
+    if (!new RegExp(pat, 'i').test(audioArt.body || '')) err('article-pc-audio: body must cover the era: /' + pat + '/');
+  });
+}
+
 // ---------------------------------------------------------------- report
 function pad(s, n) { s = String(s); while (s.length < n) s = ' ' + s; return s; }
 console.log('=== Coverage table (parts by introYear bucket) ===');
@@ -1104,6 +1158,10 @@ console.log('v0.6 Long Arc: Transitions ' + TRANS.length + ' (' +
 console.log('v0.7 Craft: Discoveries ' + DISC.length + ' (' + Object.keys(discCatSeen).length + ' contexts, ' +
   discGated + ' era-gated) | Fork text ' + Object.keys(FORK).length + ' categories | Tuning bands ' + TUNE.length +
   ' (' + TUNE.map(function (b) { return b.method || '?'; }).join(' / ') + ')');
+console.log('v0.8 Supply Lines: Distributors ' + DIST.length + ' (' +
+  DIST.filter(function (d) { return d.grayMarket; }).length + ' gray-market: ' +
+  DIST.filter(function (d) { return d.grayMarket; }).map(function (d) { return d.id; }).join(', ') +
+  ') | Audio article: ' + (audioArt ? 'present (unlock ' + audioArt.unlockYear + ')' : 'MISSING'));
 
 if (warnings.length) {
   console.log('\nWARNINGS (' + warnings.length + '):');

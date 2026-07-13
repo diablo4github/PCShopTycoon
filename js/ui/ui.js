@@ -23,8 +23,8 @@
     selectedScenario: null,   // §15.2 new-game scenario selection (mutually exclusive with era)
     difficulty: 'standard',   // §15.6 sandbox difficulty: 'relaxed' | 'standard' | 'survival'
     shopName: '',             // new-game screen input value
-    marketCat: 'all',         // Parts Market category filter
-    marketSearch: '',         // Parts Market search text
+    marketNav: { source: null, category: null },  // §20.3 Parts Market drilldown position
+    marketSort: {},           // §20.3 per-category sort: {catId: {key, dir}}
     wikiCat: 'all',           // Wiki category filter (§9.7)
     wikiSearch: '',           // Wiki search text
     wikiOpen: {},             // partId -> true for expanded wiki rows
@@ -32,7 +32,7 @@
     tutorialToggle: undefined,// §13.5 New Game screen tour checkbox (undefined = not yet decided this session)
     saveUrl: null,            // objectURL of the last exported save blob
     /* §16.1 — active sub-tab per main tab (session-level persistence). */
-    subTab: { workbench: 'active', ledger: 'finances', shop: 'upgrade', offers: 'all', news: 'all', market: 'retail' } /* §17.6/§18.1 */
+    subTab: { workbench: 'active', ledger: 'finances', shop: 'upgrade', offers: 'all', news: 'all' } /* §17.6 — market's old Retail/Suppliers pills retired by the §20.3 drilldown */
   };
 
   /* ------------------------------------------------------------------ *

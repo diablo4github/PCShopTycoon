@@ -72,7 +72,9 @@
     var r = UI.act(function () {
       return (hours === null || hours === undefined) ? Engine.workJob(jobId) : Engine.workJob(jobId, hours);
     });
-    if (r && r.ok !== false && r.completed) spawnDoneGhost(rectBefore);
+    /* §20.4 #5 — a completion that only shelves a machine (refurb/stock
+     * build) isn't "done" yet; that flash now plays on the eventual sale. */
+    if (r && r.ok !== false && r.completed && !jobShelvesMachine(jobId)) spawnDoneGhost(rectBefore);
     reportWorkResult(jobId, r);
   }
 
@@ -122,7 +124,9 @@
       } catch (e2) { /* ignore */ }
     }
     UI.api(r); // toast on {ok:false}, refresh on success — mirrors UI.act's own tail
-    if (r && r.ok !== false && r.completed) spawnDoneGhost(rectBefore);   /* §19.9 #8 */
+    /* §20.4 #5 — suppress the ghost when this completion only shelves a
+     * machine (refurb/stock build); it plays on the sale instead. */
+    if (r && r.ok !== false && r.completed && !jobShelvesMachine(jobId)) spawnDoneGhost(rectBefore);   /* §19.9 #8 */
     reportWorkResult(jobId, r);
   }
 
@@ -268,6 +272,15 @@
   function isStockBuild(j) {
     return !!(j && (j.type === 'stock_build' || j.stockBuild === true ||
       (j.build && j.build.stock === true)));
+  }
+
+  /** §20.4 #5 — does finishing this job just shelve a machine for sale
+   * (refurb or stock build) rather than hand it to a customer? Those
+   * completions aren't "done" yet — no completion-flash ghost for them;
+   * it plays instead on the eventual Engine.sellRefurb. */
+  function jobShelvesMachine(jobId) {
+    var j = activeJobById(jobId);
+    return !!(j && (j.type === 'refurb' || isStockBuild(j)));
   }
 
   function asIsMarketHTML(st) {
@@ -672,10 +685,11 @@
 
     needs.forEach(function (n) {
       var qty = n.qty || 1;
-      /* §19.3/§19.5 — mirror the engine's fill rule: units on the truck
-       * count as committed, and summable needs are done when the SUM says
-       * so (n.satisfied), not when every slot is stuffed. */
-      var committed = (n.filled || 0) + (n.onOrder || 0);
+      /* §19.3/§19.5/§20.2 — mirror the engine's fill rule: units on the
+       * truck AND units sitting in the cart count as committed, and
+       * summable needs are done when the SUM says so (n.satisfied), not
+       * when every slot is stuffed. */
+      var committed = (n.filled || 0) + (n.onOrder || 0) + (n.inCart || 0);
       var satisfied = n.satisfied !== undefined ? !!n.satisfied : (n.filled || 0) >= qty;
       var filledAll = satisfied || committed >= qty;
       h += '<div class="need-row' + (filledAll ? ' done' : '') + '">' +
@@ -719,6 +733,12 @@
           '</span></span>';
       }
 
+      /* §20.2 — units sitting in the cart, not yet checked out */
+      if (n.inCart > 0) {
+        h += '<span class="chip chip-incart" title="Reserved in your cart — checkout adds it to the truck">🛒 ' +
+          (n.inCart > 1 ? esc(n.inCart) + '× ' : '') + 'in cart</span>';
+      }
+
       /* §19.5 — multi-part fills: slots-free chip + running total vs target */
       if (n.slotsFree !== undefined && n.slotsFree !== null) {
         h += '<span class="chip" title="Free board slots this need can still fill">' +
@@ -742,8 +762,7 @@
             var label = overspendPrefix(ovKind) +                // §10.4/§14.2
               (o.tasteMatch ? '♥ ' : '') + o.name +              // §9.2
               ' — ' + fm(o.price) +
-              (o.source === 'inventory' ? ' (in stock)'
-                : (logisticsLive(o) ? ' (order — arrives tomorrow)' : ' (order from market)')) + // §19.3
+              (o.source === 'inventory' ? ' (in stock)' : ' (order — arrives tomorrow)') + // §19.3/§20.2
               (vs ? ' — ' + vsOriginalText(vs) : '') +
               (o.countToMeet !== undefined && o.countToMeet !== null && o.countToMeet > 1
                 ? ' — ×' + o.countToMeet + ' to hit the target' : '') +                          // §19.5
@@ -755,7 +774,6 @@
             h += '<option value="' + esc(o.partId) + '"' + (below ? ' disabled title="' + esc(belowReason) + '"' : '') +
               ' data-source="' + esc(o.source || 'market') + '"' +
               ' data-overspend-kind="' + esc(ovKind || '') + '"' +
-              (logisticsLive(o) ? ' data-rush-cost="' + esc(o.rushCost !== undefined ? o.rushCost : o.rushSurcharge) + '"' : '') +
               (overPsu ? ' data-over-psu="1" data-psu-watts="' + esc(psuWattsOf(o, n) || '') + '"' : '') +
               (repTxt ? ' data-replaces="' + esc(repTxt) + '"' : '') +
               (vs ? ' data-vs-cue="' + esc(vs.cmp) + '" data-vs-label="' + esc(vs.origLabel || '') +
@@ -770,11 +788,7 @@
               : '') +
             '<button type="button" class="btn btn-primary btn-sm" id="need-btn-' + j.id + '-' + n.index +
               '" data-action="install" data-job="' + j.id + '" data-need="' + n.index +
-              '" data-add="' + (addAnother ? 1 : 0) + '">' + (addAnother ? 'Add another' : 'Assign') + '</button>' +
-            /* §19.3 — rush variant: same assign, same-day, engine-priced */
-            '<button type="button" class="btn btn-sm btn-rush" id="need-rush-' + j.id + '-' + n.index +
-              '" data-action="install" data-job="' + j.id + '" data-need="' + n.index +
-              '" data-rush="1" hidden>Rush — today</button>';
+              '" data-add="' + (addAnother ? 1 : 0) + '">' + (addAnother ? 'Add another' : 'Assign') + '</button>';
           if (hasTasteOption(n.options)) {
             h += '<span class="taste-hit small" title="Matches the customer\'s taste for bonus pay">♥ = customer favorite</span>';
           }
@@ -800,12 +814,6 @@
   function st0Day() {
     var st = getState();
     return st ? st.day : null;
-  }
-
-  /** §19.3 shipped on this option? (market options carry a rush surcharge) */
-  function logisticsLive(o) {
-    return !!(o && o.source !== 'inventory' &&
-      (o.rushCost !== undefined || o.rushSurcharge !== undefined));
   }
 
   /** §19.5 — running total-vs-target bar for multi-part needs. Renders from
@@ -844,30 +852,21 @@
     if (!m) return;
     var opt = sel.options[sel.selectedIndex];
     var btn = document.getElementById('need-btn-' + m[1] + '-' + m[2]);
-    var rushCostAttr = opt ? opt.getAttribute('data-rush-cost') : null;
     if (btn) {
       var src = opt ? opt.getAttribute('data-source') : null;
       var adding = btn.getAttribute('data-add') === '1';        // §19.5
       if (src === 'inventory') {
         btn.textContent = adding ? 'Add another from Stock' : 'Assign from Stock';
-      } else if (rushCostAttr !== null && rushCostAttr !== '') {
-        /* §19.3 — ordered parts land next morning */
-        btn.textContent = (adding ? 'Order another' : 'Order & Assign') + ' — arrives tomorrow';
+      } else if (has('getCart') || UI.engineVerAtLeast('0.9.1')) {
+        /* §20.2/§20.3 — un-stocked assigns add a cart line now (assignPart
+         * itself reports {inCart:true}); checkout (0.2h, cart-level) is
+         * what actually charges & ships it. Gate on the version too, not
+         * just getCart's presence: assignPart's cart-routing can land
+         * before the standalone cart accessor APIs are exposed. */
+        btn.textContent = adding ? 'Add another to Cart' : 'Add to Cart & Assign';
       } else {
+        /* pre-§20 engine: assignPart still orders directly */
         btn.textContent = adding ? 'Order another' : 'Order & Assign';
-      }
-    }
-    /* §19.3 — rush variant appears only for market options with a priced
-     * surcharge (engine-exposed; in-stock parts are already instant) */
-    var rushBtn = document.getElementById('need-rush-' + m[1] + '-' + m[2]);
-    if (rushBtn) {
-      var showRush = rushCostAttr !== null && rushCostAttr !== '' &&
-        (opt ? opt.getAttribute('data-source') !== 'inventory' : false);
-      rushBtn.hidden = !showRush;
-      if (showRush) {
-        var rc = parseFloat(rushCostAttr);
-        rushBtn.textContent = 'Rush ' + (isFinite(rc) ? '+' + fm(rc) + ' ' : '') + '— today';
-        rushBtn.title = 'Pay the rush surcharge and have it on the bench today';
       }
     }
     var meta = document.getElementById('need-meta-' + m[1] + '-' + m[2]);
@@ -1348,21 +1347,19 @@
         UI.act(function () { return Engine.stripRefurb(jobId); }, 'Machine stripped — salvage moved to inventory');
       }, { yesLabel: 'Strip for Parts', title: 'Strip for parts' });
     },
-    'install': function (el, jobId) { /* §10.3 assign; §19.3 optional rush */
+    'install': function (el, jobId) { /* §10.3/§20.2 assign (un-stocked routes through the cart now) */
       var needIdx = parseInt(el.getAttribute('data-need'), 10);
       var sel = document.getElementById('need-sel-' + jobId + '-' + needIdx);
       var pid = sel && sel.value;
       if (!pid) { UI.toast('Pick a part first', 'info'); return; }
       var useAssign = has('assignPart');
-      var rush = el.getAttribute('data-rush') === '1';
       var ir = UI.act(function () {
-        if (!useAssign) return Engine.installPart(jobId, needIdx, pid);
-        return rush ? Engine.assignPart(jobId, needIdx, pid, { rush: true })
-                    : Engine.assignPart(jobId, needIdx, pid);
+        return useAssign ? Engine.assignPart(jobId, needIdx, pid) : Engine.installPart(jobId, needIdx, pid);
       });
       if (ir && ir.ok !== false) {
         var msg2 = useAssign
-          ? (rush ? 'Part rushed — on the bench today'
+          ? (ir.inCart === true
+              ? 'Added to cart — check out to have it on the truck'             /* §20.2 */
             : (ir.arrivesDay !== undefined && ir.arrivesDay !== null && ir.arrivesDay > (st0Day() || 0)
               ? 'Part ordered — arriving ' + S.fmtDay(ir.arrivesDay)            /* §19.3/§19.9 #2 */
               : 'Part assigned — it installs when its step is worked'))
@@ -1417,13 +1414,18 @@
    * shows engine-provided bundleValue when present, else the market value
    * with an honest note).
    * ------------------------------------------------------------------ */
-  function doSellMachine(jobId, bundleIds) {
+  function doSellMachine(jobId, bundleIds, rectBefore) {
     var sr = UI.act(function () {
       return (bundleIds && bundleIds.length)
         ? Engine.sellRefurb(jobId, { bundlePartIds: bundleIds })
         : Engine.sellRefurb(jobId);
     });
     if (sr && sr.ok !== false) {
+      /* §20.4 #5 — the completion-flash ghost moved here: a refurb/stock
+       * build "finishing" just shelves it for sale; the flash belongs on
+       * the actual sale, anchored to the card's rect from before the sale
+       * removed it. */
+      spawnDoneGhost(rectBefore);
       UI.toast('Machine sold for ' + fm(sr.price) +
         (bundleIds && bundleIds.length
           ? ' — ' + bundleIds.length + ' peripheral' + (bundleIds.length === 1 ? '' : 's') + ' bundled in'
@@ -1432,13 +1434,14 @@
   }
 
   function openSellModal(jobId) {
+    var rectBefore = cardRectOf(jobId);   /* §19.9 #8 / §20.4 #5 */
     var periphs = [];
     if (has('getInventoryView')) {
       arr(tryCall(function () { return Engine.getInventoryView(); })).forEach(function (it) {
         if (it && it.category === 'peripheral' && (it.qty || 0) > 0) periphs.push(it);
       });
     }
-    if (!periphs.length) { doSellMachine(jobId, []); return; }   // nothing to bundle — sell as before
+    if (!periphs.length) { doSellMachine(jobId, [], rectBefore); return; }   // nothing to bundle — sell as before
 
     var est = null;
     if (has('appraiseRefurb')) {
@@ -1490,7 +1493,7 @@
             document.querySelectorAll('.bundle-check:checked').forEach(function (c) {
               picked.push(c.getAttribute('data-part'));
             });
-            doSellMachine(jobId, picked);
+            doSellMachine(jobId, picked, rectBefore);
           } }
       ]
     });

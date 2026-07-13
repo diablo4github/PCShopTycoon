@@ -106,8 +106,9 @@
       id: 'parts', tab: 'workbench', target: needsTarget,
       title: 'Sourcing a part',
       body: 'Once a fault needs a part, pick one right on the job card — parts already on your shelves, or ' +
-        'bought fresh from the market, cheapest compatible option first. Assigning a part reserves it; it is ' +
-        'actually installed when you work that step.'
+        'the cheapest compatible option fresh off the market. Assigning a part reserves it; an un-stocked ' +
+        'one drops into your cart until you check out (a flat 0.2h any time), then it is actually installed ' +
+        'when you work that step.'
     },
     {
       id: 'finish', tab: 'workbench', target: workBtnTarget,
@@ -121,9 +122,9 @@
     {
       id: 'market', tab: 'market', target: function () { return byId('tab-market'); },
       title: 'The Parts Market',
-      body: 'Prices drift every night with supply, demand, and history. Something fresh off the line costs ' +
-        'a premium; the same part years after its heyday can turn scarce and climb in price again as a ' +
-        'sought-after legacy part.'
+      body: 'Browse by source — Retail, or a distributor once you have unlocked one — then by category. Add ' +
+        'whatever you need to your cart and check out in one 0.2h trip; retail lines arrive next morning ' +
+        'unless you pay for same-day courier. Prices drift every night with supply, demand, and history.'
     },
     {
       id: 'wiki', tab: 'wiki', target: function () { return byId('tab-wiki'); },
@@ -372,14 +373,16 @@
       'you pick a part from a list and choose how many hours to spend. The step checklist narrates the ' +
       'real-world procedure for flavor and history, but you never need hands-on repair knowledge to play well.</p>' +
       '<h3>The day loop</h3>' +
-      '<p>Each day starts with hours to spend and ends when you click <b>End Day</b>. Diagnosing, working ' +
-      'jobs, and your first parts purchase of the day (a "supply run") all cost hours. Overnight, prices ' +
-      'drift, offers refresh, and news comes in — a morning summary tells you what happened.</p>' +
+      '<p>Each day starts with hours to spend and ends when you click <b>End Day</b>. Diagnosing and working ' +
+      'jobs cost hours; so does checking out your shopping cart (a flat 0.2h, any time — buy as much or as ' +
+      'little as you like first). Overnight, prices drift, offers refresh, and news comes in — a morning ' +
+      'summary tells you what happened.</p>' +
       '<h3>Tabs</h3>' +
       '<ul>' +
         '<li><b>Offers</b> — new jobs walk in the door; Accept or Decline.</li>' +
         '<li><b>Workbench</b> — your active jobs and their step checklists, plus the As-Is Market for machines to flip.</li>' +
-        '<li><b>Inventory</b> / <b>Parts Market</b> — what you own, and what you can buy or sell.</li>' +
+        '<li><b>Inventory</b> / <b>Parts Market</b> — what you own, and a source → category browse where you fill ' +
+          'a cart and check out in one trip (retail ships next morning, or pay for same-day at checkout).</li>' +
         '<li><b>Wiki</b> — every part, the Chronicle of real computing history, and long-form Articles that unlock as the years pass.</li>' +
         '<li><b>Shop</b> — upgrades, insurance, staff, and Training &amp; Certifications.</li>' +
         '<li><b>Ledger</b>, <b>News</b>, <b>System</b> — the books, the headlines, and saving.</li>' +

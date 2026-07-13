@@ -438,6 +438,7 @@ button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-
 .chip-os,
 .chip-taste,
 .chip-overspend,
+.chip-joblink,
 .badge.b-unlock {
   white-space: normal;
   overflow-wrap: break-word;
@@ -2015,19 +2016,6 @@ body.era-early .account-card { border-left-color: var(--accent); }
 }
 .deal-row .deal-what, .order-row .order-what { font-weight: 600; min-width: 0; overflow-wrap: break-word; }
 .chip.deal-chip { background: rgba(28, 124, 60, 0.12); border-color: rgba(28, 124, 60, 0.45); color: var(--good); font-weight: 700; }
-.order-form { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 4px 0; }
-.order-form select { max-width: 320px; }
-.order-form input[type="number"] {
-  width: 64px;
-  padding: 4px 8px;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius);
-  background: var(--panel-bg);
-  color: var(--ink);
-  font-variant-numeric: tabular-nums;
-}
-.order-preview { flex-basis: 100%; color: var(--muted); min-height: 1.2em; }
-
 /* ---------- §18.2 now-playing line ---------- */
 .now-playing {
   border-top: 1px dashed var(--border);
@@ -2040,15 +2028,7 @@ body.era-early .account-card { border-left-color: var(--accent); }
    v0.9 additions (SPEC §19) — Logistics & Fog
    ========================================================================== */
 
-/* ---------- §19.3 logistics: rush buttons + in-transit cues ---------- */
-.btn-rush {
-  border-color: var(--warn);
-  color: #8a4c12;
-  background: rgba(201, 118, 43, 0.10);
-  font-weight: 700;
-  white-space: nowrap;
-}
-.btn-rush:hover { background: rgba(201, 118, 43, 0.18); border-color: #8a4c12; }
+/* ---------- §19.3 logistics: in-transit cues ---------- */
 .transit-mark { font-size: 12px; }
 .transit-note {
   color: #8a4c12;
@@ -2128,6 +2108,72 @@ body.era-early .account-card { border-left-color: var(--accent); }
 }
 .cert-unlocks { color: var(--ink); overflow-wrap: break-word; }
 .cert-unlocks b { color: var(--muted); font-weight: 700; }
+
+/* ==========================================================================
+   v0.9.1 additions (SPEC §20) — Cart & Counter: the Parts Market drilldown
+   and the persistent shopping-cart drawer.
+   ========================================================================== */
+
+.market-top { margin-bottom: 4px; }
+.cart-hdr-btn { margin-left: auto; font-weight: 700; white-space: nowrap; }
+
+.market-crumbs { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 2px 0 12px; font-size: 13px; }
+.crumb-btn {
+  background: none;
+  border: none;
+  padding: 2px;
+  margin: 0;
+  color: var(--accent-link, #2f6db8);
+  cursor: pointer;
+  font-size: 13px;
+  text-decoration: underline;
+}
+.crumb-btn:hover { color: var(--accent); }
+.crumb-sep { color: var(--muted); }
+.crumb-current { font-weight: 700; }
+
+.source-card-actions { margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--border); }
+.category-card {
+  cursor: pointer;
+  text-align: left;
+  align-items: flex-start;
+  gap: 4px;
+  font: inherit;
+  color: inherit;
+}
+.category-card:hover { border-color: var(--accent); }
+.category-card .cat-count { margin-top: 2px; }
+
+.sort-pills { margin: 8px 0; }
+
+.qty-stepper { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.qty-stepper .btn-sm { width: 26px; padding: 2px 0; text-align: center; }
+.qty-stepper .qty-val { min-width: 1.6em; text-align: center; display: inline-block; font-variant-numeric: tabular-nums; }
+
+.chip-incart { background: rgba(47, 109, 184, 0.12); border-color: rgba(47, 109, 184, 0.4); }
+
+.cart-drawer { display: flex; flex-direction: column; gap: 10px; }
+.cart-group { border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 10px; }
+.cart-group-head { display: flex; align-items: baseline; gap: 8px; justify-content: space-between; margin-bottom: 6px; }
+.cart-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 5px 0; border-bottom: 1px dashed var(--border); }
+.cart-line:last-child { border-bottom: none; }
+.cart-line-name { flex: 1 1 140px; min-width: 0; overflow-wrap: break-word; }
+.cart-line-total { white-space: nowrap; }
+.chip-joblink { background: rgba(184, 134, 11, 0.14); border-color: transparent; }
+.cart-eta { padding-top: 4px; }
+.cart-ship-choice { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--border); }
+.cart-ship-choice label { display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 13px; }
+.cart-ship-choice label.ship-rush { color: #8a4c12; }
+.cart-total-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-top: 4px;
+  padding-top: 10px;
+  border-top: 2px solid var(--border-strong);
+  font-size: 15px;
+  font-weight: 700;
+}
 
 /* ==========================================================================
    §19.9 #8 — the motion pass.

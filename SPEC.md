@@ -2008,3 +2008,154 @@ pool counts, TASK_STEPS hour bands updated. Overseer E2E: rush shipping flow, wa
 on-parts job state, multi-stick upgrade via picker, stock build + bundle sale, fogged
 offer title, real-date ETAs, deal remaining update, hidden-achievement hints, capacity
 units, reduced-motion respected; zero console errors.
+
+---
+
+# §20 — v0.9.1 "Cart & Counter" (playtest round: cart purchasing, market drilldown, small fixes)
+
+Later sections win. This round replaces the per-item buy/rush flow with an
+engine-owned shopping cart, rebuilds the Parts Market tab as a source→category
+drilldown, and lands three targeted fixes (free-build abandon rep, refurb
+completion flash timing, device-job discovery leaks). Save v11. Engine.VERSION
+'0.9.1'.
+
+## 20.1 Shopping cart (ENGINE) — items #1/#3 of the round
+
+One cart, engine-owned, persisted in the save. Nothing is charged and no time
+is spent until checkout. Checkout costs a flat **CONFIG.CHECKOUT_HOURS = 0.2**
+(overtime rules apply; if spendHours fails nothing happens). The v0.4 supply-run
+gate (SUPPLY_RUN_HOURS on first purchase of the day) **no longer applies to part
+purchases** — it stays only for as-is machine buying and other jobs.js supplyRun
+call sites. The standalone per-item "rush buy" concept is retired: same-day is
+now a cart-level *shipping choice* (retail only).
+
+State: `state.cart = { nextId: 1, items: [] }`, item =
+`{ id, source: 'retail'|distributorId, partId, qty, jobLinks: [{jobId, needIndex, qty}] }`.
+No prices stored in the cart — lines are priced LIVE (retail via
+Pricing.priceOf buy-side; supplier lines via the §18 quoteOrder machinery at
+the line's qty, deals included). Prices shown at render and charged at checkout
+are today's; a cart held overnight reprices silently.
+
+API (all mutators return {ok:true,...}/{ok:false,error}; never throw):
+- `Engine.getCart()` → `{ items: [{ id, source, sourceName, gray, partId, name,
+  category, qty, unitPrice, lineTotal, inStockQty,
+  jobLinks: [{jobId, jobTitle, needIndex, qty}] }],
+  groups: [{ source, sourceName, gray, leadDays|null, subtotal,
+  shipping: null | [{id:'same-day',label,fee},{id:'next-day',label,fee:0}] }],
+  total, count }`. Exactly one retail group (when retail lines exist) carries
+  `shipping`; supplier groups carry their fixed `leadDays`. `total` excludes the
+  courier fee (it depends on the shipping choice; UI adds the selected fee).
+- `Engine.addToCart(source, partId, qty)` → {ok, itemId}. Merges into an
+  existing line with the same source+partId. Validates release/prune for
+  retail, catalog+MOQ via the distributor rules for suppliers.
+- `Engine.setCartQty(itemId, qty)` → {ok}. qty 0 removes. Refuses (with a
+  plain-English error) to drop below the line's job-linked total.
+- `Engine.removeCartItem(itemId)` → {ok, unlinked:[{jobId,needIndex}]} —
+  removes the line AND clears its job links (those needs show open slots again).
+- `Engine.clearCart()` → {ok, unlinked:[...]}.
+- `Engine.checkoutCart({retailShipping: 'same-day'|'next-day'})` → atomic.
+  Validate EVERYTHING first (funds for lines + courier fee, MOQ, availability);
+  on any problem return {ok:false, error naming the offending line}; only then
+  spend 0.2h, charge, and execute. Retail 'next-day' lines → pendingOrders
+  (arrivesDay = day + RETAIL_LEAD_DAYS) carrying their jobId/needIndex links.
+  Retail 'same-day' → inventoryAdd now + auto-fill linked needs now; ONE
+  cart-level courier fee = max(RUSH_SURCHARGE_MIN, RUSH_SURCHARGE_PCT × retail
+  subtotal) (batching same-day is deliberately cheaper than v0.9 per-item rush).
+  Supplier lines → pendingOrders at the distributor's fixed leadDays, links
+  carried. Empty cart → error. Returns {ok, hoursSpent, charged, courierFee,
+  orders, filledNow}.
+- Back-compat wrappers (tests + old callers, MUST NOT touch the player's cart):
+  `Engine.buyPart(partId, qty, {rush})` and `Engine.placeOrder(distributorId,
+  partId, qty)` route through the same internal checkout path as a synthetic
+  single-line cart (0.2h each, rush ⇒ same-day + fee). supplyRunDoneToday is
+  ignored by part purchases from now on.
+
+## 20.2 Cart & Assign (ENGINE) — item #3
+
+`Engine.assignPart(jobId, idx, partId)` on an **un-stocked** part no longer
+places a charged order. It adds/merges a retail cart line with a jobLink and
+returns `{ok:true, inCart:true, itemId}`. The need's view gains `inCart` (qty);
+`slotsFree = qty - filled - onOrder - inCart`. Arrival auto-fill of ordered
+links is unchanged from §19.3. `unassignPart` on an in-cart slot removes the
+link and decrements/removes the cart line. Job leaving the active list for ANY
+reason (completed, abandoned, deadline-swept) cleans its links the same way —
+**orphan jobLinks must never survive**; sim-test asserts this after each
+overnight during the invariant run. Stocked assigns are untouched.
+
+## 20.3 Parts Market drilldown (UI) — item #2
+
+The Parts Market tab becomes a three-level drilldown; the bloated per-
+distributor `<select>` flow is deleted.
+
+- **Level 1 — Source picker**: a card for the Retail Market plus one per
+  unlocked distributor (name, blurb, discount/lead-time/gray-market chips,
+  relationship + active deals where the old Suppliers sub-tab showed them).
+- **Level 2 — Category picker** within a source: chips/cards with live counts
+  (CPU, Motherboard, RAM, GPU, Storage, PSU, Case, Cooling, and whatever else
+  the source carries).
+- **Level 3 — Part list**: sortable rows — name, key spec line, source price,
+  owned-in-stock count, qty stepper, **Add to Cart**. Sort pills per category,
+  ascending/descending: all categories get Price/Name/Year; cpu adds
+  Clock/Perf; ram adds Capacity+Speed; storage Capacity; gpu Perf/VRAM; psu
+  Wattage. Sorting is presentation only (UI-side; no rules).
+- Breadcrumb (Parts Market ▸ SwapMeet ▸ RAM) with working back navigation; the
+  player roams sources/categories freely while the cart persists.
+- **Cart drawer**: a persistent header button in the tab ("🛒 3 — $412") opens
+  a checkout panel: lines grouped by source with editable qty/remove, per-group
+  subtotal + ETA line (suppliers show their fixed lead), the retail group gets
+  the shipping radio (Same-day courier +fee / Next morning free), grand total
+  updates with the choice, Checkout button states the 0.2h cost. Job-linked
+  lines show "→ for: <job title>" and warn before removal (removing unassigns).
+- ENGINE provides the browse contract:
+  `Engine.getSourceCatalog(source, {category}) → { categories: [{id, label,
+  count}], rows: [{partId, name, category, year, specSummary fields as the
+  catalog exposes, unitPrice, inStockQty, deal:{...}|null}] }` — priced for that
+  source, era-filtered, deals surfaced. UI renders ONLY what this returns.
+- Workbench needs picker: un-stocked options relabel **"Add to Cart & Assign"**
+  (stocked stays "Assign from Stock"); after clicking, the row shows an
+  "in cart" chip until checkout, then the §19.3 on-order ETA chip as before.
+
+## 20.4 Small fixes — items #4/#5/#6
+
+- (#4, ENGINE) Abandoning a **shop project** (stockBuild) never touches
+  reputation: skip recordJobFailure; return every assigned/committed part to
+  inventory (conservation invariant must hold); neutral news line ("Shop
+  project shelved — parts back on the shelf."). Also fix the abandon news line
+  for jobs whose `customer` is a string (stock builds) — no more
+  `undefined will not be recommending the shop`.
+- (#5, UI) The completion success-flash ghost (§19.9 #8) must NOT play when
+  completing a job that shelves a machine for sale (refurb or stockBuild) —
+  those aren't "done", they're stock. Play it instead on a successful
+  `Engine.sellRefurb`, anchored to the sold machine's card. Customer-facing
+  completions keep the current behavior.
+- (#6, ENGINE+DATA) Device jobs (Macs, phones, tablets) must never receive a
+  part-adding discovery: in pickDiscovery, device_repair jobs filter the pool
+  to `addCategory == null` (device-billed) BEFORE the context match, with no
+  fallback across that line — if nothing qualifies, no discovery fires (the
+  plan simply isn't armed). For non-device jobs, an `addCategory` discovery
+  qualifies only if ≥1 purchasable part is COMPATIBLE WITH THE JOB'S MACHINE
+  (tags via machineMoboTags), not merely purchasable in-era. DATA: add ≥2 more
+  device-context discoveries (year-windowed: e.g. swollen battery already
+  exists; add flex/port-wear, thermal-paste-fossilized) so devices keep
+  variety, and a validator rule: every DISCOVERIES entry with
+  `category:'device'` must have `addCategory: null`.
+
+## 20.5 Save, config, guards, testing
+
+- Save v11: migrateV10toV11 adds `cart: {nextId:1, items:[]}`. Old saves load
+  forever; round-trips stay byte-identical.
+- CONFIG: `CHECKOUT_HOURS: 0.2`. Courier fee reuses RUSH_SURCHARGE_MIN/PCT at
+  cart level. SUPPLY_RUN_HOURS stays for as-is machine purchases only.
+- Balance: checkout at 0.2h is cheaper than the old 0.5h supply run — re-run
+  the §17.5 median-of-5 guards; retune CONFIG (never data prices) if any band
+  is left. Rush-job pay ×2.2 and §19.3 deadline pads unchanged.
+- sim-test: cart lifecycle (retail next-day line + supplier line + job-linked
+  line → checkout → morning delivery fills the linked need); atomic-checkout
+  failure leaves cash/cart/hours untouched; orphan-link invariant; stockBuild
+  abandon returns parts + zero rating delta; device 40-day run asserts no
+  unfillable needs ever appear on device jobs.
+- Overseer E2E: drilldown navigation (source→category→sorted list), add-to-cart
+  from market and from workbench needs picker, checkout both shipping modes
+  with fee math, in-cart chip → on-order chip transition, refurb ghost timing
+  (none at completion, plays at sale), stockBuild abandon rep unchanged, zero
+  console errors.

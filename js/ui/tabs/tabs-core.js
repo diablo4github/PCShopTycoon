@@ -486,6 +486,23 @@
     }
   });
 
+  /* §19.9 #8 — shared "ghost" spawner: a short-lived, pointer-transparent
+   * box at a departed element's old screen position, so re-renders stay
+   * instant while a CSS exit animation plays where the element was.
+   * No-ops under reduced motion. */
+  function spawnGhost(rect, className, ttlMs) {
+    if (!rect || !(UI.motionOK && UI.motionOK())) return;
+    var z = (UI.zoom && UI.zoom.factor) || 1;
+    var d = document.createElement('div');
+    d.className = className;
+    d.style.left = (rect.left / z) + 'px';
+    d.style.top = (rect.top / z) + 'px';
+    d.style.width = (rect.width / z) + 'px';
+    d.style.height = (rect.height / z) + 'px';
+    document.body.appendChild(d);
+    window.setTimeout(function () { if (d.parentNode) d.parentNode.removeChild(d); }, ttlMs || 460);
+  }
+
   /* ---- publish the shared surface ---- */
   S.esc = esc; S.fm = fm; S.tryCall = tryCall; S.arr = arr;
   S.getState = getState; S.emptyBox = emptyBox; S.fmtHours = fmtHours;
@@ -507,5 +524,6 @@
   S.wikiDetailHTML = wikiDetailHTML; S.showPartInfo = showPartInfo;
   S.animatedBar = animatedBar; S.jobIdOf = jobIdOf;
   S.fmtDay = fmtDay; S.fmtMB = fmtMB; S.fmtGB = fmtGB;   /* §19.9 #2/#16 */
+  S.spawnGhost = spawnGhost;                             /* §19.9 #8 */
 
 })();

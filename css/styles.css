@@ -2099,6 +2099,36 @@ body.era-early .account-card { border-left-color: var(--accent); }
   font-weight: 600;
 }
 
+/* ---------- §19.9 #15 plain-language terms ---------- */
+.how-works { margin: 4px 0 6px; }
+.how-works summary {
+  cursor: pointer;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--accent);
+  user-select: none;
+}
+.how-works summary:hover { text-decoration: underline; }
+.how-works ul {
+  margin: 6px 0 2px;
+  padding: 8px 10px 8px 26px;
+  background: var(--panel-bg-alt);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.how-works li { margin: 3px 0; overflow-wrap: break-word; }
+.cert-lock {
+  color: #8a4c12;
+  font-weight: 600;
+  background: rgba(201, 118, 43, 0.10);
+  border-left: 3px solid var(--warn);
+  border-radius: 4px;
+  padding: 4px 8px;
+  overflow-wrap: break-word;
+}
+.cert-unlocks { color: var(--ink); overflow-wrap: break-word; }
+.cert-unlocks b { color: var(--muted); font-weight: 700; }
+
 /* ==========================================================================
    §19.9 #8 — the motion pass.
    Every animation/transition below (and above) is decorative: content is
@@ -2152,6 +2182,29 @@ body.era-early .account-card { border-left-color: var(--accent); }
   100% { opacity: 0; transform: scaleY(0.05); }
 }
 
+/* offer accepted — a ghost of the card slides off to the right (toward the
+ * Workbench tab) while the list re-renders instantly underneath */
+.offer-out-ghost {
+  position: fixed;
+  z-index: 350;
+  pointer-events: none;
+  border: 1.5px solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--accent-soft);
+  animation: offer-out 0.3s ease-in forwards;
+}
+@keyframes offer-out {
+  0% { opacity: 0.9; transform: none; }
+  100% { opacity: 0; transform: translateX(48px); }
+}
+
+/* §19.9 #8 — morning deliveries: freshly landed inventory rows flash once */
+tr.row-delivered > td { animation: row-flash 0.9s ease-out; }
+@keyframes row-flash {
+  0% { background: rgba(28, 124, 60, 0.22); }
+  100% { background: transparent; }
+}
+
 /* the reduce block: one switch turns the whole shop's motion off */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
@@ -2160,5 +2213,5 @@ body.era-early .account-card { border-left-color: var(--accent); }
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
-  .job-done-ghost { display: none; }
+  .job-done-ghost, .offer-out-ghost { display: none; }
 }

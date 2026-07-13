@@ -919,10 +919,16 @@
                   placedDay: state.day, arrivesDay: q.arrivesDay,
                   gray: !!dist.grayMarket };
     state.pendingOrders.push(order);
+    var dealRemaining = null;
     if (q.deal) {
       var rel0 = Sim.distRelationship(state, dist.id);
       var live = liveDealFor(state, dist, partId, rel0);
-      if (live) live.dl.bought = (live.dl.bought || 0) + q.qty;
+      if (live) {
+        live.dl.bought = (live.dl.bought || 0) + q.qty;
+        // §19.9 (#11): the caller re-renders the row from this, immediately
+        var after = resolveDeal(state, live.dl, rel0);
+        dealRemaining = after ? after.remaining : 0;
+      }
     }
     // Relationship accrual + sticky promotion
     ds.spend[dist.id] = Engine.round2((ds.spend[dist.id] || 0) + q.total);
@@ -940,6 +946,7 @@
     return { ok: true, orderId: order.id, unitCost: q.unitCost, total: q.total,
              arrivesDay: order.arrivesDay, leadDays: q.leadDays,
              deal: q.deal, allocation: q.allocation,
+             dealRemaining: dealRemaining,   // §19.9 (#11)
              promoted: now > before ? C.DIST_REL_LABELS[now] : null };
   };
 

@@ -1157,9 +1157,9 @@ function stepScenario(era) {
   var needs = E.getJobNeeds(job.id);
   var opt = needs[0].options.filter(function (o2) { return o2.meets; })[0];
   if (!assert(!!opt, 'steps: no assignable option')) return;
-  var ar = E.assignPart(job.id, 0, opt.partId);
+  var ar = E.assignPart(job.id, 0, opt.partId, { rush: true });
   while (ar.ok && ar.mishap && needs[0].qty > (ar.filled || 0)) {
-    ar = E.assignPart(job.id, 0, opt.partId);   // re-source after an ESD zap
+    ar = E.assignPart(job.id, 0, opt.partId, { rush: true });   // re-source after an ESD zap
   }
   assert(ar.ok, 'steps: assign failed: ' + (ar.error || ''));
   assert(needs[0].replaces == null || typeof needs[0].replaces.value === 'number',
@@ -1271,7 +1271,7 @@ function workModesScenario(era) {
         var need = needs[n];
         if (need.filled >= need.qty) continue;
         var opt = need.options.filter(function (o) { return o.meets; })[0];
-        if (opt) E.assignPart(jobD.id, need.index, opt.partId);
+        if (opt) E.assignPart(jobD.id, need.index, opt.partId, { rush: true });
       }
       var fj = E.workJob(jobD.id, 'job');
       if (!fj.ok) {
@@ -1293,7 +1293,7 @@ function workModesScenario(era) {
           var needE = needsE[n2];
           if (needE.filled >= needE.qty) continue;
           var optE = needE.options.filter(function (o) { return o.meets; })[0];
-          if (optE) E.assignPart(jobE.id, needE.index, optE.partId);
+          if (optE) E.assignPart(jobE.id, needE.index, optE.partId, { rush: true });
         }
         var fjBare = E.workJob(jobE.id);   // amount omitted
         if (!fjBare.ok) {
@@ -1340,9 +1340,9 @@ function assignScenario(era) {
     return e ? e.qty : 0;
   }
   // Order & assign (market)
-  var a1 = E.assignPart(job.id, 0, pid);
+  var a1 = E.assignPart(job.id, 0, pid, { rush: true });
   var guard = 0;
-  while (a1.ok && a1.mishap && a1.filled < 1 && guard++ < 8) a1 = E.assignPart(job.id, 0, pid);
+  while (a1.ok && a1.mishap && a1.filled < 1 && guard++ < 8) a1 = E.assignPart(job.id, 0, pid, { rush: true });
   if (!assert(a1.ok && needs[0].qty >= 1, 'assign: order+assign failed: ' + (a1.error || ''))) return;
   var view1 = E.getJobNeeds(job.id)[0];
   assert(view1.assigned.length === 1 && view1.assigned[0].source === 'ordered',
@@ -1354,9 +1354,9 @@ function assignScenario(era) {
   assert(invQty() === 1, 'assign: unassigned part should be in inventory');
   var basis = E.getState().inventory.filter(function (x) { return x.partId === pid; })[0].avgCost;
   // Reassign from stock
-  var a2 = E.assignPart(job.id, 0, pid);
+  var a2 = E.assignPart(job.id, 0, pid, { rush: true });
   guard = 0;
-  while (a2.ok && a2.mishap && a2.filled < 1 && guard++ < 8) a2 = E.assignPart(job.id, 0, pid);
+  while (a2.ok && a2.mishap && a2.filled < 1 && guard++ < 8) a2 = E.assignPart(job.id, 0, pid, { rush: true });
   if (!assert(a2.ok, 'assign: reassign failed')) return;
   var view2 = E.getJobNeeds(job.id)[0];
   assert(view2.assigned.length === 1 && view2.assigned[0].source === 'stock',
@@ -1431,9 +1431,9 @@ function overspendScenario(era) {
     } else {
       job.taste = null;
     }
-    var a = E.assignPart(job.id, 0, pricey.partId);
+    var a = E.assignPart(job.id, 0, pricey.partId, { rush: true });
     var guard = 0;
-    while (a.ok && a.mishap && a.filled < 1 && guard++ < 8) a = E.assignPart(job.id, 0, pricey.partId);
+    while (a.ok && a.mishap && a.filled < 1 && guard++ < 8) a = E.assignPart(job.id, 0, pricey.partId, { rush: true });
     if (!assert(a.ok, 'overspend: assign failed: ' + (a.error || ''))) return null;
     var res = null, guard2 = 0;
     while (guard2++ < 40) {
@@ -1555,10 +1555,10 @@ function qualityFlagsScenario(era) {
       if (assert(optA && optA.vsOriginal && optA.vsOriginal.cmp === 'worse',
                  'quality: expected a "worse" vsOriginal cue on the forced-downgrade option, got: ' +
                  JSON.stringify(optA && optA.vsOriginal))) {
-        var arA = E.assignPart(jobA.id, 0, worseA.id);
+        var arA = E.assignPart(jobA.id, 0, worseA.id, { rush: true });
         var guardA = 0;
         while (arA.ok && arA.mishap && arA.filled < 1 && guardA++ < 8)
-          arA = E.assignPart(jobA.id, 0, worseA.id);
+          arA = E.assignPart(jobA.id, 0, worseA.id, { rush: true });
         if (assert(arA.ok, 'quality: downgrade assign failed: ' + (arA.error || ''))) {
           var resA = workToResult(jobA);
           if (assert(!!resA, 'quality: downgrade job never completed')) {
@@ -1587,10 +1587,10 @@ function qualityFlagsScenario(era) {
     var stillPurchasable = origB && Engine.Jobs.purchasableByCategory(E.getState(), needB.category)
       .some(function (p) { return p.id === origB.id; });
     if (stillPurchasable) {
-      var arB = E.assignPart(jobB.id, 0, origB.id);
+      var arB = E.assignPart(jobB.id, 0, origB.id, { rush: true });
       var guardB = 0;
       while (arB.ok && arB.mishap && arB.filled < 1 && guardB++ < 8)
-        arB = E.assignPart(jobB.id, 0, origB.id);
+        arB = E.assignPart(jobB.id, 0, origB.id, { rush: true });
       if (assert(arB.ok, 'quality: ideal assign failed: ' + (arB.error || ''))) {
         var resB = workToResult(jobB);
         if (assert(!!resB, 'quality: ideal job never completed')) {
@@ -1873,7 +1873,7 @@ function waitScenario(era) {
     for (var n = 0; n < needs.length; n++) {
       if (needs[n].filled < needs[n].qty) {
         var opt = needs[n].options.filter(function (o) { return o.meets; })[0];
-        if (opt) E.assignPart(job.id, needs[n].index, opt.partId);
+        if (opt) E.assignPart(job.id, needs[n].index, opt.partId, { rush: true });
         else blocked = true;
       }
     }
@@ -2414,7 +2414,7 @@ function contractBuildScenario() {
       if (opt.source === 'market' && opt.price * (need.qty - need.filled) > E.getState().cash - 200) {
         E.getState().cash += opt.price * need.qty;   // debug: fund the full per-unit order
       }
-      var ir = E.assignPart(job.id, need.index, opt.partId);
+      var ir = E.assignPart(job.id, need.index, opt.partId, { rush: true });
       if (ir.ok) progressed = true;
     }
     if (!progressed) break;
@@ -2833,7 +2833,7 @@ function certScenario() {
 // Scenario (§10.8/§11.7/§12.6/§13.8): v1-v5 fixtures migrate to v6 and play
 // ------------------------------------------------------------------
 function migrationScenario(era) {
-  console.log('--- Save migration (v1/v2/v3/v4/v5/v6/v7/v8 -> v9) ---');
+  console.log('--- Save migration (v1/v2/v3/v4/v5/v6/v7/v8/v9 -> v10) ---');
   var E = Engine;
   var r = E.newGame({ eraId: era.id, shopName: 'Migrate Test', seed: 73737 });
   if (!assert(r.ok, 'migration: newGame failed')) return;
@@ -2850,11 +2850,24 @@ function migrationScenario(era) {
     var anyPart = Engine.Jobs.purchasableByCategory(E.getState(), 'ram')[0];
     if (anyPart) E.placeOrder(distView.id, anyPart.id, 2);
   }
-  var v9snapshot = E.exportSave();
+  var v10snapshot = E.exportSave();
 
   function downgrade(version) {
-    var obj = JSON.parse(v9snapshot);
+    var obj = JSON.parse(v10snapshot);
     obj.version = version;
+    // §19.3: pre-v10 saves had wholesale-only pendingOrders and no
+    // overnight-truck flag on builds
+    if (version < 10) {
+      (obj.pendingOrders || []).forEach(function (o) {
+        delete o.source; delete o.jobId; delete o.needIndex;
+      });
+      [].concat(obj.jobs.offers || [], obj.jobs.active || []).forEach(function (j) {
+        delete j.partsArriveDay; delete j.stockBuild; delete j.findingShown;
+        (j.needs || []).forEach(function (nd) {
+          delete nd.summable; delete nd.sumKey;
+        });
+      });
+    }
     // §18.1: a genuine pre-v9 save never met the distributors
     if (version < 9) {
       delete obj.distributors; delete obj.pendingOrders;
@@ -2964,11 +2977,15 @@ function migrationScenario(era) {
     return JSON.stringify(obj);
   }
 
-  [1, 2, 3, 4, 5, 6, 7, 8].forEach(function (ver) {
+  [1, 2, 3, 4, 5, 6, 7, 8, 9].forEach(function (ver) {
     var imp = E.importSave(downgrade(ver));
     if (!assert(imp.ok, 'migration: v' + ver + ' fixture rejected: ' + (imp.error || ''))) return;
     var s = E.getState();
-    assert(s.version === 9, 'migration: v' + ver + ' should land on version 9');
+    assert(s.version === 10, 'migration: v' + ver + ' should land on version 10');
+    // §19.3: unified logistics fields fill in
+    assert((s.pendingOrders || []).every(function (o) {
+      return typeof o.source === 'string' && 'jobId' in o && 'needIndex' in o;
+    }), 'migration: v' + ver + ' pendingOrders missing logistics fields');
     // §18.1: distributor blocks fill in with sane defaults
     assert(s.distributors && typeof s.distributors.spend === 'object' &&
            typeof s.distributors.tier === 'object' &&
@@ -3040,11 +3057,11 @@ function migrationScenario(era) {
     }
     console.log('  v' + ver + ' fixture migrated & playable');
   });
-  // Idempotence: v9 round-trips byte-identically
-  E.importSave(v9snapshot);
-  var v9b = E.exportSave();
-  E.importSave(v9b);
-  assert(E.exportSave() === v9b, 'migration: v9 re-import not byte-identical');
+  // Idempotence: v10 round-trips byte-identically
+  E.importSave(v10snapshot);
+  var v10b = E.exportSave();
+  E.importSave(v10b);
+  assert(E.exportSave() === v10b, 'migration: v10 re-import not byte-identical');
 }
 
 // ------------------------------------------------------------------
@@ -3546,7 +3563,7 @@ function achievementsScenario(era) {
         for (var n = 0; n < needs.length; n++) {
           var opt = needs[n].options.filter(function (op) { return op.meets; })[0];
           if (!opt) { ok = false; break; }
-          E.assignPart(job.id, needs[n].index, opt.partId);
+          E.assignPart(job.id, needs[n].index, opt.partId, { rush: true });
         }
         if (ok && !workToDone(E, job) && job.status === 'done') { done = job; break; }
         break;
@@ -3774,7 +3791,7 @@ function stockBillingScenario(era) {
     return (a.eolYear || 9999) - (b.eolYear || 9999);
   })[0];
   if (!assert(!!part, 'billing: no purchasable RAM at era start')) return;
-  var buy = E.buyPart(part.id, 1);
+  var buy = E.buyPart(part.id, 1, { rush: true });   // §19.3: stock needed today
   if (!assert(buy.ok, 'billing: buyPart failed')) return;
   var inv = Engine.inventoryEntry(s, part.id);
   var avgCost = inv.avgCost;
@@ -3978,7 +3995,7 @@ function rngStreamScenario(era) {
           for (var n = 0; n < needs.length; n++) {
             var opt = chooseOption(E, job, needs[n]);
             if (opt && needs[n].filled < needs[n].qty)
-              E.assignPart(job.id, needs[n].index, opt.partId);
+              E.assignPart(job.id, needs[n].index, opt.partId, { rush: true });
           }
           E.workJob(job.id);
           botResolveDecision(E, job);
@@ -4083,7 +4100,7 @@ function decisionForkScenario(era) {
     if (werr2 && /assign/i.test(werr2)) {
       var needs = E.getJobNeeds(proper.job.id);
       var opt = needs[0] && chooseOption(E, proper.job, needs[0]);
-      if (opt) { E.assignPart(proper.job.id, 0, opt.partId); werr2 = workToDone(E, proper.job); }
+      if (opt) { E.assignPart(proper.job.id, 0, opt.partId, { rush: true }); werr2 = workToDone(E, proper.job); }
     }
     assert(!werr2 && proper.job.status === 'done', 'fork: proper job never completed: ' + werr2);
   }
@@ -4119,7 +4136,7 @@ function decisionApprovalScenario(era) {
       for (var n = 0; n < needs.length; n++) {
         var opt = chooseOption(E, job, needs[n]);
         if (opt && needs[n].filled < needs[n].qty)
-          E.assignPart(job.id, needs[n].index, opt.partId);
+          E.assignPart(job.id, needs[n].index, opt.partId, { rush: true });
       }
       var w = E.workJob(job.id);
       if (w.ok && w.decisionPending) { fired = true; break; }
@@ -4201,7 +4218,7 @@ function decisionTuningScenario() {
       for (var n = 0; n < needs.length; n++) {
         var opt = chooseOption(E, job, needs[n]);
         if (opt && needs[n].filled < needs[n].qty)
-          E.assignPart(job.id, needs[n].index, opt.partId);
+          E.assignPart(job.id, needs[n].index, opt.partId, { rush: true });
       }
       var w = E.workJob(job.id);
       if ((w.ok && w.decisionPending) || (!w.ok && /decision/i.test(w.error || ''))) {
@@ -4379,10 +4396,10 @@ function psuGateScenario() {
            'psugate: approval must add a PSU need with a real wattage floor');
     assert(job.psuSwapApproved === true, 'psugate: approved flag missing');
     // The heavy part is now assignable
-    var a4 = E.assignPart(job.id, 0, heavyGpu.id);
+    var a4 = E.assignPart(job.id, 0, heavyGpu.id, { rush: true });
     var g4 = 0;
     while (a4.ok && a4.mishap && job.needs[0].filledPartIds.length < 1 && g4++ < 8)
-      a4 = E.assignPart(job.id, 0, heavyGpu.id);
+      a4 = E.assignPart(job.id, 0, heavyGpu.id, { rush: true });
     assert(a4.ok, 'psugate: approved swap should unlock the heavy part, got ' +
            JSON.stringify(a4));
     // And an under-watt PSU pick is refused readably. Pull it from the need's
@@ -4467,7 +4484,7 @@ function diagnoseSteamScenario() {
         for (var nB = 0; nB < needsB.length; nB++) {
           var optB = chooseOption(E, jb, needsB[nB]);
           if (optB && needsB[nB].filled < needsB[nB].qty)
-            E.assignPart(jb.id, needsB[nB].index, optB.partId);
+            E.assignPart(jb.id, needsB[nB].index, optB.partId, { rush: true });
         }
         var wB = E.workJob(jb.id);
         if ((wB.ok && wB.decisionPending) ||
@@ -4884,11 +4901,11 @@ function distributorGrayScenario() {
       E.endDay(); E.endDay();   // ...and matching calendar drift (lead 1-2)
       s.hoursLeft = 8;
     }
-    var a = E.assignPart(job.id, need.index, opt.partId);
+    var a = E.assignPart(job.id, need.index, opt.partId, { rush: true });
     var gGuard = 0;
     while (a.ok && a.mishap && (job.needs[need.index].filledPartIds.length < 1) &&
            gGuard++ < 8) {
-      a = E.assignPart(job.id, need.index, opt.partId);
+      a = E.assignPart(job.id, need.index, opt.partId, { rush: true });
     }
     if (!a.ok) return null;
     var entry = (job.partsUsed || []).filter(function (e) {
@@ -5211,7 +5228,7 @@ function survivalScenario(era) {
 // Main
 // ------------------------------------------------------------------
 console.log('sim-test using: ' + DATA_SOURCE + ' | engine v' + Engine.VERSION);
-assert(Engine.VERSION === '0.8', 'Engine.VERSION must be "0.8"');
+assert(Engine.VERSION === '0.9', 'Engine.VERSION must be "0.9"');
 assert(parseFloat(Engine.VERSION) >= 0.4, 'Engine.VERSION must stay parseFloat >= 0.4');
 var lines = [];
 try {

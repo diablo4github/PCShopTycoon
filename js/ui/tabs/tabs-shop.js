@@ -362,6 +362,42 @@
 
   /* ---- §13.4 Training & Certifications section (Shop tab) ---- */
 
+  /** §19.9 #15 — a plain-language "what this cert gets you" line for an
+   * AVAILABLE cert. Prefers an engine-shipped effectsNote; otherwise derives
+   * one from the raw cert effects via Engine.humanizeJobTypes (mirroring the
+   * engine's own note builder so copy stays consistent, and skipping any bit
+   * we can't phrase without raw type ids — §19.9 #10). */
+  function certUnlocksLine(c) {
+    if (c.effectsNote) return c.effectsNote;
+    if (!has('certById') || typeof Engine.humanizeJobTypes !== 'function') return '';
+    var raw = tryCall(function () { return Engine.certById(c.id); });
+    var ef = raw && raw.effects;
+    if (!ef) return '';
+    var bits = [];
+    try {
+      var k, pct;
+      if (ef.jobTimeMult) {
+        for (k in ef.jobTimeMult) if (Object.prototype.hasOwnProperty.call(ef.jobTimeMult, k)) {
+          pct = Math.round((1 - ef.jobTimeMult[k]) * 100);
+          if (pct) bits.push((k === 'all' ? 'All work' : Engine.humanizeJobTypes([k])) + ' ' + pct + '% faster');
+        }
+      }
+      if (ef.payMult) {
+        for (k in ef.payMult) if (Object.prototype.hasOwnProperty.call(ef.payMult, k)) {
+          pct = Math.round((ef.payMult[k] - 1) * 100);
+          if (pct) bits.push(Engine.humanizeJobTypes([k]) + ' pay +' + pct + '%');
+        }
+      }
+      if (ef.callbackMult !== null && ef.callbackMult !== undefined && ef.callbackMult !== 1)
+        bits.push('callbacks ' + Math.round((1 - ef.callbackMult) * 100) + '% less likely');
+      if (ef.reliabilityBonus) bits.push('+' + ef.reliabilityBonus + ' effective reliability');
+      if (ef.prestigeBonus) bits.push('+' + ef.prestigeBonus + ' prestige tier');
+      if (Array.isArray(ef.unlocks) && ef.unlocks.length)
+        bits.push('unlocks ' + Engine.humanizeJobTypes(ef.unlocks).toLowerCase());
+    } catch (e) { /* partial line is fine */ }
+    return bits.join(', ');
+  }
+
   function trainingSectionHTML(tv, st) {
     var earned = arr(tv.earned);
     var avail = arr(tv.available);
@@ -422,9 +458,11 @@
           var certShort = Math.max(0, Number(c.cost) - (Number(st.cash) || 0));
           if (certShort > 0) { canStart = false; reason = 'Need ' + fm(certShort) + ' more'; }
         }
+        var unl = certUnlocksLine(c);   // §19.9 #15
         h += '<div class="card cert-card">' +
           '<div class="card-title">' + esc(c.name) + (c.abbr ? ' <span class="chip">' + esc(c.abbr) + '</span>' : '') + '</div>' +
           (c.desc ? '<p class="muted small">' + esc(c.desc) + '</p>' : '') +
+          (unl ? '<p class="small cert-unlocks"><b>What it gets you:</b> ' + esc(unl) + '</p>' : '') +
           '<div class="meta-row small">' +
             '<span class="pay num">' + esc(fm(c.cost)) + '</span>' +
             '<span class="chip">' + esc(c.studyHours) + 'h study</span>' +

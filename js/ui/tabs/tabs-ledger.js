@@ -185,7 +185,7 @@
         (e2.jobId != null ? 'Job #' + e2.jobId : 'Word of mouth');   // seeded openers have no job
       h += '<tr>' +
         '<td>' + esc(entryTitle) +
-          (e2.day !== undefined && e2.day !== null ? ' <span class="muted small">day ' + esc(e2.day) + '</span>' : '') + '</td>' +
+          (e2.day !== undefined && e2.day !== null ? ' <span class="muted small">' + esc(S.fmtDay(e2.day)) + '</span>' : '') + '</td>' +   /* §19.9 #2 */
         '<td class="num"><b class="' + (score >= 4 ? 'up' : (score < 3 ? 'down' : '')) + '">' +
           (isFinite(score) ? esc(score.toFixed(1)) : '—') + '</b></td>' +
         '<td class="num">' + deltaTxt + '</td>' +
@@ -284,7 +284,9 @@
       var isHidden = a.hidden && !a.unlocked;
       var cls = a.unlocked ? 'unlocked' : (isHidden ? 'hidden-ach' : 'locked');
       var name = isHidden ? '???' : (a.name || a.id);
-      var desc = isHidden ? 'Keep playing to discover this one.' : (a.desc || '');
+      /* §19.9 #6 — hidden achievements tease their hint string when the
+       * engine ships one; the generic line stays as the fallback. */
+      var desc = isHidden ? (a.hint || 'Keep playing to discover this one.') : (a.desc || '');
       h += '<div class="ach-badge ' + cls + '" title="' + esc(desc) + '">' +
         '<span class="ach-ico">' + (a.unlocked ? '🏆' : (isHidden ? '❓' : '🔒')) + '</span>' +
         '<span class="ach-name">' + esc(name) + '</span>' +

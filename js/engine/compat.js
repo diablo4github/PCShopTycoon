@@ -127,6 +127,13 @@
    * §12.2 UI contract: problemsInfo.category maps each problem onto a build
    * slot zone — cpu|motherboard|ram|gpu|storage|psu|case|cooling|os|expansion|general.
    */
+  // §19.7: removable media — DATA's flag, with the STOR-FDD tag as fallback
+  Compat.isRemovableStorage = function (part) {
+    if (!part || part.category !== 'storage') return false;
+    if (part.removable === true) return true;
+    return (part.platformTags || []).indexOf('STOR-FDD') !== -1;
+  };
+
   Compat.validatePartList = function (partIds, opts) {
     opts = opts || {};
     var requireFull = opts.requireFull !== false;
@@ -217,6 +224,16 @@
       for (i = 0; i < needCats.length; i++) {
         if (!counts[needCats[i]])
           prob(needCats[i], 'Missing ' + needCats[i].toUpperCase());
+      }
+      // §19.7: from 1988 a build needs a PRIMARY (non-removable) drive —
+      // floppy/Zip/optical never satisfy storage alone. Pre-1988 floppy-only
+      // machines are period-legitimate (PC/XT reality).
+      if (counts.storage && year >= (Engine.CONFIG.PRIMARY_STORAGE_YEAR || 1988)) {
+        var hasPrimary = parts.some(function (p2) {
+          return p2.category === 'storage' && !Compat.isRemovableStorage(p2);
+        });
+        if (!hasPrimary)
+          prob('storage', "A floppy drive can't be the only storage (1988+)");
       }
       // §12.2: an addon-only 3D card is not a video source by itself (that case
       // already raised the clearer "needs a 2D card" problem above).

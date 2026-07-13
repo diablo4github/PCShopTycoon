@@ -699,9 +699,14 @@
     var bad = needLive(); if (bad) return bad;
     return Engine.Jobs.buyAsIsMachine(S(), machineId);
   };
-  Engine.sellRefurb = function (jobId) {
+  Engine.sellRefurb = function (jobId, opts) {
     var bad = needLive(); if (bad) return bad;
-    return Engine.Jobs.sellRefurb(S(), jobId);
+    return Engine.Jobs.sellRefurb(S(), jobId, opts);
+  };
+  // §19.6: player-initiated Shop Project (build for stock)
+  Engine.startStockBuild = function () {
+    var bad = needLive(); if (bad) return bad;
+    return Engine.Jobs.startStockBuild(S());
   };
   Engine.appraiseRefurb = function (jobId) {
     return S() ? Engine.Jobs.appraiseRefurb(S(), jobId) : { estimate: 0 };

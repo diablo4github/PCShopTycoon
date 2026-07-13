@@ -25,6 +25,66 @@
     return 'service';
   }
 
+  /* §19.9 #15 — an offer gated behind a certification you haven't earned.
+   * Feature-detected across the likely field homes; the engine may ship
+   * an object ({id,name,abbr,met}) or a plain cert name, or just a locked
+   * flag + reason. null = not cert-locked (or already qualified). */
+  function certLockOf(j) {
+    if (!j) return null;
+    var c = j.requiresCert !== undefined ? j.requiresCert
+      : (j.certRequired !== undefined ? j.certRequired
+        : (j.certLock !== undefined ? j.certLock : null));
+    if (!c) return null;
+    var met = (typeof c === 'object' && c.met !== undefined) ? !!c.met
+      : (j.certMet !== undefined ? !!j.certMet : false);
+    if (met) return null;
+    var name = (typeof c === 'object') ? (c.name || c.abbr || c.id) : c;
+    return name ? { name: String(name) } : null;
+  }
+  function certLockLine(lock) {
+    return '<div class="meta-row"><span class="cert-lock small" title="Certifications are studied under Shop &rsaquo; Training">' +
+      '🎓 Needs the <b>' + esc(lock.name) + '</b> certification — study it under Shop &rsaquo; Training.</span></div>';
+  }
+
+  /* §19.9 #15 — plain-language contract terms behind an expandable line.
+   * Every number is feature-detected; missing fields drop their bullet. */
+  function contractHowHTML(j, st) {
+    var isContract = j.type === 'contract' ||
+      j.subtype === 'contract_build' || j.subtype === 'contract_upgrade';
+    if (!isContract) return '';
+    var units = Number(j.units) || 0;
+    var what = j.subtype === 'contract_upgrade' ? 'upgrade' : 'assemble';
+    var items = [];
+    if (units > 1) {
+      items.push('<b>The work:</b> ' + what + ' <b>' + units + '</b> identical machines. ' +
+        'Progress counts one finished machine at a time' +
+        (j.perUnitHours ? ' (~' + esc(j.perUnitHours) + 'h each at standard pace)' : '') + '.');
+    }
+    if (j.needs && j.needs.length) {
+      items.push('<b>Per machine:</b> every unit needs its parts sourced and assigned — ' +
+        'the parts picker on the Workbench walks you through each fill.');
+    }
+    if (j.pay !== null && j.pay !== undefined) {
+      items.push('<b>The money:</b> one payment of <b class="num">' + esc(fm(j.pay)) +
+        '</b> when the last machine is delivered — no partial pay for partial work' +
+        (what === 'assemble' ? ', and parts come out of your pocket along the way' : '') + '.');
+    }
+    if (j.deadlineDay !== null && j.deadlineDay !== undefined && st) {
+      var daysLeft = Math.max(0, j.deadlineDay - st.day);
+      var paceR = Math.round((daysLeft / units) * 10) / 10;
+      var pace = (units > 1 && daysLeft > 0)
+        ? ' That works out to about one machine every ' + paceR + ' day' + (paceR === 1 ? '' : 's') + '.'
+        : '';
+      items.push('<b>The clock:</b> everything is due by <b>' + esc(S.fmtDay(j.deadlineDay)) + '</b>' +
+        ' (' + daysLeft + ' day' + (daysLeft === 1 ? '' : 's') + ' from today).' + pace);
+    }
+    items.push('<b>If you miss it:</b> the whole contract fails — no pay, even for finished machines, ' +
+      'a hit to your rating, and a mark on your contract record.');
+    return '<details class="how-works"><summary>How this works</summary><ul class="small">' +
+      items.map(function (it) { return '<li>' + it + '</li>'; }).join('') +
+      '</ul></details>';
+  }
+
   /* §16.3c — rough pre-accept parts-cost range on upgrade offers
    * (engine field job.partsEstimate {min,max}; absent = no line). */
   function partsEstHTML(j) {
@@ -75,7 +135,8 @@
 
       var due = dueText(j, st);
       var partsEst = partsEstHTML(j);
-      html += '<div class="card job-card">' +
+      var lock = certLockOf(j);   // §19.9 #15
+      html += '<div class="card job-card" id="offercard-' + j.id + '">' +
         '<div class="card-title">' + esc(j.title) +
           (j.rush ? ' <span class="badge b-rush">RUSH</span>' : '') + '</div>' +
         '<div class="meta-row">' + typeChip(j) + UI.wrenches(j.difficulty) + regularChip(j) + tasteChip(j) + osChip(j) + '</div>' +
@@ -86,8 +147,12 @@
           '<span class="' + (due.urgent ? 'due-soon' : 'muted') + '">' + esc(due.txt) + '</span>' +
         '</div>' +
         (partsEst ? '<div class="meta-row">' + partsEst + '</div>' : '') +
+        contractHowHTML(j, st) +                       // §19.9 #15
+        (lock ? certLockLine(lock) : '') +             // §19.9 #15
         '<div class="job-actions">' +
-          '<button type="button" class="btn btn-primary btn-sm" data-action="accept" data-job="' + j.id + '">Accept</button>' +
+          '<button type="button" class="btn btn-primary btn-sm" data-action="accept" data-job="' + j.id + '"' +
+            (lock ? ' disabled title="Needs the ' + esc(lock.name) + ' certification — Shop &rsaquo; Training"' : '') +
+            '>Accept</button>' +
           '<button type="button" class="btn btn-sm" data-action="decline" data-job="' + j.id + '">Decline</button>' +
         '</div>' +
       '</div>';
@@ -109,7 +174,7 @@
   function accountOfferCardHTML(j, acct, st) {
     var due = dueText(j, st);
     var fee = acct.monthlyFee !== undefined && acct.monthlyFee !== null ? acct.monthlyFee : j.pay;
-    return '<div class="card job-card account-card">' +
+    return '<div class="card job-card account-card" id="offercard-' + j.id + '">' +
       '<div class="card-title">' + esc(j.title || ((acct.name || 'Local business') + ' — service retainer')) +
         ' <span class="badge b-account">BUSINESS ACCOUNT</span></div>' +
       (j.blurb ? '<div class="blurb">&ldquo;' + esc(j.blurb) + '&rdquo;</div>' : '') +
@@ -132,8 +197,12 @@
   /* ---- actions ---- */
   T.registerActions({
     'accept': function (el, jobId) {
+      /* §19.9 #8 — capture the card's spot before the re-render removes it */
+      var cardEl = document.getElementById('offercard-' + jobId);
+      var rectBefore = cardEl && cardEl.getBoundingClientRect ? cardEl.getBoundingClientRect() : null;
       var ac = UI.act(function () { return Engine.acceptOffer(jobId); });
       if (ac && ac.ok !== false) {
+        S.spawnGhost(rectBefore, 'offer-out-ghost', 320);   // §19.9 #8 slide-out
         if (UI.audio && UI.audio.sfx) UI.audio.sfx('accept');
         UI.toast(ac.accountSigned
           ? 'Account signed — their service jobs will land straight on your bench'

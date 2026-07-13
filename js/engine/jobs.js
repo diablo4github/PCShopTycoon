@@ -1027,6 +1027,19 @@
       if (!part) return null;   // can't assemble an era machine
       partIds.push(part.id);
     }
+    // §19.7: era-typical machines (1983-1995) carry a floppy as an EXTRA,
+    // occupying a storage slot where the board has one spare.
+    var fy = C.MACHINE_FLOPPY_YEARS;
+    if (year >= fy[0] && year <= fy[1] &&
+        (mobo.slots && (mobo.slots.storage || 0) >= 2)) {
+      var floppies = purchasableByCategory(state, 'storage').filter(function (p) {
+        return Engine.Compat.isRemovableStorage(p) && Engine.Compat.fits(p, mobo).fits;
+      });
+      if (floppies.length) {
+        var fl = Engine.pick(floppies, stream);
+        if (fl) partIds.push(fl.id);
+      }
+    }
     if (!mobo.integratedVideo) {
       var gpus = purchasableByCategory(state, 'gpu').filter(function (p) {
         // §12.2: a 3D add-on (Voodoo2) is never a machine's only video card
@@ -1289,6 +1302,31 @@
       var rams = pickStack(mobo, 'ram', 'ramMB', mp.ramMB || 0, slotCap(mobo, 'ram'));
       var stos = pickStack(mobo, 'storage', 'storageGB', mp.storageGB || 0,
                            slotCap(mobo, 'storage'));
+      // §19.7: the witness must respect the primary-storage rule — from 1988
+      // a floppy-only stack can't anchor the build.
+      if (stos && year >= C.PRIMARY_STORAGE_YEAR &&
+          stos.every(function (p) { return Engine.Compat.isRemovableStorage(p); })) {
+        var primaries = purchasableByCategory(state, 'storage').filter(function (p) {
+          return Engine.Compat.fits(p, mobo).fits &&
+                 !Engine.Compat.isRemovableStorage(p) &&
+                 ((p.perf || {}).storageGB || 0) > 0;
+        }).sort(byPrice);
+        if (!primaries.length) continue;   // no legit primary this year — next board
+        var prim = primaries[0];
+        // swap the cheapest removable for the cheapest primary (capacity target
+        // re-checked below via validatePartList perf sums)
+        stos = [prim].concat(stos.slice(1));
+        if (((prim.perf || {}).storageGB || 0) < (mp.storageGB || 0) &&
+            stos.reduce(function (a, p) { return a + ((p.perf || {}).storageGB || 0); }, 0) <
+            (mp.storageGB || 0)) {
+          stos = pickStack(mobo, 'storage', 'storageGB',
+                           Math.max(0, (mp.storageGB || 0) -
+                                    ((prim.perf || {}).storageGB || 0)),
+                           slotCap(mobo, 'storage') - 1);
+          if (!stos) continue;
+          stos = [prim].concat(stos);
+        }
+      }
       var gpus = [];
       if (!mobo.integratedVideo || (mp.gpu || 0) > C.INTEGRATED_GPU_PERF) {
         gpus = pickGpus(mobo, mp.gpu || 0);
@@ -3067,6 +3105,42 @@
     };
   };
 
+  /* §19.6: player-initiated Shop Project — a build with no customer, no
+   * deadline, no budget. Completing it shelves a sellable stock machine. */
+  Jobs.startStockBuild = function (state) {
+    var C = CFG();
+    if (!state.customBuildsUnlocked)
+      return err('Custom builds aren’t part of the trade yet');
+    if (!Engine.equipEffects(state).enablesBuilds)
+      return err('You need a build bench for shop projects');
+    var slots = Engine.tierInfo(state).workstationSlots;
+    var activeNonRefurb = state.jobs.active.filter(function (j) {
+      return j.type !== 'refurb';
+    });
+    if (activeNonRefurb.length >= slots * C.HARD_CAP_SLOTS_MULT)
+      return err('All workstations committed — finish something first');
+    var job = {
+      id: state.jobs.nextId++, type: 'build', subtype: 'stock_build',
+      stockBuild: true, rush: false, customer: 'Shop project',
+      title: 'Shop project: build for stock',
+      blurb: 'No customer, no deadline — a machine for the front shelf.',
+      pay: 0, offeredDay: state.day, deadlineDay: null, difficulty: 2,
+      speed: 'standard', status: 'active', hoursDone: 0, hoursRequired: C.BUILD_HOURS,
+      needsDiagnosis: false, diagnosed: true, fault: null, taste: null,
+      needs: [], units: 1, unitsDone: 0, machine: null,
+      peripheral: null, osRequest: null, device: null, deviceModern: false,
+      devicePartsCost: 0, devicePayBase: null, drTier: 0, crt: false,
+      budgetAsk: false, result: null,
+      decision: null, decisionPlan: null, partsArriveDay: null,
+      build: { budget: 0, useCase: 'stock', minPerf: {}, minStyle: 0,
+               parts: emptyBuildParts(), validated: false, committed: false }
+    };
+    assembleSteps(state, job);
+    job.difficulty = deriveDifficulty(state, job);
+    state.jobs.active.push(job);
+    return { ok: true, jobId: job.id };
+  };
+
   Jobs.commitBuild = function (state, jobId, opts) {
     var g = buildJobOrErr(state, jobId);
     if (g.error) return err(g.error);
@@ -3490,6 +3564,36 @@
     var payout = 0;
     var year = Engine.currentYear(state);
     var speed = C.SPEED[job.speed] || C.SPEED.standard;
+
+    // §19.6: a stock build has no customer — completion turns it into a
+    // sellable machine on the shelf (the deliberate flip channel).
+    if (job.stockBuild) {
+      job.status = 'done';
+      var sbIds = flattenBuildIds(job.build);
+      var sbCost = 0, sbCpu = null, sbMobo = null;
+      (job.partsUsed || []).forEach(function (e) {
+        sbCost += (e.cost != null && e.cost > 0 ? e.cost : e.price) || 0;
+      });
+      sbIds.forEach(function (id) {
+        var p = Engine.partById(id);
+        if (p && p.category === 'cpu') sbCpu = p;
+        if (p && p.category === 'motherboard') sbMobo = p;
+      });
+      job.machine = {
+        name: 'Shop-built ' + (sbCpu ? sbCpu.name + ' system' :
+                               (sbMobo ? sbMobo.name : 'PC')),
+        partIds: sbIds.slice(), faultPartIdx: null,
+        boughtFor: Engine.round2(sbCost), condition: 1,
+        freshness: Engine.round2(Engine.uniform(C.STOCK_BUILD_FRESH_MIN,
+                                                C.STOCK_BUILD_FRESH_MAX, 'market')),
+        stockBuild: true
+      };
+      job.result = { onTime: true, score: null, payout: 0,
+                     notes: ['Stock build finished — ready to sell'] };
+      Engine.pushNews(state, 'job', 'Stock build ready: ' + job.machine.name,
+        'Bench-tested, boxed, and priced to move.');
+      return job.result;
+    }
 
     // Refurb: becomes "ready to sell", no payout yet
     if (job.type === 'refurb') {
@@ -4163,6 +4267,13 @@
     var cond = (job.machine && job.machine.condition != null) ? job.machine.condition : 1.0;
     var year = Engine.currentYear(state);
     var sat = refurbSaturationMult(state, C);   // §14.3: recent-sales market glut
+    // §19.6: stock builds are NEW hardware — full parts value x freshness
+    // premium + the working-machine premium; the used-market glut still bites.
+    if (job.machine && job.machine.stockBuild) {
+      return Engine.round2(machinePartsValue(state, job.machine) *
+                           (job.machine.freshness || 1.1) * sat +
+                           Engine.laborRate(year) * C.REFURB_PREMIUM_HOURS);
+    }
     return Engine.round2(machinePartsValue(state, job.machine) * C.REFURB_SALE_RATIO * cond * sat +
                          Engine.laborRate(year) * C.REFURB_PREMIUM_HOURS);
   }
@@ -4173,16 +4284,42 @@
     return { estimate: refurbEstimate(state, job) };
   };
 
-  Jobs.sellRefurb = function (state, jobId) {
+  Jobs.sellRefurb = function (state, jobId, opts) {
     var job = Jobs.findActive(state, jobId);
-    if (!job || job.type !== 'refurb') return err('Not a refurb job');
+    if (!job || (job.type !== 'refurb' && !job.stockBuild))
+      return err('Not a sellable machine');
     if (job.status !== 'done') return err('Fix it up before selling');
     var C = CFG();
+    // §19.6: peripheral bundles — up to 3 from stock, each adds market
+    // value x BUNDLE_VALUE_MULT to the sale and is consumed.
+    var bundleIds = (opts && opts.bundlePartIds) ? opts.bundlePartIds.slice() : [];
+    if (bundleIds.length > C.BUNDLE_MAX)
+      return err('At most ' + C.BUNDLE_MAX + ' peripherals per bundle');
+    var bundleParts = [], bi;
+    for (bi = 0; bi < bundleIds.length; bi++) {
+      var bp = Engine.partById(bundleIds[bi]);
+      if (!bp || bp.category !== 'peripheral')
+        return err((bp ? bp.name : 'That part') + ' isn’t a peripheral');
+      var claimed = 0;
+      for (var bj = 0; bj < bi; bj++) if (bundleIds[bj] === bundleIds[bi]) claimed++;
+      var be = Engine.inventoryEntry(state, bp.id);
+      if (!be || be.qty <= claimed)
+        return err('No ' + bp.name + ' in stock to bundle');
+      bundleParts.push(bp);
+    }
     // §14.3: widen actual outcome variance around the appraised estimate —
     // real flip risk; some sales underperform, the best ones stay lucrative.
     var base = refurbEstimate(state, job);
     var price = Math.max(0, Engine.round2(
       base * Engine.uniform(1 - C.REFURB_VARIANCE_SPREAD, 1 + C.REFURB_VARIANCE_SPREAD, 'market')));
+    // §19.6 bundle value rides on top of the machine's own sale variance
+    var bundleValue = 0;
+    for (bi = 0; bi < bundleParts.length; bi++) {
+      Engine.inventoryRemove(state, bundleParts[bi].id, 1);
+      bundleValue = Engine.round2(bundleValue +
+        P().priceOf(bundleParts[bi], state) * C.BUNDLE_VALUE_MULT);
+    }
+    price = Engine.round2(price + bundleValue);
     Engine.addCash(state, price);
     Engine.ledgerAdd(state, 'revenue', price);
     state.ledger.lifetime.refurbsSold++;
@@ -4195,9 +4332,16 @@
     });
     job.status = 'sold';
     removeFrom(state.jobs.active, job);
-    Engine.pushNews(state, 'money', 'Refurb sold: ' + job.machine.name,
-      'Out the door for ' + Engine.fmtMoney(price) + ' (paid ' +
-      Engine.fmtMoney(job.machine.boughtFor) + ').');
-    return { ok: true, price: price };
+    Engine.pushNews(state, 'money',
+      (job.machine.stockBuild ? 'Stock build sold: ' : 'Refurb sold: ') +
+      job.machine.name,
+      'Out the door for ' + Engine.fmtMoney(price) +
+      (job.machine.stockBuild ? ' (parts ran ' : ' (paid ') +
+      Engine.fmtMoney(job.machine.boughtFor) + ').' +
+      (bundleParts.length ? ' Bundled ' + bundleParts.length + ' peripheral' +
+        (bundleParts.length > 1 ? 's' : '') + ' (+' +
+        Engine.fmtMoney(bundleValue) + ').' : ''));
+    return { ok: true, price: price, bundleValue: bundleValue,
+             bundled: bundleParts.length };
   };
 })(typeof window !== 'undefined' ? window : globalThis);

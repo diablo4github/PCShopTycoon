@@ -18,6 +18,7 @@
 
   var marketTimer = null;
   var refocusMarketSearch = false;
+  var invFlashDay = null;   /* §19.9 #8 — last day the delivery flash ran */
 
   /* ================================================================== *
    * TAB: Inventory
@@ -48,13 +49,21 @@
       return;
     }
 
+    /* §19.9 #8 — flash rows delivered this morning, once per day (first
+     * render of the day only, so mid-day re-renders stay calm). Fields are
+     * feature-detected; absent = no flash. */
+    var doFlash = UI.motionOK && UI.motionOK() && invFlashDay !== st.day;
+    invFlashDay = st.day;
+
     html += '<div class="table-wrap"><table class="data"><thead><tr>' +
       '<th>Part</th><th>Category</th><th class="num">Qty</th><th class="num">Avg cost</th>' +
       '<th class="num">Market price</th><th class="num">Value</th><th>Sell (70% of market)</th>' +
       '</tr></thead><tbody>';
     inv.forEach(function (it) {
       var qty = it.qty || 0;
-      html += '<tr>' +
+      var justLanded = doFlash && (it.arrivedToday === true ||
+        (it.arrivedDay !== undefined && it.arrivedDay !== null && it.arrivedDay === st.day));
+      html += '<tr' + (justLanded ? ' class="row-delivered"' : '') + '>' +
         '<td>' + esc(it.name) + '</td>' +
         '<td><span class="chip">' + esc(catLabel(it.category)) + '</span></td>' +
         '<td class="num">' + qty + '</td>' +

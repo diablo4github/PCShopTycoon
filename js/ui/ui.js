@@ -32,7 +32,7 @@
     tutorialToggle: undefined,// §13.5 New Game screen tour checkbox (undefined = not yet decided this session)
     saveUrl: null,            // objectURL of the last exported save blob
     /* §16.1 — active sub-tab per main tab (session-level persistence). */
-    subTab: { workbench: 'active', ledger: 'finances', shop: 'upgrade', offers: 'all', news: 'all' } /* §17.6 */
+    subTab: { workbench: 'active', ledger: 'finances', shop: 'upgrade', offers: 'all', news: 'all', market: 'retail' } /* §17.6/§18.1 */
   };
 
   /* ------------------------------------------------------------------ *

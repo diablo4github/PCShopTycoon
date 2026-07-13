@@ -113,7 +113,8 @@
         '<div class="settings-row"><label for="sfx-vol">SFX volume</label>' +
         '<input type="range" id="sfx-vol" min="0" max="1" step="0.05" value="' + au.sfxVol + '">' +
         '<span class="val" id="sfx-vol-val">' + Math.round(au.sfxVol * 100) + '%</span></div>' +
-        '<p class="muted small">Mute toggles live in the header (🎵 / 🔊). Audio starts after your first click — browser rules.</p>';
+        '<p class="muted small">Mute toggles live in the header (🎵 / 🔊). Audio starts after your first click — browser rules.</p>' +
+        nowPlayingHTML();
     }
     html += '</div>';
 
@@ -145,6 +146,19 @@
 
     html += '</div>';
     panel.innerHTML = html;
+  }
+
+  /* §18.2 — "Now playing" line: score name + the synthesis technique it
+   * recreates (the soundtrack is part of the education layer). */
+  function nowPlayingHTML() {
+    if (!(UI.audio && typeof UI.audio.nowPlaying === 'function')) return '';
+    var np = UI.audio.nowPlaying();
+    if (!np) return '';
+    if (np.off) {
+      return '<p class="now-playing muted small">♪ ' + esc(np.reason || 'Music off') + '</p>';
+    }
+    return '<p class="now-playing small">♪ Now playing: <b>' + esc(np.name) + '</b>' +
+      (np.technique ? ' <span class="muted">— ' + esc(np.technique) + '</span>' : '') + '</p>';
   }
 
   function doExport() {

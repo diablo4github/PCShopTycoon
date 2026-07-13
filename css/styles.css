@@ -1971,3 +1971,67 @@ body.era-early .account-card { border-left-color: var(--accent); }
   overflow-wrap: break-word;
   max-width: 100%;
 }
+
+/* ==========================================================================
+   v0.8 additions (SPEC §18) — Supply Lines & Sound
+   ========================================================================== */
+
+/* ---------- §18.1 suppliers ---------- */
+.supplier-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 12px; }
+.supplier-card.locked { opacity: 0.65; }
+.supplier-card.gray-market {
+  border-style: dashed;
+  border-color: var(--warn);
+  background: rgba(201, 118, 43, 0.04);
+}
+.badge.b-gray {
+  background: rgba(90, 84, 74, 0.16);
+  border: 1px solid var(--border-strong);
+  color: var(--muted);
+}
+.gray-note {
+  font-size: 12px;
+  font-weight: 600;
+  color: #8a4c12;
+  background: rgba(201, 118, 43, 0.1);
+  border-left: 3px solid var(--warn);
+  border-radius: 4px;
+  padding: 5px 9px;
+  margin: 6px 0;
+  overflow-wrap: break-word;
+}
+.rel-stars { white-space: nowrap; font-size: 13px; }
+.rel-star { color: rgba(128, 124, 110, 0.4); }
+.rel-star.on { color: var(--star); }
+.rel-label { font-size: 11px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.deal-rows, .pending-orders { display: flex; flex-direction: column; gap: 4px; margin: 4px 0 8px; }
+.deal-row, .order-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 4px 0;
+  border-bottom: 1px dashed var(--border);
+}
+.deal-row .deal-what, .order-row .order-what { font-weight: 600; min-width: 0; overflow-wrap: break-word; }
+.chip.deal-chip { background: rgba(28, 124, 60, 0.12); border-color: rgba(28, 124, 60, 0.45); color: var(--good); font-weight: 700; }
+.order-form { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin: 4px 0; }
+.order-form select { max-width: 320px; }
+.order-form input[type="number"] {
+  width: 64px;
+  padding: 4px 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--panel-bg);
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.order-preview { flex-basis: 100%; color: var(--muted); min-height: 1.2em; }
+
+/* ---------- §18.2 now-playing line ---------- */
+.now-playing {
+  border-top: 1px dashed var(--border);
+  padding-top: 6px;
+  margin-top: 6px;
+  overflow-wrap: break-word;
+}

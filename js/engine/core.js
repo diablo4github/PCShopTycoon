@@ -378,13 +378,41 @@
     // §17.1 PSU gate (overseer audit): an upgrade part pushing machine draw
     // past watts/PSU_HEADROOM needs an approved PSU swap first.
     PSU_SWAP_HOURS: 0.5,            // labor for the quoted PSU swap (0.1h grid)
-    PSU_SWAP_HEADROOM_MULT: 1.35    // the quoted replacement PSU's watts margin
+    PSU_SWAP_HEADROOM_MULT: 1.35,   // the quoted replacement PSU's watts margin
+
+    // §18.1 distributors — wholesale supply: cheaper-but-slower vs retail.
+    DIST_QTY_TIERS: [               // bulk tiers ON TOP of base+relationship
+      { qty: 25, disc: 0.10 },
+      { qty: 10, disc: 0.06 },
+      { qty: 5,  disc: 0.03 }
+    ],
+    DIST_ORDER_HOURS: 0.2,          // paperwork per order (0.1h grid, overtime rules)
+    DIST_CANCEL_FEE: 0.10,          // restocking fee, pre-ship cancels only
+    DIST_REL_DISCOUNTS: [0, 0.01, 0.02, 0.03],   // New/Regular/Preferred/Partner
+    // Lifetime-spend promotion thresholds, year-scaled: threshold($) =
+    // laborRate(currentYear) x mult — a Regular in 1983 and one in 2021 both
+    // represent "a real customer", not the same nominal dollars.
+    DIST_REL_LABOR_MULTS: [0, 15, 50, 120],
+    DIST_REL_LABELS: ['New', 'Regular', 'Preferred', 'Partner'],
+    DIST_SPECIALTY_BONUS: 0.02,     // extra off in a distributor's specialty categories
+    DIST_PARTNER_LEAD_CUT: 1,       // Partner shaves a lead day...
+    DIST_LEAD_MIN: 1,               // ...never below 1
+    DIST_DEALS_PER_WEEK: [1, 2],    // Monday rotation, per era-active distributor
+    DIST_DEAL_RANGE: [0.12, 0.25],  // weekly deal discount band
+    DIST_DEAL_GLUT_BONUS: 0.05,     // glut categories (price-slump events) cut deeper
+    DIST_DEAL_CAP: 0.30,            // deal discount ceiling after glut bonus
+    DIST_DEAL_MAXQTY: [3, 8],       // units per deal
+    DIST_DEAL_SPECIALTY_CHANCE: 0.6, // deals lean into the distributor's specialty
+    DIST_TOTAL_DISC_CAP: 0.35,      // sanity ceiling on any stacked order discount
+    DIST_ALLOC_QTY: 3,              // shortage allocation cap at Preferred+ (list price)
+    DIST_GRAY_REL_PENALTY: 10,      // gray-market parts: -10 reliability when consumed
+    DIST_GRAY_REL_FLOOR: 40         // ...never below 40
   };
 
   // ------------------------------------------------------------------
   // Live state reference (set by api.js newGame/importSave)
   // ------------------------------------------------------------------
-  Engine.VERSION = '0.7';        // §17: parseFloat-compatible with the UI's >=0.4 gate
+  Engine.VERSION = '0.8';        // §18: parseFloat-compatible with the UI's >=0.4 gate
   Engine._state = null;
   Engine.getData = function () { return root.DATA || {}; };
 

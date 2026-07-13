@@ -19,6 +19,7 @@
              certsEarned: [],            // §13.4 certifications completed since last morning
              achievements: [],           // §15.5 achievements unlocked since last morning
              accountJobs: [],            // §15.4 auto-accepted retainer jobs overnight
+             deliveries: [],             // §18.1 distributor orders that arrived overnight
              scenarioComplete: null };   // §15.2 {grade, score, name} when a scenario ends
   };
 
@@ -84,8 +85,16 @@
     // 5. Warranty callback arrivals
     Engine.Jobs.processCallbacks(state, summary);
 
+    // 5b. §18.1: distributor orders arriving this morning land in inventory
+    Sim.deliverOrders(state, summary);
+
     // 6. As-is market churn
     Engine.Jobs.refreshAsIsMarket(state);
+
+    // 6c. §18.1: weekly distributor deal rotation (Mondays; first night seeds).
+    // Rolls for EVERY era-active distributor regardless of unlock so player
+    // pace/prestige can never shift the market stream's draw count (§17.5).
+    Sim.rotateDeals(state);
 
     // 6b. Staff candidate market refreshes weekly (§10.7)
     if (state.staffNextRefreshDay == null || state.day >= state.staffNextRefreshDay) {
@@ -642,6 +651,407 @@
       'Start a fresh game or keep the shop running in sandbox.');
     if (summary) summary.scenarioComplete =
       { grade: result.grade, score: result.score, name: result.name };
+  };
+
+  // ------------------------------------------------------------------
+  // §18.1 Distributors — wholesale supply relationships. Cheaper-but-slower
+  // vs instant retail: upfront payment, lead days, weekly Monday deals,
+  // loyalty tiers, and one honest gray-market channel per broad era.
+  // ------------------------------------------------------------------
+  // Defensive fallback so the engine (and mock runs) work before/without the
+  // DATA workstream's authored DATA.DISTRIBUTORS table.
+  var DIST_FALLBACK = [
+    { id: 'heartland-mail', name: 'Heartland Components Mail-Order',
+      minYear: 1983, maxYear: 1996, minPrestige: 0, baseDiscount: 0.05,
+      leadDays: 4, specialty: ['ram', 'storage'], grayMarket: false,
+      blurb: 'A catalog house out of Des Moines. Allow four business days ' +
+             'and check the money order twice.' },
+    { id: 'valley-wholesale', name: 'Valley Micro Wholesale',
+      minYear: 1991, maxYear: 2006, minPrestige: 1, baseDiscount: 0.07,
+      leadDays: 3, specialty: ['cpu', 'motherboard'], grayMarket: false,
+      blurb: 'The regional distributor every white-box builder knows. ' +
+             'Net terms are for shops they trust.' },
+    { id: 'partstream', name: 'PartStream Online Supply',
+      minYear: 2003, minPrestige: 1, baseDiscount: 0.06,
+      leadDays: 2, specialty: null, grayMarket: false,
+      blurb: 'Web storefront, real warehouse. The tracking page actually works.' },
+    { id: 'swap-meet', name: 'Sunday Swap Meet Stalls',
+      minYear: 1983, minPrestige: 0, baseDiscount: 0.18,
+      leadDays: 1, specialty: null, grayMarket: true,
+      blurb: 'Cash only, no receipts, no questions. The prices are great ' +
+             'and the failure rate is your problem.' }
+  ];
+  Sim.distributorTable = function () {
+    var t = Engine.getData().DISTRIBUTORS;
+    return (Array.isArray(t) && t.length) ? t : DIST_FALLBACK;
+  };
+
+  // Lazy state block (v9 saves carry it; lazy-init keeps old fixtures safe).
+  Sim.distState = function (state) {
+    if (!state.distributors) {
+      state.distributors = { spend: {}, tier: {}, deals: {}, lastDealDay: -1 };
+    }
+    if (!state.pendingOrders) state.pendingOrders = [];
+    if (!state.grayStock) state.grayStock = {};
+    if (state.nextOrderId == null) state.nextOrderId = 1;
+    return state.distributors;
+  };
+
+  // Era-active distributors — YEAR-dependent only (never player-dependent),
+  // so weekly deal rotation consumes a stable number of market-stream draws.
+  Sim.eraDistributors = function (state) {
+    var year = Engine.currentYear(state);
+    return Sim.distributorTable().filter(function (d) {
+      return year >= (d.minYear || 0) && year <= (d.maxYear || 9999);
+    });
+  };
+  function distById(state, id) {
+    var list = Sim.eraDistributors(state);
+    for (var i = 0; i < list.length; i++) if (list[i].id === id) return list[i];
+    return null;
+  }
+
+  // Relationship: lifetime spend vs year-scaled thresholds; promotions are
+  // sticky (a relationship, once earned, does not regress).
+  function relThreshold(state, tierIdx) {
+    return Engine.laborRate(Engine.currentYear(state)) *
+           CFG().DIST_REL_LABOR_MULTS[tierIdx];
+  }
+  function computedRelTier(state, distId) {
+    var ds = Sim.distState(state);
+    var spend = ds.spend[distId] || 0;
+    var tier = 0;
+    for (var t = 1; t < CFG().DIST_REL_LABOR_MULTS.length; t++) {
+      if (spend >= relThreshold(state, t)) tier = t;
+    }
+    return tier;
+  }
+  Sim.distRelationship = function (state, distId) {
+    var ds = Sim.distState(state);
+    return Math.max(ds.tier[distId] || 0, computedRelTier(state, distId));
+  };
+
+  // Category price pressure from active events (copyEffect resolves priceMult
+  // to a number). >1.05 = shortage, <0.95 = glut. Tag-scoped effects are
+  // ignored here — deals trade in whole categories.
+  function categoryEventMult(state, category) {
+    var mult = 1;
+    var evs = state.market.activeEvents || [];
+    for (var i = 0; i < evs.length; i++) {
+      var effs = evs[i].effects || [];
+      for (var j = 0; j < effs.length; j++) {
+        var ef = effs[j];
+        if (!ef || typeof ef.priceMult !== 'number') continue;
+        if ((ef.categories || []).indexOf(category) !== -1) mult *= ef.priceMult;
+      }
+    }
+    return mult;
+  }
+  Sim.isShortageCategory = function (state, cat) {
+    return categoryEventMult(state, cat) > 1.05;
+  };
+  Sim.isGlutCategory = function (state, cat) {
+    return categoryEventMult(state, cat) < 0.95;
+  };
+
+  function purchasablePool(state, categories) {
+    var pool = [];
+    var seen = {};
+    var parts = Engine.getData().PARTS || [];
+    for (var i = 0; i < parts.length; i++) {
+      var cat = parts[i].category;
+      if (categories && categories.indexOf(cat) === -1) continue;
+      if (!seen[cat]) {
+        seen[cat] = Engine.Jobs.purchasableByCategory(state, cat);
+      }
+    }
+    Object.keys(seen).forEach(function (c) { pool = pool.concat(seen[c]); });
+    return pool;
+  }
+
+  /* Weekly Monday deal rotation (market stream). The first night after boot
+   * seeds an initial set so a mid-week start still has a supplier page. */
+  Sim.rotateDeals = function (state) {
+    var C = CFG();
+    var ds = Sim.distState(state);
+    var di = Engine.dateInfo(state.day, state);
+    if (ds.lastDealDay >= 0 && di.weekday !== 1) return;
+    if (ds.lastDealDay === state.day) return;
+    ds.lastDealDay = state.day;
+    var expires = state.day + 7;
+    var list = Sim.eraDistributors(state);
+    var newDeals = {};
+    for (var i = 0; i < list.length; i++) {
+      var d = list[i];
+      var n = Engine.randInt(C.DIST_DEALS_PER_WEEK[0], C.DIST_DEALS_PER_WEEK[1], 'market');
+      var deals = [];
+      for (var k = 0; k < n; k++) {
+        var lean = Engine.chance(C.DIST_DEAL_SPECIALTY_CHANCE, 'market');
+        var pool = (lean && d.specialty && d.specialty.length) ?
+          purchasablePool(state, d.specialty) : purchasablePool(state, null);
+        if (!pool.length) pool = purchasablePool(state, null);
+        if (!pool.length) continue;
+        var part = Engine.pick(pool, 'market');
+        var disc = Engine.uniform(C.DIST_DEAL_RANGE[0], C.DIST_DEAL_RANGE[1], 'market');
+        var glut = Sim.isGlutCategory(state, part.category);
+        if (glut) disc += C.DIST_DEAL_GLUT_BONUS;   // gluts cut deeper
+        disc = Math.min(C.DIST_DEAL_CAP, Engine.round2(disc));
+        deals.push({ partId: part.id, dealDiscount: disc,
+                     maxQty: Engine.randInt(C.DIST_DEAL_MAXQTY[0], C.DIST_DEAL_MAXQTY[1], 'market'),
+                     bought: 0, expiresDay: expires, glut: glut });
+      }
+      newDeals[d.id] = deals;
+    }
+    ds.deals = newDeals;
+  };
+
+  /* Resolve a stored deal against TODAY's world: expiry, remaining units, and
+   * the shortage rule — deals on shorted categories vanish, except
+   * Preferred+ keeps a small list-price allocation (the loyalty payoff). */
+  function resolveDeal(state, dl, rel) {
+    if (state.day >= dl.expiresDay) return null;
+    var part = Engine.partById(dl.partId);
+    if (!part) return null;
+    var remaining = dl.maxQty - (dl.bought || 0);
+    if (remaining <= 0) return null;
+    if (Sim.isShortageCategory(state, part.category)) {
+      if (rel < 2) return null;
+      var allocCap = Math.min(CFG().DIST_ALLOC_QTY, dl.maxQty);
+      remaining = Math.min(remaining, allocCap - (dl.bought || 0));
+      if (remaining <= 0) return null;
+      return { dl: dl, part: part, allocation: true, discount: 0,
+               remaining: remaining, glut: false };
+    }
+    return { dl: dl, part: part, allocation: false, discount: dl.dealDiscount,
+             remaining: remaining, glut: !!dl.glut };
+  }
+  function liveDealFor(state, dist, partId, rel) {
+    var deals = Sim.distState(state).deals[dist.id] || [];
+    for (var i = 0; i < deals.length; i++) {
+      if (deals[i].partId !== partId) continue;
+      var live = resolveDeal(state, deals[i], rel);
+      if (live) return live;
+    }
+    return null;
+  }
+
+  function distUnlockInfo(state, dist) {
+    var need = dist.minPrestige || 0;
+    if ((state.reputation.prestige || 0) >= need) return { unlocked: true };
+    var tiers = CFG().PRESTIGE_TIERS;
+    var label = (tiers[need] && tiers[need].label) || ('prestige ' + need);
+    return { unlocked: false,
+             lockedReason: 'Requires shop prestige "' + label + '"' };
+  }
+  function partIsOrderable(state, part) {
+    var list = Engine.Jobs.purchasableByCategory(state, part.category);
+    for (var i = 0; i < list.length; i++) if (list[i].id === part.id) return true;
+    return false;
+  }
+  function effLeadDays(dist, rel) {
+    var C = CFG();
+    var lead = dist.leadDays || 3;
+    if (rel >= 3) lead -= C.DIST_PARTNER_LEAD_CUT;   // Partner perk
+    return Math.max(C.DIST_LEAD_MIN, lead);
+  }
+
+  /* Price a prospective order WITHOUT side effects (UI live preview uses
+   * this; placeOrder builds on it). Deal pricing stacks with relationship
+   * but NOT bulk tiers; shortage allocations are strictly list price. */
+  Sim.quoteOrder = function (state, distributorId, partId, qty) {
+    var C = CFG();
+    var dist = distById(state, distributorId);
+    if (!dist) return { ok: false, error: 'No such distributor this era' };
+    var un = distUnlockInfo(state, dist);
+    if (!un.unlocked) return { ok: false, error: un.lockedReason };
+    var part = Engine.partById(partId);
+    if (!part) return { ok: false, error: 'Unknown part' };
+    qty = Math.floor(Number(qty));
+    if (!(qty >= 1)) return { ok: false, error: 'Order at least one unit' };
+    if (qty > 99) return { ok: false, error: 'Distributors cap single orders at 99 units' };
+    if (!partIsOrderable(state, part)) {
+      return { ok: false, error: part.name + ' is not in this year’s catalogs' };
+    }
+    var rel = Sim.distRelationship(state, dist.id);
+    var retail = Engine.Pricing.priceOf(part, state, { buy: true });
+    var disc = (dist.baseDiscount || 0) + (C.DIST_REL_DISCOUNTS[rel] || 0);
+    if (dist.specialty && dist.specialty.indexOf(part.category) !== -1) {
+      disc += C.DIST_SPECIALTY_BONUS;
+    }
+    var live = liveDealFor(state, dist, partId, rel);
+    var isDeal = false, isAlloc = false;
+    if (live && qty <= live.remaining) {
+      isDeal = true; isAlloc = live.allocation;
+      disc = isAlloc ? 0 : disc + live.discount;
+    } else {
+      for (var t = 0; t < C.DIST_QTY_TIERS.length; t++) {
+        if (qty >= C.DIST_QTY_TIERS[t].qty) { disc += C.DIST_QTY_TIERS[t].disc; break; }
+      }
+    }
+    disc = Math.min(C.DIST_TOTAL_DISC_CAP, Engine.round2(disc));
+    var lead = effLeadDays(dist, rel);
+    var unitCost = Engine.round2(retail * (1 - disc));
+    return { ok: true, distributorId: dist.id, partId: part.id, qty: qty,
+             unitCost: unitCost, total: Engine.round2(unitCost * qty),
+             discount: disc, retailUnit: retail,
+             leadDays: lead, arrivesDay: state.day + lead,
+             deal: isDeal, allocation: isAlloc, gray: !!dist.grayMarket };
+  };
+
+  Sim.placeOrder = function (state, distributorId, partId, qty) {
+    var C = CFG();
+    var q = Sim.quoteOrder(state, distributorId, partId, qty);
+    if (!q.ok) return q;
+    if (state.cash < q.total) {
+      return { ok: false, error: 'Distributors want payment up front (' +
+               Engine.fmtMoney(q.total) + ')' };
+    }
+    var sp = Engine.spendHours(state, C.DIST_ORDER_HOURS);   // the paperwork
+    if (!sp.ok) return sp;
+    Engine.addCash(state, -q.total);
+    Engine.ledgerAdd(state, 'partsCost', q.total);
+    var ds = Sim.distState(state);
+    var dist = distById(state, distributorId);
+    var part = Engine.partById(partId);
+    var order = { id: state.nextOrderId++, distributorId: dist.id,
+                  partId: part.id, partName: part.name, distName: dist.name,
+                  qty: q.qty, unitCost: q.unitCost, total: q.total,
+                  placedDay: state.day, arrivesDay: q.arrivesDay,
+                  gray: !!dist.grayMarket };
+    state.pendingOrders.push(order);
+    if (q.deal) {
+      var rel0 = Sim.distRelationship(state, dist.id);
+      var live = liveDealFor(state, dist, partId, rel0);
+      if (live) live.dl.bought = (live.dl.bought || 0) + q.qty;
+    }
+    // Relationship accrual + sticky promotion
+    ds.spend[dist.id] = Engine.round2((ds.spend[dist.id] || 0) + q.total);
+    var before = ds.tier[dist.id] || 0;
+    var now = computedRelTier(state, dist.id);
+    if (now > before) {
+      ds.tier[dist.id] = now;
+      Engine.pushNews(state, 'prestige',
+        dist.name + ' upgraded you to ' + C.DIST_REL_LABELS[now],
+        'Lifetime business earned it: ' +
+        (C.DIST_REL_DISCOUNTS[now] * 100).toFixed(0) + '% loyalty discount' +
+        (now >= 3 ? ', a day off every lead time,' : '') +
+        (now >= 2 ? ' and priority allocation during shortages.' : '.'));
+    }
+    return { ok: true, orderId: order.id, unitCost: q.unitCost, total: q.total,
+             arrivesDay: order.arrivesDay, leadDays: q.leadDays,
+             deal: q.deal, allocation: q.allocation,
+             promoted: now > before ? C.DIST_REL_LABELS[now] : null };
+  };
+
+  /* Cancel before ship day only (an order arriving tomorrow is on the truck).
+   * 10% restocking fee; refunded spend no longer counts toward loyalty (no
+   * place-and-cancel farming), but an earned tier never regresses. */
+  Sim.cancelOrder = function (state, orderId) {
+    var C = CFG();
+    var orders = state.pendingOrders || [];
+    var o = null, idx = -1;
+    for (var i = 0; i < orders.length; i++) {
+      if (orders[i].id === Number(orderId)) { o = orders[i]; idx = i; break; }
+    }
+    if (!o) return { ok: false, error: 'No such pending order' };
+    if (o.arrivesDay - state.day < 2) {
+      return { ok: false, error: 'Too late — the ' + o.partName +
+               ' order has already shipped' };
+    }
+    var fee = Engine.round2(o.total * C.DIST_CANCEL_FEE);
+    var refund = Engine.round2(o.total - fee);
+    Engine.addCash(state, refund);
+    Engine.ledgerAdd(state, 'partsCost', -o.total);
+    Engine.ledgerAdd(state, 'other', fee);
+    var ds = Sim.distState(state);
+    ds.spend[o.distributorId] = Math.max(0,
+      Engine.round2((ds.spend[o.distributorId] || 0) - refund));
+    orders.splice(idx, 1);
+    Engine.pushNews(state, 'money', 'Order cancelled: ' + o.partName,
+      Engine.fmtMoney(refund) + ' refunded (' + Engine.fmtMoney(fee) +
+      ' restocking fee kept).');
+    return { ok: true, refund: refund, fee: fee };
+  };
+
+  /* Overnight delivery into inventory. Storage rules stay real: a big order
+   * can push the shop into overage fees at month end (§16). */
+  Sim.deliverOrders = function (state, summary) {
+    if (!state.pendingOrders || !state.pendingOrders.length) return;
+    var keep = [];
+    for (var i = 0; i < state.pendingOrders.length; i++) {
+      var o = state.pendingOrders[i];
+      if (o.arrivesDay > state.day) { keep.push(o); continue; }
+      Engine.inventoryAdd(state, o.partId, o.qty, o.unitCost);
+      if (o.gray) {
+        state.grayStock = state.grayStock || {};
+        state.grayStock[o.partId] = (state.grayStock[o.partId] || 0) + o.qty;
+      }
+      var line = o.qty + '× ' + o.partName + ' from ' + o.distName;
+      if (summary && summary.deliveries) summary.deliveries.push(line);
+      Engine.pushNews(state, 'money', 'Delivery: ' + o.partName,
+        o.qty + ' unit' + (o.qty > 1 ? 's' : '') + ' from ' + o.distName +
+        ' into stock at ' + Engine.fmtMoney(o.unitCost) + ' each.');
+    }
+    state.pendingOrders = keep;
+  };
+
+  /* The Suppliers view: unlocked distributors in full, locked ones listed
+   * with a readable reason. Deals are resolved against today's world. */
+  Sim.getDistributors = function (state) {
+    var C = CFG();
+    var ds = Sim.distState(state);
+    return Sim.eraDistributors(state).map(function (d) {
+      var un = distUnlockInfo(state, d);
+      if (!un.unlocked) {
+        return { id: d.id, name: d.name, blurb: d.blurb || '',
+                 grayMarket: !!d.grayMarket, locked: true,
+                 lockedReason: un.lockedReason };
+      }
+      var rel = Sim.distRelationship(state, d.id);
+      var deals = (ds.deals[d.id] || []).map(function (dl) {
+        var live = resolveDeal(state, dl, rel);
+        if (!live) return null;
+        var disc = live.allocation ? 0 :
+          Math.min(C.DIST_TOTAL_DISC_CAP, Engine.round2(
+            (d.baseDiscount || 0) + (C.DIST_REL_DISCOUNTS[rel] || 0) +
+            ((d.specialty && d.specialty.indexOf(live.part.category) !== -1) ?
+              C.DIST_SPECIALTY_BONUS : 0) + live.discount));
+        return { partId: live.part.id, name: live.part.name,
+                 category: live.part.category,
+                 dealDiscount: live.allocation ? 0 : live.dl.dealDiscount,
+                 unitCost: Engine.round2(
+                   Engine.Pricing.priceOf(live.part, state, { buy: true }) * (1 - disc)),
+                 maxQty: live.dl.maxQty, remaining: live.remaining,
+                 expiresDay: live.dl.expiresDay,
+                 allocation: live.allocation, glut: live.glut };
+      }).filter(function (x) { return x != null; });
+      return { id: d.id, name: d.name, blurb: d.blurb || '',
+               locked: false,
+               relationship: rel, relationshipLabel: C.DIST_REL_LABELS[rel],
+               effDiscount: Engine.round2((d.baseDiscount || 0) +
+                                          (C.DIST_REL_DISCOUNTS[rel] || 0)),
+               specialtyBonus: C.DIST_SPECIALTY_BONUS,
+               leadDays: effLeadDays(d, rel),
+               specialty: d.specialty ? d.specialty.slice() : null,
+               grayMarket: !!d.grayMarket,
+               lifetimeSpend: ds.spend[d.id] || 0,
+               nextTierSpend: rel < 3 ? Engine.round2(relThreshold(state, rel + 1)) : null,
+               deals: deals };
+    });
+  };
+
+  /* Pending-orders view with ETA + cancellability (UI list). */
+  Sim.getPendingOrders = function (state) {
+    Sim.distState(state);
+    return (state.pendingOrders || []).map(function (o) {
+      return { id: o.id, partId: o.partId, partName: o.partName,
+               distributorId: o.distributorId, distName: o.distName,
+               qty: o.qty, unitCost: o.unitCost, total: o.total,
+               arrivesDay: o.arrivesDay,
+               etaDays: Math.max(0, o.arrivesDay - state.day),
+               cancellable: (o.arrivesDay - state.day) >= 2,
+               gray: !!o.gray };
+    });
   };
 
   // ------------------------------------------------------------------

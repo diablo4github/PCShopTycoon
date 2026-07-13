@@ -56,7 +56,7 @@
         if (res.payout) msg += ' — paid ' + fm(res.payout);
         if (res.score !== null && res.score !== undefined) msg += ' • score ' + Number(res.score).toFixed(1) + '/5';
         if (res.onTime === false) msg += ' • LATE';
-        if (res.notes) msg += ' • ' + res.notes;
+        if (res.notes) msg += ' • ' + (Array.isArray(res.notes) ? res.notes.join(' • ') : res.notes);
         UI.toast(msg, 'success', 6500);
         if (UI.audio && UI.audio.sfx && !res.payout) UI.audio.sfx('complete');
         /* §17.2 — the ★ delta float itself comes from UI.act's rating diff

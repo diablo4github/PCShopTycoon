@@ -81,7 +81,14 @@
     // half-hour rounding padding that used to inflate small jobs' tracked
     // hours far more than refurbs' chunkier steps) so flips still clear the
     // intended 1.2-1.8x jobs' $/hour band (§9.6) rather than falling behind.
-    REFURB_SALE_RATIO: 0.745,    // of part value (§9.6 origin: override of §5.4's 0.85)
+    // Of part value (§9.6 origin: override of §5.4's 0.85). §18 retune
+    // 0.745 -> 0.71: the v0.7/v0.8 supply work (arrivals 0.33 -> 0.46 plus
+    // weekly deal rotation reshuffling the market stream) left the mixed-bot
+    // flip lane clearing ~2.1x jobs' $/hour at 1983 — above the §9.6
+    // 1.2-1.8x band. Trimming sale value ~4.7% brings per-flip margin back
+    // inside the band without touching supply or hours (0.71 measured
+    // 1.83 median — one more notch).
+    REFURB_SALE_RATIO: 0.70,
     // §13.6: condition scales flip PROCEEDS but is not in the bot's buy decision
     // and consumes the same single RNG draw whatever its range — so nudging the
     // mean 0.93->0.99 restores flip-margin headroom (ratio back toward ~1.4)
@@ -393,10 +400,12 @@
     // laborRate(currentYear) x mult — a Regular in 1983 and one in 2021 both
     // represent "a real customer", not the same nominal dollars. Calibrated
     // so one mid-size order can't leapfrog tiers: at 1996 (laborRate ~$45)
-    // Regular ≈ $1.8k, Preferred ≈ $6.8k, Partner ≈ $18k lifetime.
-    DIST_REL_LABOR_MULTS: [0, 40, 150, 400],
+    // Regular ≈ $1.35k, Preferred ≈ $6.8k, Partner ≈ $18k lifetime (the
+    // first rung is reachable inside a wholesale-leaning 60-day run).
+    DIST_REL_LABOR_MULTS: [0, 30, 150, 400],
     DIST_REL_LABELS: ['New', 'Regular', 'Preferred', 'Partner'],
-    DIST_SPECIALTY_BONUS: 0.02,     // extra off in a distributor's specialty categories
+    DIST_SPECIALTY_BONUS: 0.03,     // extra off in a distributor's specialty categories
+                                    //   (0.02 left the 1996 margin median at the band floor)
     DIST_PARTNER_LEAD_CUT: 1,       // Partner shaves a lead day...
     DIST_LEAD_MIN: 1,               // ...never below 1
     DIST_DEALS_PER_WEEK: [1, 2],    // Monday rotation, per era-active distributor

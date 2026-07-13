@@ -4588,8 +4588,8 @@ function distributorOrderScenario() {
     var res = E.endDay();
     if ((res.summary.deliveries || []).length) delivered = res.summary.deliveries;
   }
-  assert(delivered && new RegExp(part.name).test(delivered[0]),
-         'distorder: no delivery summary line');
+  assert(delivered && delivered[0].indexOf(part.name) !== -1,
+         'distorder: no delivery summary line, got ' + JSON.stringify(delivered));
   assert(s.day === po.arrivesDay, 'distorder: delivered on the wrong day');
   var inv = E.inventoryEntry(s, part.id);
   assert(inv && inv.qty >= 10 && Math.abs(inv.avgCost - po.unitCost) < 0.01,
@@ -4699,9 +4699,11 @@ function distributorDealScenario() {
 
   // Glut categories cut deeper (flagged at generation)
   var glutSeen = null, guard = 0;
+  s.market.activeEvents.length = 0;   // isolate: a live ram shortage would cancel the glut
   Engine.Sim.fireRandomEvent(s, { id: 'test-glut', headlines: ['Test glut'],
     durationDays: 60, effects: [{ categories: ['ram'], priceMult: 0.8 }],
     jobVolumeMult: 1 }, 60, 'misc');
+  assert(Engine.Sim.isGlutCategory(s, 'ram'), 'distdeal: glut rig failed');
   while (!glutSeen && guard++ < 40) {
     ds.lastDealDay = -1;                    // force a fresh board (test rig)
     Engine.Sim.rotateDeals(s);
@@ -4785,22 +4787,33 @@ function distributorRelationshipScenario() {
   var lr = Engine.laborRate(Engine.currentYear(s));
   var newsBefore = s.news.length;
   var seen = { 1: false, 2: false, 3: false };
-  var guard = 0;
-  while (!seen[3] && guard++ < 200) {
-    s.hoursLeft = 8;
-    var po = E.placeOrder(open.id, part.id, 25);
-    if (!assert(po.ok, 'distrel: order failed: ' + (po.error || ''))) return;
-    if (po.promoted) {
-      var tier = C.DIST_REL_LABELS.indexOf(po.promoted);
-      seen[tier] = true;
-      var spend = s.distributors.spend[open.id];
-      assert(spend >= lr * C.DIST_REL_LABOR_MULTS[tier] - 0.01,
-             'distrel: promoted to ' + po.promoted + ' below threshold (' + spend + ')');
-      var vv = E.getDistributors().filter(function (d) { return d.id === open.id; })[0];
-      assert(vv.relationship === tier &&
-             vv.effDiscount === Engine.round2((vv.effDiscount - C.DIST_REL_DISCOUNTS[tier]) +
-                                              C.DIST_REL_DISCOUNTS[tier]),
-             'distrel: view after promotion inconsistent');
+  // Climb one rung at a time: size each order to just cross the NEXT
+  // threshold (mock and real part prices differ wildly — a fixed qty can
+  // legitimately leapfrog a rung, which is fine for play but not for a
+  // rung-by-rung ladder test).
+  for (var tierWant = 1; tierWant <= 3; tierWant++) {
+    var guard = 0;
+    while (Engine.Sim.distRelationship(s, open.id) < tierWant && guard++ < 30) {
+      s.hoursLeft = 8;
+      var spendNow = s.distributors.spend[open.id] || 0;
+      var gap = lr * C.DIST_REL_LABOR_MULTS[tierWant] - spendNow;
+      var qU = E.quoteOrder(open.id, part.id, 1);
+      if (!assert(qU.ok, 'distrel: unit quote failed')) return;
+      var qty = Math.max(1, Math.min(25, Math.ceil((gap + 1) / qU.unitCost)));
+      var po = E.placeOrder(open.id, part.id, qty);
+      if (!assert(po.ok, 'distrel: order failed: ' + (po.error || ''))) return;
+      if (po.promoted) {
+        var tier = C.DIST_REL_LABELS.indexOf(po.promoted);
+        seen[tier] = true;
+        var spend = s.distributors.spend[open.id];
+        assert(spend >= lr * C.DIST_REL_LABOR_MULTS[tier] - 0.01,
+               'distrel: promoted to ' + po.promoted + ' below threshold (' + spend + ')');
+        var vv = E.getDistributors().filter(function (d) { return d.id === open.id; })[0];
+        assert(vv.relationship === tier &&
+               vv.effDiscount === Engine.round2((vv.effDiscount - C.DIST_REL_DISCOUNTS[tier]) +
+                                                C.DIST_REL_DISCOUNTS[tier]),
+               'distrel: view after promotion inconsistent');
+      }
     }
   }
   assert(seen[1] && seen[2] && seen[3],
@@ -4912,11 +4925,28 @@ function runSupplyBot(era, seed, useDist) {
   if (!r.ok) return null;
   var s = E.getState();
   var cashStart = s.cash;
+  var botStats = { orders: 0, saved: 0 };
   for (var day = 0; day < 60; day++) {
     E.getOffers().slice().forEach(function (o) {
       if (o.crt) { E.declineOffer(o.id); return; }
       E.acceptOffer(o.id);
     });
+    // Daily deal index: best live wholesale price per part (open houses only)
+    var dealIdx = null;
+    if (useDist) {
+      dealIdx = {};
+      E.getDistributors().forEach(function (dv) {
+        if (dv.locked || dv.grayMarket) return;
+        (dv.deals || []).forEach(function (dl) {
+          if (dl.allocation) return;
+          var cur = dealIdx[dl.partId];
+          if (!cur || dl.unitCost < cur.unitCost) {
+            dealIdx[dl.partId] = { distId: dv.id, unitCost: dl.unitCost,
+                                   remaining: dl.remaining, leadDays: dv.leadDays };
+          }
+        });
+      });
+    }
     var guard = 0, progress = true;
     while (progress && guard++ < 300) {
       progress = false;
@@ -4946,18 +4976,58 @@ function runSupplyBot(era, seed, useDist) {
           // and keep working other jobs; only tight deadlines pay retail.
           if (useDist && opt.source === 'market') {
             var ordered = s.pendingOrders.some(function (o2) {
-              return o2.partId === opt.partId;
+              return need.options.some(function (o4) {
+                return o4.partId === o2.partId;
+              });
             });
-            if (ordered) continue;   // it's on the truck
-            var best = null;
+            if (ordered) continue;   // something for this slot is on the truck
+            var slack = job.deadlineDay != null ? (job.deadlineDay - s.day) : 99;
+            var qtyNeed = Math.max(1, need.qty - need.filled);
+            var lr2 = Engine.laborRate(Engine.currentYear(s));
+            // (a) Deal-shopping: a 12-25%-off deal on ANY viable option can
+            // beat the cheapest option's retail price outright.
+            var dealPick = null;
+            if (dealIdx) {
+              for (var oi = 0; oi < need.options.length; oi++) {
+                var o3 = need.options[oi];
+                if (!o3.meets || o3.overPsu || o3.source !== 'market') continue;
+                var dd = dealIdx[o3.partId];
+                if (!dd || dd.remaining < qtyNeed) continue;
+                if (slack < dd.leadDays + 2) continue;
+                if (!dealPick || dd.unitCost < dealPick.dd.unitCost) {
+                  dealPick = { o: o3, dd: dd };
+                }
+              }
+            }
+            if (dealPick && dealPick.dd.unitCost < (opt.price || 1e9)) {
+              var poD = E.placeOrder(dealPick.dd.distId, dealPick.o.partId, qtyNeed);
+              if (poD.ok) {
+                botStats.orders++;
+                botStats.saved += ((opt.price || 0) - dealPick.dd.unitCost) * qtyNeed;
+                progress = true; continue;
+              }
+            }
+            // (b) Plain wholesale on the chosen option.
+            // Deepest total discount whose lead fits the deadline; a live
+            // deal (12-25% off) trumps everything else.
+            var best = null, bestDisc = 0, bestDeal = false;
             E.getDistributors().forEach(function (dv) {
               if (dv.locked || dv.grayMarket) return;
-              if (!best || dv.leadDays < best.leadDays) best = dv;
+              if (slack < dv.leadDays + 2) return;
+              var q2 = E.quoteOrder(dv.id, opt.partId, qtyNeed);
+              if (!q2.ok) return;
+              if (!best || (q2.deal && !bestDeal) ||
+                  (q2.deal === bestDeal && q2.discount > bestDisc)) {
+                best = dv; bestDisc = q2.discount; bestDeal = q2.deal;
+              }
             });
-            var slack = job.deadlineDay != null ? (job.deadlineDay - s.day) : 99;
-            if (best && slack >= best.leadDays + 2) {
-              var po = E.placeOrder(best.id, opt.partId, 1);
-              if (po.ok) { progress = true; continue; }
+            // 0.2h of paperwork is real money — only order wholesale when
+            // the projected saving clearly beats the desk time.
+            var saving = bestDisc * (opt.price || 0) * qtyNeed;
+            if (best && (bestDeal || saving >= 0.10 * lr2)) {
+              var po = E.placeOrder(best.id, opt.partId, qtyNeed);
+              if (po.ok) { botStats.orders++; botStats.saved += saving;
+                           progress = true; continue; }
             }
           }
           if (opt.source === 'market' && opt.price > s.cash - 200) continue;
@@ -4979,23 +5049,26 @@ function runSupplyBot(era, seed, useDist) {
     var res = E.endDay();
     if (!res.ok || s.flags.gameOver) break;
   }
-  return { net: Engine.round2(E.getState().cash - cashStart) };
+  return { net: Engine.round2(E.getState().cash - cashStart),
+           orders: botStats.orders, saved: Engine.round2(botStats.saved) };
 }
 
 function distributorMarginScenario() {
   var era = eraOf1996();
   console.log('--- Retail vs distributor sourcing, 60 days x 3 seeds (' +
               era.id + ', §18.1) ---');
-  var ratios = [];
-  [61000, 61010, 61020].forEach(function (seed) {
+  var ratios = [], pooledOrders = 0, pooledSaved = 0;
+  [61000, 61010, 61020, 61030, 61040].forEach(function (seed) {
     var retail = runSupplyBot(era, seed, false);
     var dist = runSupplyBot(era, seed, true);
     if (!retail || !dist) return;
     var ratio = retail.net > 0 ? dist.net / retail.net : 0;
     ratios.push(ratio);
+    pooledOrders += dist.orders; pooledSaved += dist.saved;
     console.log('  seed ' + seed + ': retail net ' + Engine.fmtMoney(retail.net) +
                 ' | distributor net ' + Engine.fmtMoney(dist.net) +
-                ' — x' + ratio.toFixed(3));
+                ' (' + dist.orders + ' orders, ~' + Engine.fmtMoney(dist.saved) +
+                ' off list) — x' + ratio.toFixed(3));
   });
   if (!REAL()) {
     console.log('    (margin band asserted against the real catalog only)');
@@ -5003,10 +5076,17 @@ function distributorMarginScenario() {
   }
   var med = median(ratios);
   console.log('  == distributor/retail net median x' + med.toFixed(3) +
-              ' (' + rangeStr(ratios) + ') ==');
+              ' (' + rangeStr(ratios) + ') over ' + pooledOrders +
+              ' pooled orders (~' + Engine.fmtMoney(pooledSaved) + ' off list) ==');
+  // The band is the spec's: wholesale helps, but never obsoletes retail.
   assert(med >= 1.03 && med <= 1.10,
          'distmargin: distributor bot should net a MODEST 3-10% more, got x' +
          med.toFixed(3));
+  // Ground the band in actual routing — a bot that never orders would pass
+  // the ratio by accident.
+  assert(pooledOrders >= 15 && pooledSaved > 0,
+         'distmargin: too little wholesale routing to trust the band (' +
+         pooledOrders + ' orders)');
 }
 
 // ------------------------------------------------------------------

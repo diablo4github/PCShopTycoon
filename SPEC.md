@@ -1878,3 +1878,133 @@ peak level < 0.9 (no clipping), 'early' scores stay mono. Overseer E2E: place a 
 order → arrives after lead days; a deal purchase; music engine boots, era switch
 crossfades without console errors; renders all 8 scores to WAV via OfflineAudioContext
 and ships them to the user for listening review.
+
+---
+
+# v0.9 Addendum — Logistics & Fog (playtest to-do round)
+
+Binding; wins on conflict. Save `version` → **10**; `Engine.VERSION = "0.9"`.
+Chain-migrate v1-v9. Items #18/#19/#20 of the source list are deferred to v0.10
+(Clientele Update) by design. AGENTS.md bar applies.
+
+## 19.1 (#7) Contract assign phantom-fill BUG (ENGINE) — CRITICAL
+Repro (era2004 seed 1): 8-unit contract_upgrade need, exactly 1 qualifying unit in
+stock → `assignPart` returns `filledNow: 8`, assigns 8, decrements inventory by 1 —
+7 phantom units, never sourced or charged. Fix: multi-unit fills consume stock up to
+available qty, then BUY the remainder at market (charging correctly, respecting the
+new 19.3 delivery rules) or fill partially with a readable `{ok:true, filledNow,
+remaining}`; inventory conservation is absolute. Sim: the repro verbatim (1 stocked →
+filledNow 1 + correct handling of the other 7) + a global inventory-conservation
+invariant sweep (every part credited/debited traceably) across a 40-day contract-
+heavy run.
+
+## 19.2 (#1) Overspend fairness (ENGINE)
+The cheapest currently-purchasable part that satisfies a need's minPerf/tags is NEVER
+penalized (nor ⚠-flagged), even above 1.75× the original's value — the threshold
+becomes `max(1.75 × origValue, origValue + laborRate, cheapestQualifyingPrice)`.
+Sim: construct the trap case (cheapest qualifying > 1.75× orig) → no penalty, no flag.
+
+## 19.3 (#3) Universal parts logistics + rush shipping (ENGINE + UI)
+Make supply a real dimension for ALL parts, not just distributors:
+- Retail market purchases arrive **next morning** (leadDays 1) via the unified
+  `pendingOrders` pipeline. **Rush shipping**: any retail purchase or need-picker buy
+  may pay a surcharge (CONFIG ~25%, min $10) for same-day (instant) arrival. Era
+  flavor only in copy (courier → overnight air → same-day metro).
+- `assignPart`/build part sourcing from market: default = ordered (arrives next
+  morning, job shows "waiting on parts", Waiting sub-tab already catches it); rush
+  param available (`assignPart(jobId, needIdx, partId, {rush:true})`, same for
+  buyPart). In-stock parts keep filling instantly — stockpiles matter more.
+- Deadlines stretch to compensate: +1 day on repairs/upgrades with part faults, +2 on
+  builds/contracts (CONFIG). **Rush jobs** (same-day) bake rush shipping into their
+  economics: pay multiplier 1.8 → **2.2**, and their market fills are auto-rush at no
+  extra charge (the premium covers it).
+- Suppliers stay 2-5 days but cheaper; retail is fast-but-list; rush is instant-but-
+  premium — three honest tiers. Morning summary lists ALL deliveries. Balance guards
+  re-verified (this shifts pacing; retune CONFIG, report numbers).
+- UI: market rows + need pickers show "arrives tomorrow" / "Rush +$X — today";
+  pending retail orders join the suppliers' "on the truck" list; delivery toasts.
+
+## 19.4 (#5) Repair fog of war (ENGINE + DATA)
+Pre-diagnosis, repair/device_repair offers NEVER name the faulty component: titles
+become machine + symptom ("Repair: AMD Am386DX-40 system — pop, then nothing"),
+category chips show "Repair" only, and `job.fault` stays fully hidden (already is —
+audit any leaks in titles/blurbs/needs previews). The complaint text IS the hint:
+DATA audits every fault's complaints so each contains a genuine period-authentic clue
+a knowledgeable player can read (burnt smell → PSU; parity errors → RAM; no video +
+beeps → GPU seating...). Difficulty wrenches stay visible. Post-diagnosis the title
+appends the finding. Sim: assert no pre-diagnosis offer title/blurb contains its
+fault's partCategory name or the replacement part's name.
+
+## 19.5 (#9) Multi-part upgrade fills (ENGINE + UI)
+RAM/storage (and GPU where the machine board has ≥2 gpu slots) upgrade needs accept
+MULTIPLE parts: `minPerf` is satisfied by the SUM across assigned units, capacity-
+checked against the customer machine's board slots (minus occupied, freed by the
+replaced part where applicable). getJobNeeds exposes `slotsFree` + per-option
+`countToMeet` (how many of this part would hit the target); UI picker gains an "Add
+another" flow with a running total vs target bar. Overspend/downgrade checks apply to
+the SET (total value vs original). Sim: a RAM target met with 2 sticks on a 4-slot
+board; capacity refusal readable.
+
+## 19.6 (#12+#4) Stock builds & peripheral bundles (ENGINE + UI)
+- **Build for stock**: a player-initiated Shop Project (Workbench › Shop Projects:
+  "Start a stock build", requires build-bench & unlock): full build configurator, no
+  customer/deadline/budget; completed machine becomes a sellable stock machine
+  (refurb-style appraisal: parts value × freshness premium ~1.05-1.15 + working
+  premium; used-market saturation applies). This is the deliberate flip channel.
+- **Peripheral bundles**: when selling ANY machine (refurb or stock build), optionally
+  attach up to 3 peripherals from inventory (monitor/keyboard/printer/etc):
+  sale gains each peripheral's market value × 1.15 (CONFIG) — purchased peripherals
+  finally have a purpose. UI: bundle picker on the sell confirm. Sim: bundle sale
+  pays the premium and consumes the peripherals; stock build lifecycle completes.
+
+## 19.7 (#13) Removable vs primary storage (ENGINE + DATA)
+- Builds from 1988+ require ≥1 PRIMARY storage device (non-removable); floppy/Zip/
+  optical (STOR-FDD or `removable: true` — DATA adds the flag to Zip/Jaz/LS-120/
+  optical/tape) never satisfy it alone. Pre-1988 floppy-only builds are legitimate
+  (PC/XT reality — the validator's buildability check must respect the same rule).
+- Customer machine generation includes a floppy drive as an EXTRA where era-typical
+  (1983-1995), occupying a storage slot. Market/Wiki/pickers show a "Removable" chip.
+  validateBuild problem string: "A floppy drive can't be the only storage (1988+)".
+
+## 19.8 (#14) Repair-time realism pass (DATA + ENGINE)
+DATA audits TASK_STEPS hours toward plausible bench times (drive swap ~0.5-1h wrench
+time; recap/board-level work multi-hour; CRT work long + careful; software installs
+dominated by wait steps not labor). Engine: pay follows hours automatically
+(laborRate×hours) — re-verify §7 pay bands and all guards after the pass; report the
+before/after hour distribution.
+
+## 19.9 Small fixes & polish (owners as noted)
+- (#2, UI) All ETAs/arrival displays use real dates via dateInfo ("Apr 6, 1983"),
+  never "day N". Audit summary lines too.
+- (#11, UI+ENGINE) Deal "Buy 1" updates remaining immediately (engine returns the
+  updated deal row; UI re-renders the row).
+- (#10, ENGINE+DATA) Staff role/effect copy humanized — no raw type-id lists:
+  "Handles software work and data recovery" not "software/data_recovery"; audit
+  effectNote, role descs, cert effectsNote for raw ids everywhere.
+- (#15, UI) Business-contract offer cards explain terms plainly (units × what, per-
+  unit needs, deadline math, failure consequences) via an expandable "How this works"
+  line; Training cards state plainly what each cert unlocks/requires; any offer
+  locked by a missing cert says which one.
+- (#6, ENGINE+UI) Hidden achievements get `hint` strings ("Something about keeping
+  cool under pressure…") shown on the "???" badges.
+- (#16, ENGINE+UI) Dynamic capacity units: Engine.fmtCapacity(mb|gb) →
+  "64 KB"/"640 KB"/"8 MB"/"1.2 GB"/"2 TB" as magnitude warrants; adopted EVERYWHERE
+  capacities render (needs labels, perf displays, wiki, validator messages, minPerf
+  text). No more "0.0625 MB".
+- (#17, DATA) ~12 tasteful tech-culture easter-egg names sprinkled into customer/
+  staff pools (era-appropriate homages/puns; no real private individuals; keep
+  deniable and fun).
+- (#8, UI) Motion pass: 150-250ms transitions for tab/sub-tab switches, job-completion
+  success flash + collapse, offer accept slide-out, inventory delivery row flash,
+  modal fade/scale, decision-card entrance; ALL behind prefers-reduced-motion; keep
+  snappy (never block input on animation).
+
+## 19.10 Testing
+sim: 19.1 conservation invariant + repro; 19.2 trap case; 19.3 delivery/rush
+lifecycles + rush-job economics + retuned guards; 19.4 no-leak assertion; 19.5
+multi-fill; 19.6 stock build + bundle; 19.7 build rule + machine-gen floppies +
+validator parity. validate-data: removable flags, fault-clue audit note, easter-egg
+pool counts, TASK_STEPS hour bands updated. Overseer E2E: rush shipping flow, waiting-
+on-parts job state, multi-stick upgrade via picker, stock build + bundle sale, fogged
+offer title, real-date ETAs, deal remaining update, hidden-achievement hints, capacity
+units, reduced-motion respected; zero console errors.

@@ -71,9 +71,10 @@ Both suites must PASS on real data. If a sibling workstream's in-flight edits br
 suite, say so explicitly in your report — distinguish their failure from yours.
 UI work additionally smoke-tests live in the pre-installed Chromium
 (Playwright `executablePath: '/opt/pw-browsers/chromium'` — never `playwright install`;
-serve via `python3 -m http.server`). The overseer runs a cumulative Playwright E2E
-(`e2e.js`, kept in the overseer scratchpad) that must stay green with **zero console
-errors**.
+serve via `python3 -m http.server`). The overseer runs the cumulative Playwright E2E
+(`tools/e2e.js` — needs playwright resolvable by Node, but is not a game dependency)
+that must stay green with **zero console errors**. Agents don't edit it; report
+suspected harness-vs-contract drift to the overseer instead.
 
 Balance guards to respect (tuned values live in `Engine.CONFIG`): the 1983 40-day bot
 lands in the $2k–$10k band; offer ramp mean ≤ 3.6/day; flips-vs-jobs $/hour ratio in

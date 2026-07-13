@@ -139,15 +139,28 @@
         '<th class="num">30d</th><th>Trend</th><th class="num">Owned</th><th>Buy</th>' +
         '</tr></thead><tbody>';
       var mktCash = Number(st.cash) || 0;
-      /* §19.3 — retail arrives next morning; a rush surcharge (engine-
-       * exposed per row) buys same-day. Feature-detected: rows without the
-       * field keep the classic instant Buy. */
-      var logisticsOn = rows.some(function (r) {
+      /* §19.3 — retail arrives next morning; a rush surcharge buys same-day.
+       * Detected per row (rushCost/rushSurcharge) OR via the engine's
+       * logistics CONFIG (RETAIL_LEAD_DAYS + rush surcharge terms). Rows
+       * without either keep the classic instant Buy. */
+      var lcfg = null;
+      try {
+        if (window.Engine && Engine.CONFIG &&
+            Engine.CONFIG.RETAIL_LEAD_DAYS !== undefined) lcfg = Engine.CONFIG;
+      } catch (e) { /* ignore */ }
+      var logisticsOn = !!lcfg || rows.some(function (r) {
         return r && (r.rushCost !== undefined || r.rushSurcharge !== undefined);
       });
       function rushCostOf(r) {
         var v = r.rushCost !== undefined ? r.rushCost : r.rushSurcharge;
-        return (v === null || v === undefined) ? null : Number(v);
+        if (v !== null && v !== undefined) return Number(v);
+        /* engine formula: max(floor, cost × pct) — a display estimate;
+         * the engine stays the authority at purchase time */
+        if (lcfg && lcfg.RUSH_SURCHARGE_PCT !== undefined) {
+          return Math.round(Math.max(lcfg.RUSH_SURCHARGE_MIN || 0,
+            (Number(r.price) || 0) * lcfg.RUSH_SURCHARGE_PCT) * 100) / 100;
+        }
+        return null;
       }
       /* §16.3a — a Buy you can't afford is disabled with the shortfall,
        * never a silent no-op (price is a UI-known estimate; the engine

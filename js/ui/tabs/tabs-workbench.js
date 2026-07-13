@@ -150,6 +150,15 @@
     var d = j.partsArriveDay !== undefined ? j.partsArriveDay
       : (j.waitingParts && j.waitingParts.arrivesDay !== undefined ? j.waitingParts.arrivesDay
         : (j.partsEta !== undefined ? j.partsEta : null));
+    /* real engine home (§19.3): retail orders bound to this job's need
+     * slots live in state.pendingOrders[].jobId — earliest arrival wins */
+    if ((d === null || d === undefined) && Array.isArray(st.pendingOrders)) {
+      for (var i = 0; i < st.pendingOrders.length; i++) {
+        var po = st.pendingOrders[i];
+        if (po && po.jobId === j.id && po.arrivesDay !== undefined && po.arrivesDay !== null &&
+            (d === null || d === undefined || po.arrivesDay < d)) d = po.arrivesDay;
+      }
+    }
     if (d === null || d === undefined) return null;
     return Number(d) > st.day ? Number(d) : null;
   }
@@ -663,7 +672,12 @@
 
     needs.forEach(function (n) {
       var qty = n.qty || 1;
-      var filledAll = (n.filled || 0) >= qty;
+      /* §19.3/§19.5 — mirror the engine's fill rule: units on the truck
+       * count as committed, and summable needs are done when the SUM says
+       * so (n.satisfied), not when every slot is stuffed. */
+      var committed = (n.filled || 0) + (n.onOrder || 0);
+      var satisfied = n.satisfied !== undefined ? !!n.satisfied : (n.filled || 0) >= qty;
+      var filledAll = satisfied || committed >= qty;
       h += '<div class="need-row' + (filledAll ? ' done' : '') + '">' +
         '<span class="need-label">' + esc(n.label || catLabel(n.category)) +
         (qty > 1 ? ' <span class="muted">(' + (n.filled || 0) + '/' + qty + ')</span>' : '') + '</span>';
@@ -691,6 +705,19 @@
             : '') +
           '</span>';
       });
+
+      /* §19.3 — units on the overnight truck for this slot (engine fields
+       * n.onOrder / n.arrivesDay straight off getJobNeeds) */
+      if (n.onOrder > 0) {
+        h += '<span class="assigned-row">' +
+          '<span class="transit-mark">🚚</span> ' +
+          (n.onOrder > 1 ? esc(n.onOrder) + '× ' : '') + 'on order' +
+          ' <span class="transit-note small">' +
+          (n.arrivesDay !== undefined && n.arrivesDay !== null
+            ? 'arriving ' + esc(S.fmtDay(n.arrivesDay)) + ' — installs at its step'
+            : 'arriving with the morning deliveries') +
+          '</span></span>';
+      }
 
       /* §19.5 — multi-part fills: slots-free chip + running total vs target */
       if (n.slotsFree !== undefined && n.slotsFree !== null) {
@@ -736,7 +763,7 @@
               '>' + esc(label) + '</option>';
           });
           /* §19.5 — "Add another" phrasing once the need is partially filled */
-          var addAnother = assigned.length > 0;
+          var addAnother = assigned.length > 0 || (n.onOrder || 0) > 0;
           h += '</select>' +
             (has('getPartInfo')
               ? '<button type="button" class="info-btn" data-action="partinfo" data-from-select="' + selId + '" title="Part details">i</button>'
@@ -787,17 +814,23 @@
    * string like "96 MB of 128 MB") wins when present. */
   function multiProgressHTML(n) {
     if (!n) return '';
-    var curV = n.sumCurrent !== undefined ? n.sumCurrent
-      : (n.perfSum !== undefined ? n.perfSum
-        : (n.progress && n.progress.current !== undefined ? n.progress.current : null));
-    var tgtV = n.sumTarget !== undefined ? n.sumTarget
-      : (n.perfTarget !== undefined ? n.perfTarget
-        : (n.progress && n.progress.target !== undefined ? n.progress.target : null));
+    /* engine contract (§19.5): summable needs ship sumAssigned/target plus
+     * ready-formatted sumLabel/targetLabel and a satisfied flag; the older
+     * guessed field pairs stay as fallbacks. */
+    var curV = n.sumAssigned !== undefined ? n.sumAssigned
+      : (n.sumCurrent !== undefined ? n.sumCurrent
+        : (n.perfSum !== undefined ? n.perfSum
+          : (n.progress && n.progress.current !== undefined ? n.progress.current : null)));
+    var tgtV = n.target !== undefined ? n.target
+      : (n.sumTarget !== undefined ? n.sumTarget
+        : (n.perfTarget !== undefined ? n.perfTarget
+          : (n.progress && n.progress.target !== undefined ? n.progress.target : null)));
     if (curV === null || tgtV === null || !isFinite(Number(tgtV)) || Number(tgtV) <= 0) {
       return n.sumLabel ? '<span class="need-sum small">' + esc(n.sumLabel) + '</span>' : '';
     }
-    var met = Number(curV) >= Number(tgtV);
-    var label = n.sumLabel || (curV + ' of ' + tgtV);
+    var met = n.satisfied !== undefined ? !!n.satisfied : Number(curV) >= Number(tgtV);
+    var label = (n.sumLabel && n.targetLabel) ? (n.sumLabel + ' of ' + n.targetLabel)
+      : (n.sumLabel || (curV + ' of ' + tgtV));
     return '<span class="need-sum-row">' +
       UI.barHTML(curV, tgtV, 'wide' + (met ? ' good' : '')) +
       '<span class="need-sum small' + (met ? ' up' : '') + '">' + esc(label) +
@@ -1335,7 +1368,8 @@
               : 'Part assigned — it installs when its step is worked'))
           : 'Part installed';
         if (ir.cost) msg2 += ' — ' + fm(ir.cost);
-        if (ir.filledNow !== null && ir.filledNow !== undefined) msg2 += ' (' + ir.filledNow + ' this batch)';
+        if (ir.orderedQty) msg2 += ' (' + ir.orderedQty + ' on the truck)';      /* §19.3 */
+        else if (ir.filledNow) msg2 += ' (' + ir.filledNow + ' this batch)';
         if (ir.remaining) msg2 += ' • ' + ir.remaining + ' still to source';     /* §19.1 partial fills */
         UI.toast(msg2, 'success');
       }
@@ -1411,18 +1445,36 @@
       var ap = tryCall(function () { return Engine.appraiseRefurb(jobId); });
       if (ap && ap.ok !== false && ap.estimate !== undefined) est = ap.estimate;
     }
-    var haveBundleVals = periphs.every(function (it) { return it.bundleValue !== undefined && it.bundleValue !== null; });
+    /* §19.6 — per-item bundled value: engine-shipped when present, else
+     * derived from today's market price × CONFIG.BUNDLE_VALUE_MULT (the
+     * engine's own sale formula), so the running total stays honest. */
+    var bMult = null, bMax = 3;
+    try {
+      if (window.Engine && Engine.CONFIG) {
+        if (Engine.CONFIG.BUNDLE_VALUE_MULT) bMult = Number(Engine.CONFIG.BUNDLE_VALUE_MULT);
+        if (Engine.CONFIG.BUNDLE_MAX) bMax = Engine.CONFIG.BUNDLE_MAX | 0;
+      }
+    } catch (e) { /* defaults hold */ }
+    function bundleValOf(it) {
+      if (it.bundleValue !== undefined && it.bundleValue !== null) return Number(it.bundleValue);
+      if (bMult && it.curPrice !== undefined && it.curPrice !== null) {
+        return Math.round(Number(it.curPrice) * bMult * 100) / 100;
+      }
+      return null;
+    }
+    var haveBundleVals = periphs.every(function (it) { return bundleValOf(it) !== null; });
 
     var body = '<div class="sell-bundle">' +
       (est !== null ? '<p>Machine appraises at about <b class="num">' + esc(fm(est)) + '</b>.</p>' : '') +
-      '<p class="muted small">Throw in up to <b>3</b> peripherals from the shelf — bundled extras sell at a premium ' +
+      '<p class="muted small">Throw in up to <b>' + bMax + '</b> peripherals from the shelf — bundled extras sell at a premium ' +
       'over their market value' + (haveBundleVals ? '' : ' (premium applied at sale)') + '.</p>';
     periphs.forEach(function (it, i) {
-      var shown = haveBundleVals ? it.bundleValue : it.curPrice;
+      var bv = bundleValOf(it);
+      var shown = bv !== null ? bv : it.curPrice;
       body += '<label class="bundle-row"><input type="checkbox" class="bundle-check" data-part="' + esc(it.partId) +
-        '" data-value="' + esc(haveBundleVals ? it.bundleValue : '') + '" id="bundle-ck-' + i + '">' +
+        '" data-value="' + esc(bv !== null ? bv : '') + '" id="bundle-ck-' + i + '">' +
         '<span class="bundle-name">' + esc(it.name) + '</span>' +
-        '<span class="num muted small">' + esc(fm(shown)) + (haveBundleVals ? ' bundled' : ' market') + '</span>' +
+        '<span class="num muted small">' + esc(fm(shown)) + (bv !== null ? ' bundled' : ' market') + '</span>' +
         '</label>';
     });
     body += '<div class="bundle-total small"' + (haveBundleVals ? '' : ' hidden') + '>Bundle adds: <b class="num" id="bundle-total-val">' +
@@ -1447,9 +1499,9 @@
       var t = e.target;
       if (!t || !t.classList || !t.classList.contains('bundle-check')) return;
       var checked = modal.el.querySelectorAll('.bundle-check:checked');
-      if (checked.length > 3) {           // §19.6 cap: up to 3
+      if (checked.length > bMax) {        // §19.6 cap (CONFIG.BUNDLE_MAX)
         t.checked = false;
-        UI.toast('Three peripherals per bundle — pick your best', 'info');
+        UI.toast(bMax + ' peripheral' + (bMax === 1 ? '' : 's') + ' per bundle — pick your best', 'info');
         return;
       }
       var totEl = modal.el.querySelector('#bundle-total-val');

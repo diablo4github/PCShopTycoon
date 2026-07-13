@@ -391,8 +391,10 @@
     DIST_REL_DISCOUNTS: [0, 0.01, 0.02, 0.03],   // New/Regular/Preferred/Partner
     // Lifetime-spend promotion thresholds, year-scaled: threshold($) =
     // laborRate(currentYear) x mult — a Regular in 1983 and one in 2021 both
-    // represent "a real customer", not the same nominal dollars.
-    DIST_REL_LABOR_MULTS: [0, 15, 50, 120],
+    // represent "a real customer", not the same nominal dollars. Calibrated
+    // so one mid-size order can't leapfrog tiers: at 1996 (laborRate ~$45)
+    // Regular ≈ $1.8k, Preferred ≈ $6.8k, Partner ≈ $18k lifetime.
+    DIST_REL_LABOR_MULTS: [0, 40, 150, 400],
     DIST_REL_LABELS: ['New', 'Regular', 'Preferred', 'Partner'],
     DIST_SPECIALTY_BONUS: 0.02,     // extra off in a distributor's specialty categories
     DIST_PARTNER_LEAD_CUT: 1,       // Partner shaves a lead day...

@@ -2486,8 +2486,15 @@
                                Engine.round2(stockCost * C.STOCK_BILL_CAP));
       }
       var paid = 0;
+      var grayUnit = false;
       if (fromStock) {
         Engine.inventoryRemove(state, part.id, 1);
+        // §18.1: gray-market stock consumes first — the unit carries a
+        // reliability penalty into the callback roll (the honest tradeoff).
+        if (state.grayStock && (state.grayStock[part.id] | 0) > 0) {
+          state.grayStock[part.id]--;
+          grayUnit = true;
+        }
       } else {
         var buyPrice = P().priceOf(part, state, { buy: true });
         if (state.cash < buyPrice) {
@@ -2518,6 +2525,7 @@
       job.partsUsed = job.partsUsed || [];
       job.partsUsed.push({ partId: part.id, price: chargePrice, cost: paid,
                            fromStock: fromStock, stockCost: stockCost,
+                           gray: grayUnit,          // §18.1 gray-market unit
                            needIndex: idx });
       filledNow++;
       // §10.1: premium parts add bench time to their install step
@@ -2553,6 +2561,10 @@
       if (e.partId === pid && (e.needIndex === idx || e.needIndex == null)) {
         basis = e.fromStock ? (e.stockCost || 0) :
                 (e.cost != null ? e.cost : (e.price || 0));
+        if (e.gray) {   // §18.1: the returned unit is still gray-market stock
+          state.grayStock = state.grayStock || {};
+          state.grayStock[pid] = (state.grayStock[pid] || 0) + 1;
+        }
         used.splice(i, 1);
         break;
       }
@@ -2823,14 +2835,19 @@
       part = Engine.partById(flatIds[i]);
       var chargePrice = P().priceOf(part, state);
       var inv2 = Engine.inventoryEntry(state, part.id);
+      var grayUnit2 = false;
       if (inv2 && inv2.qty > 0) {
         Engine.inventoryRemove(state, part.id, 1);
+        if (state.grayStock && (state.grayStock[part.id] | 0) > 0) {   // §18.1
+          state.grayStock[part.id]--;
+          grayUnit2 = true;
+        }
       } else {
         var buyPrice = P().priceOf(part, state, { buy: true });
         Engine.addCash(state, -buyPrice);
         Engine.ledgerAdd(state, 'partsCost', buyPrice);
       }
-      job.partsUsed.push({ partId: part.id, price: chargePrice });
+      job.partsUsed.push({ partId: part.id, price: chargePrice, gray: grayUnit2 });
     }
     job.build.committed = true;
     job.build.validated = true;   // UI contract: hides configurator, shows Work
@@ -3150,9 +3167,16 @@
     var used = job.partsUsed || [];
     if (!used.length) return 1;
     var sum = 0, n = 0;
+    var C0 = CFG();
     for (var i = 0; i < used.length; i++) {
       var p = Engine.partById(used[i].partId);
-      if (p && p.reliability) { sum += p.reliability; n++; }
+      if (!p || !p.reliability) continue;
+      var rel = p.reliability;
+      // §18.1: gray-market units are the same silicon with worse odds
+      if (used[i].gray) {
+        rel = Math.max(C0.DIST_GRAY_REL_FLOOR, rel - C0.DIST_GRAY_REL_PENALTY);
+      }
+      sum += rel; n++;
     }
     if (!n) return 1;
     // §13.4: certification training nudges effective reliability up (fewer comebacks)

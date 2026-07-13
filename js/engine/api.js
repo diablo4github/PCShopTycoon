@@ -65,7 +65,7 @@
     if (!isFinite(seed)) seed = 42;
     var startDi = null;
     var state = {
-      version: 8,
+      version: 9,
       seed: seed,
       rng: Engine.seedRngStreams(seed),   // §17.5 five named streams
       shopName: String(opts.shopName ||
@@ -116,7 +116,13 @@
       achievementEvents: {},
       difficulty: difficulty,
       scenario: null,
-      transitionsFired: {}
+      transitionsFired: {},
+      // §18.1 distributors: relationships, weekly deals, in-flight orders,
+      // and gray-market stock counters (reliability penalty on consumption)
+      distributors: { spend: {}, tier: {}, deals: {}, lastDealDay: -1 },
+      pendingOrders: [],
+      grayStock: {},
+      nextOrderId: 1
     };
     Engine._state = state;
     startDi = Engine.dateInfo(0, state);
@@ -438,11 +444,23 @@
     (obj.jobs.active || []).forEach(fixJob);
     return obj;
   }
+  function migrateV8toV9(obj) {
+    obj.version = 9;
+    // §18.1: distributor relationships, weekly deals, pending orders, gray
+    // stock. Fresh blocks — an older save simply hasn't met the suppliers.
+    if (!obj.distributors || typeof obj.distributors !== 'object') {
+      obj.distributors = { spend: {}, tier: {}, deals: {}, lastDealDay: -1 };
+    }
+    if (!Array.isArray(obj.pendingOrders)) obj.pendingOrders = [];
+    if (!obj.grayStock || typeof obj.grayStock !== 'object') obj.grayStock = {};
+    if (obj.nextOrderId == null) obj.nextOrderId = 1;
+    return obj;
+  }
   Engine.importSave = function (str) {
     var obj;
     try { obj = JSON.parse(String(str)); }
     catch (e) { return err('Not valid save JSON'); }
-    if (!obj || [1, 2, 3, 4, 5, 6, 7, 8].indexOf(obj.version) === -1)
+    if (!obj || [1, 2, 3, 4, 5, 6, 7, 8, 9].indexOf(obj.version) === -1)
       return err('Unsupported save version');
     // §17.5: v8 saves carry rng streams instead of the old single rngState
     var required = ['seed', 'eraId', 'startDate', 'day', 'cash',
@@ -458,6 +476,7 @@
     if (obj.version === 5) migrateV5toV6(obj);
     if (obj.version === 6) migrateV6toV7(obj);
     if (obj.version === 7) migrateV7toV8(obj);
+    if (obj.version === 8) migrateV8toV9(obj);
     Engine._state = obj;
     return { ok: true };
   };
@@ -644,6 +663,26 @@
   };
   Engine.appraiseRefurb = function (jobId) {
     return S() ? Engine.Jobs.appraiseRefurb(S(), jobId) : { estimate: 0 };
+  };
+
+  // §18.1 distributors — suppliers view, order quote/place/cancel, pending list
+  Engine.getDistributors = function () {
+    return S() ? Engine.Sim.getDistributors(S()) : [];
+  };
+  Engine.quoteOrder = function (distributorId, partId, qty) {
+    var bad = needLive(); if (bad) return bad;
+    return Engine.Sim.quoteOrder(S(), distributorId, partId, qty);
+  };
+  Engine.placeOrder = function (distributorId, partId, qty) {
+    var bad = needLive(); if (bad) return bad;
+    return Engine.Sim.placeOrder(S(), distributorId, partId, qty);
+  };
+  Engine.cancelOrder = function (orderId) {
+    var bad = needLive(); if (bad) return bad;
+    return Engine.Sim.cancelOrder(S(), orderId);
+  };
+  Engine.getPendingOrders = function () {
+    return S() ? Engine.Sim.getPendingOrders(S()) : [];
   };
   // §9.5: component list of a refurb job's machine (fault slot hidden until diagnosed)
   Engine.getMachineParts = function (jobId) {

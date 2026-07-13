@@ -819,4 +819,21 @@
       desc: 'Factory-authorized Apple service procedures and diagnostics.',
       effects: { jobTimeMult: { device_repair: 0.88 }, reliabilityBonus: 3 } }
   ];
+
+  // §18.1 Distributors — mock table (schema mirrors DATA.DISTRIBUTORS in
+  // eras.js; one gray-market channel included so the penalty path is testable)
+  DATA.DISTRIBUTORS = [
+    { id: 'mock-mail', name: 'Mock Mail-Order Components',
+      minYear: 1983, maxYear: 1997, minPrestige: 0, baseDiscount: 0.05,
+      leadDays: 4, specialty: ['ram', 'storage'], grayMarket: false,
+      blurb: 'Allow four business days and a stamp.' },
+    { id: 'mock-wholesale', name: 'Mock Regional Wholesale',
+      minYear: 1990, minPrestige: 1, baseDiscount: 0.07,
+      leadDays: 3, specialty: ['cpu', 'motherboard'], grayMarket: false,
+      blurb: 'The wholesaler every white-box shop knows.' },
+    { id: 'mock-gray', name: 'Mock Swap-Meet Stall',
+      minYear: 1983, minPrestige: 0, baseDiscount: 0.18,
+      leadDays: 1, specialty: null, grayMarket: true,
+      blurb: 'Cash only. No receipts. Great prices, your problem.' }
+  ];
 })(typeof window !== 'undefined' ? window : globalThis);

@@ -2833,7 +2833,7 @@ function certScenario() {
 // Scenario (§10.8/§11.7/§12.6/§13.8): v1-v5 fixtures migrate to v6 and play
 // ------------------------------------------------------------------
 function migrationScenario(era) {
-  console.log('--- Save migration (v1/v2/v3/v4/v5/v6/v7 -> v8) ---');
+  console.log('--- Save migration (v1/v2/v3/v4/v5/v6/v7/v8 -> v9) ---');
   var E = Engine;
   var r = E.newGame({ eraId: era.id, shopName: 'Migrate Test', seed: 73737 });
   if (!assert(r.ok, 'migration: newGame failed')) return;
@@ -2844,11 +2844,22 @@ function migrationScenario(era) {
   E.getState().cash = 50000;
   var listing = E.getAsIsMarket()[0];
   if (listing) E.buyAsIsMachine(listing.id);
-  var v8snapshot = E.exportSave();
+  // §18.1: touch the distributor systems so the v9 snapshot is non-trivial
+  var distView = E.getDistributors().filter(function (d) { return !d.locked; })[0];
+  if (distView) {
+    var anyPart = Engine.Jobs.purchasableByCategory(E.getState(), 'ram')[0];
+    if (anyPart) E.placeOrder(distView.id, anyPart.id, 2);
+  }
+  var v9snapshot = E.exportSave();
 
   function downgrade(version) {
-    var obj = JSON.parse(v8snapshot);
+    var obj = JSON.parse(v9snapshot);
     obj.version = version;
+    // §18.1: a genuine pre-v9 save never met the distributors
+    if (version < 9) {
+      delete obj.distributors; delete obj.pendingOrders;
+      delete obj.grayStock; delete obj.nextOrderId;
+    }
     // §17: a genuine pre-v8 save carried ONE rngState (not streams), numeric
     // reputation history, and no decision fields
     if (version < 8) {
@@ -2953,11 +2964,20 @@ function migrationScenario(era) {
     return JSON.stringify(obj);
   }
 
-  [1, 2, 3, 4, 5, 6, 7].forEach(function (ver) {
+  [1, 2, 3, 4, 5, 6, 7, 8].forEach(function (ver) {
     var imp = E.importSave(downgrade(ver));
     if (!assert(imp.ok, 'migration: v' + ver + ' fixture rejected: ' + (imp.error || ''))) return;
     var s = E.getState();
-    assert(s.version === 8, 'migration: v' + ver + ' should land on version 8');
+    assert(s.version === 9, 'migration: v' + ver + ' should land on version 9');
+    // §18.1: distributor blocks fill in with sane defaults
+    assert(s.distributors && typeof s.distributors.spend === 'object' &&
+           typeof s.distributors.tier === 'object' &&
+           typeof s.distributors.deals === 'object' &&
+           s.distributors.lastDealDay === -1,
+           'migration: v' + ver + ' missing distributors block');
+    assert(Array.isArray(s.pendingOrders) && typeof s.grayStock === 'object' &&
+           s.nextOrderId >= 1,
+           'migration: v' + ver + ' missing pendingOrders/grayStock/nextOrderId');
     // §17.5: five seeded streams replace the single rngState
     assert(s.rng && Engine.RNG_STREAMS.every(function (k) {
       return typeof s.rng[k] === 'number';
@@ -3020,11 +3040,11 @@ function migrationScenario(era) {
     }
     console.log('  v' + ver + ' fixture migrated & playable');
   });
-  // Idempotence: v8 round-trips byte-identically
-  E.importSave(v8snapshot);
-  var v8b = E.exportSave();
-  E.importSave(v8b);
-  assert(E.exportSave() === v8b, 'migration: v8 re-import not byte-identical');
+  // Idempotence: v9 round-trips byte-identically
+  E.importSave(v9snapshot);
+  var v9b = E.exportSave();
+  E.importSave(v9b);
+  assert(E.exportSave() === v9b, 'migration: v9 re-import not byte-identical');
 }
 
 // ------------------------------------------------------------------
@@ -4488,6 +4508,508 @@ function diagnoseSteamScenario() {
 }
 
 // ------------------------------------------------------------------
+// §18.1 Distributors — order lifecycle, weekly deals, shortage allocation,
+// relationship ladder, gray-market reliability, retail-vs-distributor margin.
+// ------------------------------------------------------------------
+function eraOf1996() {
+  return DATA.ERAS.filter(function (e) { return e.startYear === 1996; })[0] ||
+         DATA.ERAS[Math.min(1, DATA.ERAS.length - 1)];
+}
+function openDistributors(E) {
+  return E.getDistributors().filter(function (d) { return !d.locked; });
+}
+function distDealFreePart(E, s, dist, category) {
+  // a purchasable part with NO live deal at this distributor (keeps quote
+  // math on the bulk path)
+  var dealIds = {};
+  (s.distributors.deals[dist.id] || []).forEach(function (dl) { dealIds[dl.partId] = 1; });
+  return Engine.Jobs.purchasableByCategory(s, category).filter(function (pt) {
+    return !dealIds[pt.id];
+  })[0] || null;
+}
+
+function distributorOrderScenario() {
+  console.log('--- Distributor bulk orders: place/deliver/cancel (§18.1) ---');
+  var E = Engine, C = Engine.CONFIG;
+  var r = E.newGame({ eraId: eraOf1996().id, shopName: 'Dist Order', seed: 41001 });
+  if (!assert(r.ok, 'distorder: newGame failed')) return;
+  var s = E.getState();
+  s.cash = 50000;
+  E.endDay();   // first night seeds the deal boards
+  var view = E.getDistributors();
+  var locked = view.filter(function (d) { return d.locked; });
+  assert(locked.length >= 1 && /prestige/i.test(locked[0].lockedReason || ''),
+         'distorder: locked distributors must carry a readable prestige reason');
+  var open = view.filter(function (d) { return !d.locked && !d.grayMarket; })[0];
+  var gray = view.filter(function (d) { return !d.locked && d.grayMarket; })[0];
+  if (!assert(open && gray, 'distorder: need one open house + one gray channel')) return;
+  assert(typeof open.blurb === 'string' && open.leadDays >= 1 &&
+         open.effDiscount > 0 && open.relationshipLabel === 'New',
+         'distorder: view shape wrong: ' + JSON.stringify(open));
+
+  var part = distDealFreePart(E, s, open, 'ram');
+  if (!assert(part, 'distorder: no deal-free ram part')) return;
+  // Quantity tiers stack on base(+specialty), exactly per CONFIG
+  var spec = (open.specialty && open.specialty.indexOf('ram') !== -1) ?
+             C.DIST_SPECIALTY_BONUS : 0;
+  var base = open.effDiscount + spec;
+  var q1 = E.quoteOrder(open.id, part.id, 1);
+  var q5 = E.quoteOrder(open.id, part.id, 5);
+  var q10 = E.quoteOrder(open.id, part.id, 10);
+  var q25 = E.quoteOrder(open.id, part.id, 25);
+  assert(q1.ok && q1.discount === Engine.round2(base),
+         'distorder: qty1 discount ' + q1.discount + ' != base ' + base);
+  assert(q5.discount === Engine.round2(base + 0.03) &&
+         q10.discount === Engine.round2(base + 0.06) &&
+         q25.discount === Engine.round2(base + 0.10),
+         'distorder: qty tiers wrong: ' + [q5.discount, q10.discount, q25.discount]);
+  assert(q1.unitCost === Engine.round2(q1.retailUnit * (1 - q1.discount)),
+         'distorder: unitCost math off');
+  assert(q1.leadDays === open.leadDays && q1.arrivesDay === s.day + open.leadDays,
+         'distorder: lead/arrival math off');
+
+  // Place: upfront cash, 0.2h paperwork, pendingOrders entry
+  var hours0 = s.hoursLeft, cash0 = s.cash;
+  var po = E.placeOrder(open.id, part.id, 10);
+  assert(po.ok && po.total === q10.total && po.arrivesDay === s.day + open.leadDays,
+         'distorder: placeOrder result wrong: ' + JSON.stringify(po));
+  assert(Math.abs((hours0 - s.hoursLeft) - C.DIST_ORDER_HOURS) < 1e-9,
+         'distorder: paperwork must cost ' + C.DIST_ORDER_HOURS + 'h');
+  assert(Math.abs((cash0 - s.cash) - po.total) < 0.01,
+         'distorder: payment must be upfront');
+  var pend = E.getPendingOrders();
+  assert(pend.length === 1 && pend[0].etaDays === open.leadDays &&
+         pend[0].cancellable === true,
+         'distorder: pending view wrong: ' + JSON.stringify(pend));
+
+  // Overnight pipeline: arrives after leadDays with a morning-summary line
+  var delivered = null;
+  for (var d = 0; d < open.leadDays + 1 && !delivered; d++) {
+    var res = E.endDay();
+    if ((res.summary.deliveries || []).length) delivered = res.summary.deliveries;
+  }
+  assert(delivered && new RegExp(part.name).test(delivered[0]),
+         'distorder: no delivery summary line');
+  assert(s.day === po.arrivesDay, 'distorder: delivered on the wrong day');
+  var inv = E.inventoryEntry(s, part.id);
+  assert(inv && inv.qty >= 10 && Math.abs(inv.avgCost - po.unitCost) < 0.01,
+         'distorder: inventory landing wrong: ' + JSON.stringify(inv));
+  assert(E.getPendingOrders().length === 0, 'distorder: order should clear');
+
+  // Cancel (pre-ship): 90% back, 10% restocking fee
+  s.hoursLeft = 8;
+  var po2 = E.placeOrder(open.id, part.id, 5);
+  var cashBeforeCancel = s.cash;
+  var c1 = E.cancelOrder(po2.orderId);
+  assert(c1.ok && Math.abs(c1.fee - Engine.round2(po2.total * C.DIST_CANCEL_FEE)) < 0.01 &&
+         Math.abs(c1.refund - Engine.round2(po2.total - c1.fee)) < 0.01 &&
+         Math.abs(s.cash - (cashBeforeCancel + c1.refund)) < 0.01,
+         'distorder: cancel math wrong: ' + JSON.stringify(c1));
+  assert(E.getPendingOrders().length === 0, 'distorder: cancelled order lingers');
+  var cNone = E.cancelOrder(9999);
+  assert(!cNone.ok && /no such/i.test(cNone.error || ''),
+         'distorder: bogus cancel must be readable');
+
+  // Too late: a lead-1 gray order is on the truck the moment it's placed
+  var pg = E.placeOrder(gray.id, part.id, 1);
+  assert(pg.ok, 'distorder: gray order failed: ' + (pg.error || ''));
+  var cg = E.cancelOrder(pg.orderId);
+  assert(!cg.ok && /shipped/i.test(cg.error || ''),
+         'distorder: post-ship cancel must be refused readably');
+
+  // Guardrails: exhausted day, empty wallet, silly qty
+  s.hoursLeft = -C.overtimeCap;
+  var tired = E.placeOrder(open.id, part.id, 1);
+  assert(!tired.ok, 'distorder: paperwork must respect the overtime floor');
+  s.hoursLeft = 8;
+  var cashSave = s.cash; s.cash = 1;
+  var broke = E.placeOrder(open.id, part.id, 1);
+  assert(!broke.ok && /up front/i.test(broke.error || ''),
+         'distorder: upfront-payment refusal must be readable');
+  s.cash = cashSave;
+  assert(!E.placeOrder(open.id, part.id, 0).ok &&
+         !E.placeOrder(open.id, part.id, 100).ok,
+         'distorder: qty sanity limits');
+  var lockedTry = locked[0] && E.placeOrder(locked[0].id, part.id, 1);
+  assert(lockedTry && !lockedTry.ok && /prestige/i.test(lockedTry.error || ''),
+         'distorder: locked distributor must refuse readably');
+  console.log('  tiers +3/+6/+10% ok, 0.2h + upfront ok, lead-' + open.leadDays +
+              ' delivery + summary line ok, cancel fee ok, ship/lock guards ok');
+}
+
+function distributorDealScenario() {
+  console.log('--- Distributor weekly deals: rotation, pricing, maxQty (§18.1) ---');
+  var E = Engine, C = Engine.CONFIG;
+  var r = E.newGame({ eraId: eraOf1996().id, shopName: 'Dist Deals', seed: 41100 });
+  if (!assert(r.ok, 'distdeal: newGame failed')) return;
+  var s = E.getState();
+  s.cash = 200000;
+  E.endDay();   // seed
+  var ds = s.distributors;
+  var seedDay = ds.lastDealDay;
+  assert(seedDay === s.day, 'distdeal: first night must seed the boards');
+  Object.keys(ds.deals).forEach(function (id) {
+    var deals = ds.deals[id];
+    assert(deals.length >= C.DIST_DEALS_PER_WEEK[0] &&
+           deals.length <= C.DIST_DEALS_PER_WEEK[1],
+           'distdeal: ' + id + ' deal count ' + deals.length + ' out of band');
+    deals.forEach(function (dl) {
+      assert(dl.dealDiscount >= C.DIST_DEAL_RANGE[0] - 1e-9 &&
+             dl.dealDiscount <= C.DIST_DEAL_CAP + 1e-9 &&
+             dl.maxQty >= C.DIST_DEAL_MAXQTY[0] && dl.maxQty <= C.DIST_DEAL_MAXQTY[1] &&
+             dl.expiresDay === seedDay + 7,
+             'distdeal: deal shape out of band: ' + JSON.stringify(dl));
+    });
+  });
+  // Monday rotation replaces the boards
+  var before = JSON.stringify(ds.deals);
+  var rotated = false;
+  for (var d = 0; d < 8; d++) {
+    E.endDay();
+    if (E.dateInfo(s.day, s).weekday === 1) {
+      rotated = ds.lastDealDay === s.day;
+      break;
+    }
+  }
+  assert(rotated, 'distdeal: Monday must rotate the boards');
+  assert(JSON.stringify(ds.deals) !== before, 'distdeal: rotation produced identical boards');
+
+  // Deal pricing stacks with relationship/specialty but NOT bulk tiers
+  var view = openDistributors(E).filter(function (dv) { return dv.deals.length; })[0];
+  if (!assert(view, 'distdeal: no live deal to price')) return;
+  var deal = view.deals[0];
+  var part = Engine.partById(deal.partId);
+  var spec = (view.specialty && view.specialty.indexOf(part.category) !== -1) ?
+             C.DIST_SPECIALTY_BONUS : 0;
+  var expect = Math.min(C.DIST_TOTAL_DISC_CAP,
+                        Engine.round2(view.effDiscount + spec + deal.dealDiscount));
+  var qd = E.quoteOrder(view.id, deal.partId, Math.min(5, deal.remaining));
+  assert(qd.ok && qd.deal === true && qd.discount === expect,
+         'distdeal: deal discount ' + qd.discount + ' != base+rel+deal ' + expect +
+         ' (no bulk tier may stack)');
+  assert(deal.unitCost === Engine.round2(qd.retailUnit * (1 - expect)),
+         'distdeal: view unitCost mismatch');
+  // Exhaust the allocation: past maxQty the deal no longer applies
+  s.hoursLeft = 8;
+  var buyAll = E.placeOrder(view.id, deal.partId, deal.remaining);
+  assert(buyAll.ok && buyAll.deal === true, 'distdeal: full-allocation buy failed');
+  var qAfter = E.quoteOrder(view.id, deal.partId, 1);
+  assert(qAfter.ok && qAfter.deal === false,
+         'distdeal: exhausted deal must fall back to bulk pricing');
+
+  // Glut categories cut deeper (flagged at generation)
+  var glutSeen = null, guard = 0;
+  Engine.Sim.fireRandomEvent(s, { id: 'test-glut', headlines: ['Test glut'],
+    durationDays: 60, effects: [{ categories: ['ram'], priceMult: 0.8 }],
+    jobVolumeMult: 1 }, 60, 'misc');
+  while (!glutSeen && guard++ < 40) {
+    ds.lastDealDay = -1;                    // force a fresh board (test rig)
+    Engine.Sim.rotateDeals(s);
+    Object.keys(ds.deals).forEach(function (id) {
+      ds.deals[id].forEach(function (dl) {
+        var pt = Engine.partById(dl.partId);
+        if (pt && pt.category === 'ram' && dl.glut) glutSeen = dl;
+      });
+    });
+  }
+  if (assert(glutSeen, 'distdeal: no glut-flagged ram deal in 40 boards')) {
+    assert(glutSeen.dealDiscount >= C.DIST_DEAL_RANGE[0] + C.DIST_DEAL_GLUT_BONUS - 1e-9,
+           'distdeal: glut deal must cut at least min+bonus, got ' + glutSeen.dealDiscount);
+  }
+  console.log('  seed + Monday rotation ok, deal pricing (no bulk stack) ok, ' +
+              'maxQty exhaustion ok, glut deals cut deeper');
+}
+
+function distributorShortageScenario() {
+  console.log('--- Distributor shortage allocation (§18.1) ---');
+  var E = Engine, C = Engine.CONFIG;
+  var r = E.newGame({ eraId: eraOf1996().id, shopName: 'Dist Shortage', seed: 41200 });
+  if (!assert(r.ok, 'distshort: newGame failed')) return;
+  var s = E.getState();
+  s.cash = 100000;
+  E.endDay();
+  var open = openDistributors(E).filter(function (d) { return !d.grayMarket; })[0];
+  var part = Engine.Jobs.purchasableByCategory(s, 'ram')[0];
+  if (!assert(open && part, 'distshort: rig missing')) return;
+  // Shortage event on ram + a known deal on the board (mechanics poke)
+  Engine.Sim.fireRandomEvent(s, { id: 'test-shortage', headlines: ['Test shortage'],
+    durationDays: 60, effects: [{ categories: ['ram'], priceMult: 1.5 }],
+    jobVolumeMult: 1 }, 60, 'misc');
+  s.distributors.deals[open.id] = [{ partId: part.id, dealDiscount: 0.2,
+    maxQty: 6, bought: 0, expiresDay: s.day + 7, glut: false }];
+  assert(Engine.Sim.isShortageCategory(s, 'ram'), 'distshort: event rig failed');
+
+  // Below Preferred the deal vanishes
+  var v0 = E.getDistributors().filter(function (d) { return d.id === open.id; })[0];
+  assert(v0.deals.length === 0, 'distshort: shorted deal must vanish below Preferred');
+  var q0 = E.quoteOrder(open.id, part.id, 2);
+  assert(q0.ok && q0.deal === false,
+         'distshort: below Preferred there is no deal pricing');
+
+  // Preferred keeps a 2-3 unit allocation at LIST price
+  s.distributors.tier[open.id] = 2;
+  var v1 = E.getDistributors().filter(function (d) { return d.id === open.id; })[0];
+  var alloc = v1.deals[0];
+  assert(alloc && alloc.allocation === true && alloc.remaining <= C.DIST_ALLOC_QTY &&
+         alloc.remaining >= 2 && alloc.dealDiscount === 0,
+         'distshort: Preferred allocation wrong: ' + JSON.stringify(alloc));
+  var q1 = E.quoteOrder(open.id, part.id, 2);
+  assert(q1.ok && q1.allocation === true && q1.discount === 0 &&
+         q1.unitCost === q1.retailUnit,
+         'distshort: allocation must be strictly list price, got ' + JSON.stringify(q1));
+  var qBig = E.quoteOrder(open.id, part.id, C.DIST_ALLOC_QTY + 1);
+  assert(qBig.ok && qBig.allocation === false,
+         'distshort: beyond the allocation it is a plain bulk order');
+  var buy = E.placeOrder(open.id, part.id, 2);
+  assert(buy.ok && buy.allocation === true, 'distshort: allocation buy failed');
+  var v2 = E.getDistributors().filter(function (d) { return d.id === open.id; })[0];
+  assert(!v2.deals.length || v2.deals[0].remaining === C.DIST_ALLOC_QTY - 2,
+         'distshort: allocation must shrink as it is used');
+  console.log('  deal vanishes below Preferred; 2-3 unit list-price allocation at ' +
+              'Preferred+ ok (used 2, ' + (v2.deals.length ? v2.deals[0].remaining : 0) +
+              ' left)');
+}
+
+function distributorRelationshipScenario() {
+  console.log('--- Distributor relationship ladder (§18.1) ---');
+  var E = Engine, C = Engine.CONFIG;
+  var r = E.newGame({ eraId: eraOf1996().id, shopName: 'Dist Rel', seed: 41300 });
+  if (!assert(r.ok, 'distrel: newGame failed')) return;
+  var s = E.getState();
+  s.cash = 2000000;
+  E.endDay();
+  var open = openDistributors(E).filter(function (d) { return !d.grayMarket; })[0];
+  var part = distDealFreePart(E, s, open, 'ram') ||
+             Engine.Jobs.purchasableByCategory(s, 'ram')[0];
+  if (!assert(open && part, 'distrel: rig missing')) return;
+  var lr = Engine.laborRate(Engine.currentYear(s));
+  var newsBefore = s.news.length;
+  var seen = { 1: false, 2: false, 3: false };
+  var guard = 0;
+  while (!seen[3] && guard++ < 200) {
+    s.hoursLeft = 8;
+    var po = E.placeOrder(open.id, part.id, 25);
+    if (!assert(po.ok, 'distrel: order failed: ' + (po.error || ''))) return;
+    if (po.promoted) {
+      var tier = C.DIST_REL_LABELS.indexOf(po.promoted);
+      seen[tier] = true;
+      var spend = s.distributors.spend[open.id];
+      assert(spend >= lr * C.DIST_REL_LABOR_MULTS[tier] - 0.01,
+             'distrel: promoted to ' + po.promoted + ' below threshold (' + spend + ')');
+      var vv = E.getDistributors().filter(function (d) { return d.id === open.id; })[0];
+      assert(vv.relationship === tier &&
+             vv.effDiscount === Engine.round2((vv.effDiscount - C.DIST_REL_DISCOUNTS[tier]) +
+                                              C.DIST_REL_DISCOUNTS[tier]),
+             'distrel: view after promotion inconsistent');
+    }
+  }
+  assert(seen[1] && seen[2] && seen[3],
+         'distrel: ladder must pass Regular -> Preferred -> Partner, saw ' +
+         JSON.stringify(seen));
+  assert(s.news.length > newsBefore && s.news.some(function (n) {
+    return new RegExp(open.name).test(n.headline || '') && /Partner/.test(n.headline || '');
+  }), 'distrel: promotion news missing');
+  var vPartner = E.getDistributors().filter(function (d) { return d.id === open.id; })[0];
+  assert(vPartner.leadDays === Math.max(C.DIST_LEAD_MIN, open.leadDays - 1),
+         'distrel: Partner must shave a lead day (min 1)');
+  assert(vPartner.effDiscount === Engine.round2(open.effDiscount + C.DIST_REL_DISCOUNTS[3]),
+         'distrel: Partner discount must be base +3%');
+  // Gray channel at Partner: lead floor holds
+  var gray = openDistributors(E).filter(function (d) { return d.grayMarket; })[0];
+  if (gray) {
+    s.distributors.tier[gray.id] = 3;
+    var vg = E.getDistributors().filter(function (d) { return d.id === gray.id; })[0];
+    assert(vg.leadDays >= C.DIST_LEAD_MIN, 'distrel: lead floor broken at Partner');
+  }
+  // Cancel farming: refunded spend stops counting, earned tiers stay
+  var spendBefore = s.distributors.spend[open.id];
+  s.hoursLeft = 8;
+  var poX = E.placeOrder(open.id, part.id, 25);
+  var cX = E.cancelOrder(poX.orderId);
+  assert(cX.ok, 'distrel: cancel failed');
+  var spendAfter = s.distributors.spend[open.id];
+  assert(spendAfter <= spendBefore + (poX.total - cX.refund) + 0.01,
+         'distrel: refunded spend must not farm loyalty (' +
+         spendBefore + ' -> ' + spendAfter + ')');
+  assert(Engine.Sim.distRelationship(s, open.id) === 3,
+         'distrel: earned tier must never regress');
+  console.log('  Regular/Preferred/Partner at year-scaled spend ok (+1/+2/+3%, ' +
+              'Partner -1 lead day, min 1), promotion news ok, no cancel farming');
+}
+
+function distributorGrayScenario() {
+  console.log('--- Gray-market reliability penalty (§18.1) ---');
+  var E = Engine, C = Engine.CONFIG;
+
+  function runCase(useGray) {
+    var r = E.newGame({ eraId: eraOf1996().id, shopName: 'Gray Case', seed: 41400 });
+    if (!r.ok) return null;
+    var s = E.getState();
+    s.cash = 100000;
+    var offer = findDecisionOffer(s, function (o) {
+      return o.type === 'repair' && o.fault && o.fault.partCategory;
+    });
+    if (!offer) return null;
+    if (!E.acceptOffer(offer.id).ok) return null;
+    var job = E.getActiveJobs().filter(function (j) { return j.id === offer.id; })[0];
+    disarmDecisions(job); pokeBigPsu(E, job);
+    s.hoursLeft = 8;
+    if (!E.diagnoseJob(job.id).ok) return null;
+    var need = E.getJobNeeds(job.id)[0];
+    var opt = need && chooseOption(E, job, need);
+    if (!opt) return null;
+    if (useGray) {
+      E.endDay();   // fresh full day for the bench work in both branches...
+      var gray = openDistributors(E).filter(function (d) { return d.grayMarket; })[0];
+      if (!gray) return null;
+      s.hoursLeft = 8;
+      var po = E.placeOrder(gray.id, opt.partId, 1);
+      if (!po.ok) return null;
+      while (s.day < po.arrivesDay) E.endDay();
+      s.hoursLeft = 8;
+    } else {
+      E.endDay(); E.endDay();   // ...and matching calendar drift (lead 1-2)
+      s.hoursLeft = 8;
+    }
+    var a = E.assignPart(job.id, need.index, opt.partId);
+    var gGuard = 0;
+    while (a.ok && a.mishap && (job.needs[need.index].filledPartIds.length < 1) &&
+           gGuard++ < 8) {
+      a = E.assignPart(job.id, need.index, opt.partId);
+    }
+    if (!a.ok) return null;
+    var entry = (job.partsUsed || []).filter(function (e) {
+      return e.partId === opt.partId;
+    })[0];
+    if (useGray) {
+      if (!entry || entry.gray !== true) return { rigFail: 'gray flag missing' };
+      if ((s.grayStock[opt.partId] | 0) !== 0) return { rigFail: 'gray counter' };
+    }
+    var werr = workToDone(E, job);
+    if (werr || job.status !== 'done') return null;
+    var rec = s.jobs.completedRecent.filter(function (c) { return c.jobId === job.id; })[0];
+    return { cb: rec ? rec.callbackChance : null, part: Engine.partById(opt.partId) };
+  }
+
+  var clean = runCase(false);
+  var grayRun = runCase(true);
+  if (!assert(clean && clean.cb != null, 'gray: clean control run failed')) return;
+  if (!assert(grayRun && !grayRun.rigFail && grayRun.cb != null,
+              'gray: gray run failed: ' + JSON.stringify(grayRun))) return;
+  assert(grayRun.cb > clean.cb,
+         'gray: -' + C.DIST_GRAY_REL_PENALTY + ' reliability must raise callback risk (' +
+         clean.cb + ' -> ' + grayRun.cb + ')');
+  console.log('  gray unit flagged at consumption, counter drained, callback risk ' +
+              clean.cb + ' -> ' + grayRun.cb + ' (same job, same part)');
+}
+
+/* §18.1 balance: distributors are cheaper-but-slower. A patient bot that
+ * routes comfortable-deadline parts through suppliers should beat the
+ * identical retail-only bot by a MODEST margin over 60 days at 1996. */
+function runSupplyBot(era, seed, useDist) {
+  var E = Engine;
+  var r = E.newGame({ eraId: era.id, shopName: useDist ? 'Supply' : 'Retail', seed: seed });
+  if (!r.ok) return null;
+  var s = E.getState();
+  var cashStart = s.cash;
+  for (var day = 0; day < 60; day++) {
+    E.getOffers().slice().forEach(function (o) {
+      if (o.crt) { E.declineOffer(o.id); return; }
+      E.acceptOffer(o.id);
+    });
+    var guard = 0, progress = true;
+    while (progress && guard++ < 300) {
+      progress = false;
+      var active = E.getActiveJobs().slice();
+      for (var j = 0; j < active.length; j++) {
+        var job = active[j];
+        if (s.hoursLeft < 0.1) break;
+        E.setJobSpeed(job.id, 'standard');
+        if (job.needsDiagnosis && !job.diagnosed) {
+          if (E.diagnoseJob(job.id).ok) progress = true;
+          continue;
+        }
+        if (job.build && !job.build.committed) {
+          var bc = tryConfigureBuild(E, job);
+          if (bc === 'committed') progress = true;
+          else if (bc === 'impossible') { E.abandonJob(job.id); progress = true; }
+          continue;
+        }
+        var needs = E.getJobNeeds(job.id);
+        for (var n = 0; n < needs.length; n++) {
+          var need = needs[n];
+          if (need.filled >= need.qty) continue;
+          var opt = chooseOption(E, job, need);
+          if (!opt) continue;
+          // §18.1 supply strategy: with stock on hand, assign it. Otherwise,
+          // if the deadline comfortably covers a lead time, order wholesale
+          // and keep working other jobs; only tight deadlines pay retail.
+          if (useDist && opt.source === 'market') {
+            var ordered = s.pendingOrders.some(function (o2) {
+              return o2.partId === opt.partId;
+            });
+            if (ordered) continue;   // it's on the truck
+            var best = null;
+            E.getDistributors().forEach(function (dv) {
+              if (dv.locked || dv.grayMarket) return;
+              if (!best || dv.leadDays < best.leadDays) best = dv;
+            });
+            var slack = job.deadlineDay != null ? (job.deadlineDay - s.day) : 99;
+            if (best && slack >= best.leadDays + 2) {
+              var po = E.placeOrder(best.id, opt.partId, 1);
+              if (po.ok) { progress = true; continue; }
+            }
+          }
+          if (opt.source === 'market' && opt.price > s.cash - 200) continue;
+          if (E.assignPart(job.id, need.index, opt.partId).ok) progress = true;
+        }
+        if (botResolveDecision(E, job)) progress = true;
+        var w = E.workJob(job.id, 'job');
+        if (w.ok && w.decisionPending && botResolveDecision(E, job)) progress = true;
+        if (w.ok && w.hoursSpent > 0) progress = true;
+      }
+      if (!progress && s.hoursLeft >= 1) {
+        var waiting = E.getActiveJobs().some(function (jw) {
+          return jw.steps && jw.stepIndex < jw.steps.length &&
+                 jw.steps[jw.stepIndex].kind === 'wait' && jw.steps[jw.stepIndex].running;
+        });
+        if (waiting) { if (E.waitHour().ok) progress = true; }
+      }
+    }
+    var res = E.endDay();
+    if (!res.ok || s.flags.gameOver) break;
+  }
+  return { net: Engine.round2(E.getState().cash - cashStart) };
+}
+
+function distributorMarginScenario() {
+  var era = eraOf1996();
+  console.log('--- Retail vs distributor sourcing, 60 days x 3 seeds (' +
+              era.id + ', §18.1) ---');
+  var ratios = [];
+  [61000, 61010, 61020].forEach(function (seed) {
+    var retail = runSupplyBot(era, seed, false);
+    var dist = runSupplyBot(era, seed, true);
+    if (!retail || !dist) return;
+    var ratio = retail.net > 0 ? dist.net / retail.net : 0;
+    ratios.push(ratio);
+    console.log('  seed ' + seed + ': retail net ' + Engine.fmtMoney(retail.net) +
+                ' | distributor net ' + Engine.fmtMoney(dist.net) +
+                ' — x' + ratio.toFixed(3));
+  });
+  if (!REAL()) {
+    console.log('    (margin band asserted against the real catalog only)');
+    return;
+  }
+  var med = median(ratios);
+  console.log('  == distributor/retail net median x' + med.toFixed(3) +
+              ' (' + rangeStr(ratios) + ') ==');
+  assert(med >= 1.03 && med <= 1.10,
+         'distmargin: distributor bot should net a MODEST 3-10% more, got x' +
+         med.toFixed(3));
+}
+
+// ------------------------------------------------------------------
 // Scenario (§17.2): rating transparency — entry shape, log, ratingDelta.
 // ------------------------------------------------------------------
 function reputationScenario(era) {
@@ -4609,7 +5131,7 @@ function survivalScenario(era) {
 // Main
 // ------------------------------------------------------------------
 console.log('sim-test using: ' + DATA_SOURCE + ' | engine v' + Engine.VERSION);
-assert(Engine.VERSION === '0.7', 'Engine.VERSION must be "0.7"');
+assert(Engine.VERSION === '0.8', 'Engine.VERSION must be "0.8"');
 assert(parseFloat(Engine.VERSION) >= 0.4, 'Engine.VERSION must stay parseFloat >= 0.4');
 var lines = [];
 try {
@@ -4785,6 +5307,12 @@ decisionTuningScenario();
 decisionGatingScenario(DATA.ERAS[0]);
 psuGateScenario();
 diagnoseSteamScenario();
+distributorOrderScenario();
+distributorDealScenario();
+distributorShortageScenario();
+distributorRelationshipScenario();
+distributorGrayScenario();
+distributorMarginScenario();
 reputationScenario(DATA.ERAS[0]);
 survivalScenario(DATA.ERAS[0]);
 migrationScenario(DATA.ERAS[DATA.ERAS.length - 1]);

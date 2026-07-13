@@ -1069,6 +1069,9 @@ DISC.forEach(function (d, i) {
     err(l + ': addCategory must be a part category, or null for device-billed add-ons');
   }
   if (d.category !== 'device' && d.addCategory === null) err(l + ': null addCategory is reserved for "device" entries');
+  // §20.4 #6: device_repair jobs must never receive a part-adding discovery —
+  // every "device" entry is billed through devicePartsCost, not a catalog part.
+  if (d.category === 'device' && d.addCategory !== null) err(l + ': "device" entries must have addCategory: null — device jobs never get a part-adding discovery (§20.4 #6)');
   if (!onTenthGrid(d.addLaborHours) || d.addLaborHours <= 0 || d.addLaborHours > 2) err(l + ': addLaborHours must be on the 0.1 grid in (0, 2]');
   if (d.minYear !== undefined && (!isInt(d.minYear) || d.minYear < 1979 || d.minYear > 2026)) err(l + ': minYear invalid');
   if (d.maxYear !== undefined && (!isInt(d.maxYear) || d.maxYear < 1979 || d.maxYear > 2100)) err(l + ': maxYear invalid');

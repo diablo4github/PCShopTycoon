@@ -5390,6 +5390,12 @@ function logisticsScenario() {
   assert((res.summary.deliveries || []).some(function (l) {
     return l.indexOf(part.name) !== -1;
   }), 'logi: morning summary must list the delivery');
+  // §19.9: the inventory view flags this morning's arrivals (UI row flash)
+  var invRow = E.getInventoryView().filter(function (iv) {
+    return iv.partId === part.id;
+  })[0];
+  assert(invRow && invRow.arrivedToday === true,
+         'logi: delivered stock must carry arrivedToday');
   // (b) rush: instant, surcharged max(25%, $10)
   var unit = Engine.Pricing.priceOf(part, s, { buy: true });
   var cash0 = s.cash;
@@ -5778,6 +5784,10 @@ function polishScenario() {
            'polish: raw type ids in effectNote: "' + c.effectNote + '"');
   });
   var certsView = E.getCertifications() || {};
+  (certsView.available || []).forEach(function (c) {
+    assert(typeof c.effectsNote === 'string',
+           'polish: available certs must ship effectsNote (§19.9 UI field)');
+  });
   (certsView.earned || []).concat(certsView.available || []).forEach(function (c) {
     assert(!/[a-z]_[a-z]/.test(c.effectsNote || ''),
            'polish: raw ids in cert note: "' + c.effectsNote + '"');

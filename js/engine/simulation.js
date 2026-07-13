@@ -41,6 +41,7 @@
     state.supplyRunDoneToday = false;
     state.workedToday = [];
     state.declinesToday = 0;
+    state.arrivedToday = {};   // §19.9: cleared each morning before deliveries
     state.ledger.lifetime.daysPlayed++;
     if (state.injuryDaysLeft > 0) {
       state.injuryDaysLeft--;
@@ -1016,6 +1017,8 @@
       }
       if (toStock > 0) {
         Engine.inventoryAdd(state, o.partId, toStock, o.unitCost);
+        state.arrivedToday = state.arrivedToday || {};
+        state.arrivedToday[o.partId] = true;   // §19.9: UI delivery-row flash
         if (o.gray) {
           state.grayStock = state.grayStock || {};
           state.grayStock[o.partId] = (state.grayStock[o.partId] || 0) + toStock;

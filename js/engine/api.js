@@ -101,6 +101,7 @@
                     contractsFailed: 0, graceDays: 0 }   // §15.2 scoring stats
       },
       workedToday: [], declinesToday: 0, lastContractDay: null, injuryDaysLeft: 0,
+      arrivedToday: {},   // §19.9: partIds delivered this morning (UI flash)
       // §10.7 staff (+§11.5 level-up queue for morning summaries)
       staff: [], staffMarket: [], staffNextRefreshDay: Engine.CONFIG.STAFF_REFRESH_DAYS,
       staffNextId: 1, levelUpsToday: [],
@@ -468,6 +469,7 @@
     [].concat(obj.jobs.offers || [], obj.jobs.active || []).forEach(function (j) {
       if (j && !('partsArriveDay' in j)) j.partsArriveDay = null;
     });
+    if (!obj.arrivedToday || typeof obj.arrivedToday !== 'object') obj.arrivedToday = {};
     return obj;
   }
   Engine.importSave = function (str) {
@@ -678,7 +680,8 @@
         name: part ? part.name : e.partId,
         category: part ? part.category : '?',
         qty: e.qty, avgCost: e.avgCost,
-        curPrice: part ? Engine.Pricing.priceOf(part, state) : 0
+        curPrice: part ? Engine.Pricing.priceOf(part, state) : 0,
+        arrivedToday: !!(state.arrivedToday && state.arrivedToday[e.partId])  // §19.9
       });
     }
     return out;
@@ -906,6 +909,7 @@
       if (!reason && state.cash < cost) reason = 'Not enough cash (' + Engine.fmtMoney(cost) + ' needed)';
       available.push({ id: c.id, name: c.name, abbr: c.abbr || c.name, cost: cost,
                         studyHours: c.studyHours || 0, desc: c.desc || '',
+                        effectsNote: certEffectsNote(c),   // §19.9 (UI shows directly)
                         canStart: !reason, reason: reason });
     }
     var studyingView = null;

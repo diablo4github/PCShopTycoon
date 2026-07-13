@@ -279,7 +279,7 @@ function chooseOption(E, job, need) {
     var below = need.options.filter(function (o) { return !o.meets; })[0];
     if (below) {
       var r = E.assignPart(job.id, need.index, below.partId);
-      if (!r.ok && /below the required spec/i.test(r.error || '')) {
+      if (!r.ok && /below the required spec|can’t reach/i.test(r.error || '')) {
         globals.minPerfRejected = true;
         globals.minPerfRejectMsg = r.error;
       }
@@ -303,6 +303,14 @@ function pokeBigPsu(E, job) {
   if (!job) return;
   job.psuSwapApproved = true;
   job.psuSwapDeclined = false;
+}
+
+// §19.3 bot judgment: pay the courier only when the deadline is tight —
+// otherwise the overnight truck is free money.
+function botFillOpts(E, job) {
+  var s = E.getState();
+  var slack = job.deadlineDay != null ? (job.deadlineDay - s.day) : 99;
+  return slack <= 2 ? { rush: true } : undefined;
 }
 
 function botDay(E, mem) {
@@ -510,9 +518,9 @@ function botDay(E, mem) {
         }
         if (opt.source === 'market' && opt.price > E.getState().cash - 200) { blocked = true; continue; }
         var ir = tracked(E, mem, isFlip, function () {
-          return E.assignPart(job.id, need.index, opt.partId);
+          return E.assignPart(job.id, need.index, opt.partId, botFillOpts(E, job));
         });
-        if (ir.ok && (ir.filledNow > 0 || ir.mishap)) progress = true;
+        if (ir.ok && (ir.filledNow > 0 || ir.mishap || ir.orderedQty > 0)) progress = true;
         if (!ir.ok) blocked = true;
       }
       if (botResolveDecision(E, job)) progress = true;   // §17.1
@@ -848,7 +856,8 @@ function runDedicatedBot(era, mode, seed) {
           var opt = chooseOption(E, job, need);
           if (!opt) continue;
           if (opt.source === 'market' && opt.price > E.getState().cash - 200) continue;
-          var ir = E.assignPart(job.id, need.index, opt.partId);
+          if (need.onOrder > 0) continue;   // §19.3: it's on the truck
+          var ir = E.assignPart(job.id, need.index, opt.partId, botFillOpts(E, job));
           if (ir.ok) progress = true;
         }
         if (botResolveDecision(E, job)) progress = true;   // §17.1
@@ -1374,7 +1383,9 @@ function assignScenario(era) {
   var downgradeMsg = null;
   if (below) {
     var rBelow = E.assignPart(job.id, 0, below.partId);
-    assert(!rBelow.ok && /below the required spec/i.test(rBelow.error || ''),
+    // §19.5: summable needs refuse with the slots/target phrasing instead
+    assert(!rBelow.ok &&
+           /below the required spec|can’t reach/i.test(rBelow.error || ''),
            'assign: expected a readable downgrade rejection, got: ' + JSON.stringify(rBelow));
     downgradeMsg = rBelow.error;
   }
@@ -1919,7 +1930,18 @@ function waitScenario(era) {
     assert(cur.done && cur.running === false,
            'wait: running wait should complete free overnight');
   }
-  // waitHour with nothing running refuses
+  // waitHour with nothing running refuses. §19.8 made wait steps common —
+  // and §16.3f auto-starts PENDING waits, so drain every wait step sitting
+  // at the head of any active checklist first (test rig).
+  E.getActiveJobs().forEach(function (jw) {
+    var g2 = 0;
+    while (jw.steps && jw.stepIndex < jw.steps.length &&
+           jw.steps[jw.stepIndex].kind === 'wait' && g2++ < 20) {
+      var st2 = jw.steps[jw.stepIndex];
+      st2.progress = 1; st2.done = true; st2.running = false;
+      jw.stepIndex++;
+    }
+  });
   var idle = E.waitHour();
   assert(!idle.ok, 'wait: waitHour with nothing running should refuse');
   console.log('  start 0.1h, own-job block, waitHour tick, overnight completion ok');
@@ -4991,6 +5013,7 @@ function runSupplyBot(era, seed, useDist) {
           // §18.1 supply strategy: with stock on hand, assign it. Otherwise,
           // if the deadline comfortably covers a lead time, order wholesale
           // and keep working other jobs; only tight deadlines pay retail.
+          if (need.onOrder > 0) continue;   // §19.3: retail truck inbound
           if (useDist && opt.source === 'market') {
             var ordered = s.pendingOrders.some(function (o2) {
               return need.options.some(function (o4) {
@@ -4999,6 +5022,14 @@ function runSupplyBot(era, seed, useDist) {
             });
             if (ordered) continue;   // something for this slot is on the truck
             var slack = job.deadlineDay != null ? (job.deadlineDay - s.day) : 99;
+            // §19.3: a 2-5 day wholesale wait parks a scarce bench slot —
+            // only route when the bench has room to keep earning meanwhile.
+            var benchCap = Engine.tierInfo(s).workstationSlots *
+                           Engine.CONFIG.HARD_CAP_SLOTS_MULT;
+            var benchBusy = E.getActiveJobs().filter(function (j2) {
+              return j2.type !== 'refurb';
+            }).length >= benchCap;
+            if (benchBusy) slack = -1;   // fall through to retail below
             var qtyNeed = Math.max(1, need.qty - need.filled);
             var lr2 = Engine.laborRate(Engine.currentYear(s));
             // (a) Deal-shopping: a 12-25%-off deal on ANY viable option can
@@ -5048,7 +5079,7 @@ function runSupplyBot(era, seed, useDist) {
             }
           }
           if (opt.source === 'market' && opt.price > s.cash - 200) continue;
-          if (E.assignPart(job.id, need.index, opt.partId).ok) progress = true;
+          if (E.assignPart(job.id, need.index, opt.partId, botFillOpts(E, job)).ok) progress = true;
         }
         if (botResolveDecision(E, job)) progress = true;
         var w = E.workJob(job.id, 'job');
@@ -5104,6 +5135,659 @@ function distributorMarginScenario() {
   assert(pooledOrders >= 15 && pooledSaved > 0,
          'distmargin: too little wholesale routing to trust the band (' +
          pooledOrders + ' orders)');
+}
+
+// ------------------------------------------------------------------
+// §19.1: contract phantom-fill repro + inventory conservation.
+// ------------------------------------------------------------------
+function phantomFillScenario() {
+  console.log('--- Contract multi-unit fill conservation (§19.1) ---');
+  var E = Engine;
+  var r = E.newGame({ eraId: 'era2004', seed: 1 });
+  if (!r.ok) { console.log('  (era2004 unavailable — skipped)'); return; }
+  var s = E.getState();
+  s.cash = 100000;
+  s.reputation.prestige = 2;
+  function fishContract() {
+    var offer = null, guard = 0;
+    while (!offer && guard++ < 300) {
+      s.jobs.offers.length = 0;
+      Engine.Jobs.generateOffers(s, null);
+      offer = s.jobs.offers.filter(function (o) {
+        return o.type === 'contract' && o.subtype === 'contract_upgrade';
+      })[0];
+    }
+    if (!offer || !E.acceptOffer(offer.id).ok) return null;
+    var job = E.getActiveJobs().filter(function (j) { return j.id === offer.id; })[0];
+    disarmDecisions(job);
+    job.units = 8; job.needs[0].qty = 8;   // the spec's 8-unit shape
+    return job;
+  }
+  // (a) RUSH path: 1 stocked + 7 bought NOW — every unit sourced & charged
+  var job = fishContract();
+  if (!assert(job, 'phantom: no contract_upgrade generated')) return;
+  var need = E.getJobNeeds(job.id)[0];
+  var opt = need.options.filter(function (o) { return o.meets; })[0];
+  s.hoursLeft = 8;
+  if (!assert(E.buyPart(opt.partId, 1, { rush: true }).ok, 'phantom: seed buy failed')) return;
+  var cash0 = s.cash, inv0 = (E.inventoryEntry(s, opt.partId) || { qty: 0 }).qty;
+  var a = E.assignPart(job.id, need.index, opt.partId, { rush: true });
+  if (!assert(a.ok, 'phantom: rush assign failed: ' + (a.error || ''))) return;
+  var used = (job.partsUsed || []).filter(function (e) { return e.partId === opt.partId; });
+  var stockUsed = used.filter(function (e) { return e.fromStock; }).length;
+  var bought = used.filter(function (e) { return !e.fromStock; }).length;
+  var inv1 = (E.inventoryEntry(s, opt.partId) || { qty: 0 }).qty;
+  assert(stockUsed === 1 && a.filledNow === stockUsed + bought &&
+         inv0 - inv1 === stockUsed,
+         'phantom: rush accounting broken: ' + JSON.stringify({
+           filledNow: a.filledNow, stockUsed: stockUsed, bought: bought,
+           invDelta: inv0 - inv1 }));
+  var expected = (bought + a.mishaps) * opt.price + (a.surcharge || 0);
+  assert(Math.abs((cash0 - s.cash) - expected) < 0.05,
+         'phantom: every rush-bought unit must be charged (' +
+         (cash0 - s.cash).toFixed(2) + ' vs ' + expected.toFixed(2) + ')');
+
+  // (b) DEFAULT path: 1 stocked fills now, 7 ordered (charged, on the truck),
+  // auto-fitted on the morning truck — nothing phantom anywhere.
+  s.lastContractDay = null;   // one-contract-per-window cooldown (test rig)
+  var job2 = fishContract();
+  if (!assert(job2, 'phantom: no second contract generated')) return;
+  var need2 = E.getJobNeeds(job2.id)[0];
+  var opt2 = need2.options.filter(function (o) { return o.meets; })[0];
+  s.hoursLeft = 8;
+  if (!assert(E.buyPart(opt2.partId, 1, { rush: true }).ok, 'phantom: seed buy 2 failed')) return;
+  var cashB = s.cash;
+  var b = E.assignPart(job2.id, need2.index, opt2.partId);
+  if (!assert(b.ok, 'phantom: default assign failed: ' + (b.error || ''))) return;
+  assert(b.filledNow >= 0 && b.orderedQty + b.filledNow + b.mishaps +
+         (b.remaining || 0) === 8,
+         'phantom: unit ledger must add up to 8, got ' + JSON.stringify(b));
+  assert(b.orderedQty > 0 && b.arrivesDay === s.day + E.getConfig().RETAIL_LEAD_DAYS,
+         'phantom: remainder must be a next-morning order');
+  var chargedB = (cashB - s.cash);
+  assert(Math.abs(chargedB - (b.orderedQty * opt2.price)) < 0.05,
+         'phantom: ordered units must be paid up front');
+  var dbl = E.assignPart(job2.id, need2.index, opt2.partId);
+  assert(!dbl.ok && /truck/i.test(dbl.error || ''),
+         'phantom: double-click must not double-buy, got ' + JSON.stringify(dbl));
+  E.endDay();
+  assert(job2.needs[0].filledPartIds.length === b.filledNow + b.orderedQty,
+         'phantom: morning truck must auto-fit the ordered units, got ' +
+         job2.needs[0].filledPartIds.length);
+
+  // (c) 40-day contract-heavy conservation sweep: a shadow ledger mirrors
+  // every inventoryAdd/inventoryRemove — any phantom unit desyncs it.
+  var shadow = {};
+  var origAdd = Engine.inventoryAdd, origRemove = Engine.inventoryRemove;
+  Engine.inventoryAdd = function (state2, partId, qty, unitCost) {
+    shadow[partId] = (shadow[partId] || 0) + qty;
+    return origAdd(state2, partId, qty, unitCost);
+  };
+  Engine.inventoryRemove = function (state2, partId, qty) {
+    var okR = origRemove(state2, partId, qty);
+    if (okR) shadow[partId] = (shadow[partId] || 0) - qty;
+    return okR;
+  };
+  var r3 = E.newGame({ eraId: 'era2004', seed: 3131 });
+  var s3 = E.getState();
+  s3.cash = 60000;
+  s3.reputation.prestige = 2;
+  var conserved = true, dayBad = -1;
+  for (var d = 0; d < 40 && conserved; d++) {
+    E.getOffers().slice().forEach(function (o) {
+      if (o.crt) { E.declineOffer(o.id); return; }
+      E.acceptOffer(o.id);
+    });
+    var guard3 = 0, progress = true;
+    while (progress && guard3++ < 200) {
+      progress = false;
+      E.getActiveJobs().slice().forEach(function (jb) {
+        if (s3.hoursLeft < 0.1) return;
+        if (botResolveDecision(E, jb)) progress = true;
+        if (jb.needsDiagnosis && !jb.diagnosed) {
+          if (E.diagnoseJob(jb.id).ok) progress = true;
+          return;
+        }
+        if (jb.build && !jb.build.committed) {
+          var bc = tryConfigureBuild(E, jb);
+          if (bc === 'committed') progress = true;
+          else if (bc === 'impossible') { E.abandonJob(jb.id); progress = true; }
+          return;
+        }
+        E.getJobNeeds(jb.id).forEach(function (nd) {
+          if (nd.filled >= nd.qty || nd.onOrder > 0) return;
+          var op = chooseOption(E, jb, nd);
+          if (op && E.assignPart(jb.id, nd.index, op.partId).ok) progress = true;
+        });
+        var w = E.workJob(jb.id, 'job');
+        if (w.ok && w.hoursSpent > 0) progress = true;
+        if (w.ok && w.decisionPending && botResolveDecision(E, jb)) progress = true;
+      });
+    }
+    E.endDay();
+    // the invariant: shadow ledger == live inventory, and nothing negative
+    for (var ii = 0; ii < s3.inventory.length && conserved; ii++) {
+      var e3 = s3.inventory[ii];
+      if (e3.qty < 0 || e3.qty !== Math.floor(e3.qty) ||
+          (shadow[e3.partId] || 0) !== e3.qty) { conserved = false; dayBad = d; }
+    }
+    Object.keys(shadow).forEach(function (pid3) {
+      if (!conserved) return;
+      var live = (E.inventoryEntry(s3, pid3) || { qty: 0 }).qty;
+      if ((shadow[pid3] || 0) !== live) { conserved = false; dayBad = d; }
+    });
+  }
+  Engine.inventoryAdd = origAdd;
+  Engine.inventoryRemove = origRemove;
+  assert(conserved, 'phantom: inventory conservation broke on day ' + dayBad);
+  console.log('  rush 1+7 charged ok, default 1 now + 7 on the truck ok, ' +
+              'double-click guarded, 40-day shadow-ledger sweep conserved');
+}
+
+// ------------------------------------------------------------------
+// §19.2: overspend trap — cheapest qualifying is never penalized.
+// ------------------------------------------------------------------
+function overspendTrapScenario() {
+  console.log('--- Overspend fairness trap (§19.2) ---');
+  var E = Engine;
+  var era = DATA.ERAS[DATA.ERAS.length - 1];
+  var r = E.newGame({ eraId: era.id, shopName: 'Trap', seed: 45001 });
+  if (!assert(r.ok, 'trap: newGame failed')) return;
+  var s = E.getState();
+  s.cash = 100000;
+  // Rig: a cheap original + a minPerf floor high enough that every
+  // qualifying part costs > 1.75x the original.
+  var rams = Engine.Jobs.purchasableByCategory(s, 'ram').slice()
+    .sort(function (a, b) { return Engine.Pricing.priceOf(a, s) - Engine.Pricing.priceOf(b, s); });
+  if (rams.length < 3) { console.log('  (thin catalog — skipped)'); return; }
+  var orig = rams[0];
+  var origVal = Engine.Pricing.priceOf(orig, s);
+  var lr = Engine.laborRate(Engine.currentYear(s));
+  // Find a ramMB floor whose cheapest QUALIFYING part costs more than both
+  // legacy thresholds — the exact case §19.2 protects.
+  var floorPart = null;
+  for (var i = 0; i < rams.length && !floorPart; i++) {
+    var fl = (rams[i].perf || {}).ramMB || 0;
+    if (fl <= 0) continue;
+    var cq = null;
+    rams.forEach(function (p2) {
+      if (((p2.perf || {}).ramMB || 0) < fl) return;
+      var pv2 = Engine.Pricing.priceOf(p2, s);
+      if (cq == null || pv2 < cq) cq = pv2;
+    });
+    if (cq != null && cq > Math.max(2.6 * origVal, origVal + lr)) floorPart = rams[i];
+  }
+  if (!floorPart) { console.log('  (no trap spread this year — skipped)'); return; }
+  var job = {
+    id: 90001, type: 'repair', subtype: null, rush: false, customer: 'Trap',
+    title: 'Repair: trap rig', blurb: '', pay: 200, offeredDay: s.day,
+    deadlineDay: s.day + 5, difficulty: 2, speed: 'standard', status: 'active',
+    hoursDone: 0, hoursRequired: 2, needsDiagnosis: false, diagnosed: true,
+    fault: { desc: 'trap', partCategory: 'ram', laborHours: 1 }, taste: null,
+    needs: [{ category: 'ram', anyOfTags: null,
+              minPerf: (function () { var m = {}; m.ramMB = (floorPart.perf || {}).ramMB; return m; })(),
+              qty: 1, filledPartIds: [], label: 'Trap need',
+              originalPartId: orig.id }],
+    build: null, units: 1, unitsDone: 0, machine: null, peripheral: null,
+    osRequest: null, device: null, deviceModern: false, devicePartsCost: 0,
+    devicePayBase: null, drTier: 0, crt: false, budgetAsk: false, result: null,
+    decision: null, decisionPlan: null, partsArriveDay: null
+  };
+  s.jobs.active.push(job);
+  Engine.Jobs.ensureSteps(s, job);
+  var need = E.getJobNeeds(job.id)[0];
+  var meets = need.options.filter(function (o) { return o.meets; })
+    .sort(function (a, b) {
+      return Engine.Pricing.priceOf(Engine.partById(a.partId), s) -
+             Engine.Pricing.priceOf(Engine.partById(b.partId), s);
+    });
+  if (!assert(meets.length, 'trap: no qualifying option')) return;
+  var cheapest = meets[0];
+  var cqVal = Engine.Pricing.priceOf(Engine.partById(cheapest.partId), s);
+  assert(cqVal > 1.75 * origVal && cqVal > origVal + lr,
+         'trap: rig failed — cheapest qualifying not above both legacy thresholds');
+  assert(cheapest.overspendGrade == null && cheapest.overspend === false,
+         'trap: cheapest qualifying must never carry an overspend flag, got ' +
+         JSON.stringify(cheapest.overspendGrade));
+  // ...and no score ding at completion either
+  s.hoursLeft = 8;
+  var aT = E.assignPart(job.id, 0, cheapest.partId, { rush: true });
+  var gT = 0;
+  while (aT.ok && aT.mishap && job.needs[0].filledPartIds.length < 1 && gT++ < 8) {
+    aT = E.assignPart(job.id, 0, cheapest.partId, { rush: true });
+  }
+  if (!assert(aT.ok, 'trap: assign failed: ' + (aT.error || ''))) return;
+  var wT = workToDone(E, job);
+  if (!assert(!wT && job.status === 'done', 'trap: job never completed: ' + wT)) return;
+  assert(!(job.result.qualityFlags || []).some(function (f) { return /overspend/.test(f.kind); }),
+         'trap: completion must not flag the cheapest qualifying part');
+  console.log('  cheapest qualifying at ' + Engine.fmtMoney(cqVal) + ' vs ' +
+              Engine.fmtMoney(origVal) + ' original — no flag, no ding');
+}
+
+// ------------------------------------------------------------------
+// §19.3: retail delivery & rush lifecycles + rush-job economics.
+// ------------------------------------------------------------------
+function logisticsScenario() {
+  console.log('--- Universal logistics: overnight retail, rush, RUSH jobs (§19.3) ---');
+  var E = Engine, C = Engine.CONFIG;
+  var era = DATA.ERAS.filter(function (e) { return e.startYear === 1996; })[0] || DATA.ERAS[0];
+  var r = E.newGame({ eraId: era.id, shopName: 'Logistics', seed: 46001 });
+  if (!assert(r.ok, 'logi: newGame failed')) return;
+  var s = E.getState();
+  s.cash = 50000;
+  // (a) buyPart default: overnight into stock, summary line
+  var part = Engine.Jobs.purchasableByCategory(s, 'ram')[0];
+  var b1 = E.buyPart(part.id, 2);
+  assert(b1.ok && b1.ordered === true && b1.arrivesDay === s.day + C.RETAIL_LEAD_DAYS,
+         'logi: default retail buy must ship overnight, got ' + JSON.stringify(b1));
+  assert(!E.inventoryEntry(s, part.id), 'logi: nothing lands same-day by default');
+  assert(E.getPendingOrders().some(function (o) { return o.partId === part.id; }),
+         'logi: retail order must join the pending list');
+  var res = E.endDay();
+  assert((E.inventoryEntry(s, part.id) || { qty: 0 }).qty === 2,
+         'logi: overnight delivery must land in stock');
+  assert((res.summary.deliveries || []).some(function (l) {
+    return l.indexOf(part.name) !== -1;
+  }), 'logi: morning summary must list the delivery');
+  // (b) rush: instant, surcharged max(25%, $10)
+  var unit = Engine.Pricing.priceOf(part, s, { buy: true });
+  var cash0 = s.cash;
+  var b2 = E.buyPart(part.id, 1, { rush: true });
+  var expSur = Engine.round2(Math.max(C.RUSH_SURCHARGE_MIN, unit * C.RUSH_SURCHARGE_PCT));
+  assert(b2.ok && b2.rush === true && Math.abs(b2.surcharge - expSur) < 0.01 &&
+         Math.abs((cash0 - s.cash) - (unit + expSur)) < 0.01,
+         'logi: rush surcharge math off: ' + JSON.stringify(b2) + ' expected +' + expSur);
+  assert((E.inventoryEntry(s, part.id) || { qty: 0 }).qty === 3,
+         'logi: rush buy lands immediately');
+  // (c) need fill: default order -> waiting -> morning auto-fit -> work
+  var offer = findDecisionOffer(s, function (o) {
+    return o.type === 'repair' && o.fault && o.fault.partCategory &&
+           !o.decisionPlan && !o.rush;
+  });
+  if (!assert(offer, 'logi: no plain part-fault repair generated')) return;
+  E.acceptOffer(offer.id);
+  var job = E.getActiveJobs().filter(function (j) { return j.id === offer.id; })[0];
+  disarmDecisions(job); pokeBigPsu(E, job);
+  s.hoursLeft = 8;
+  if (!assert(E.diagnoseJob(job.id).ok, 'logi: diagnose failed')) return;
+  var need = E.getJobNeeds(job.id)[0];
+  var opt = need.options.filter(function (o) {
+    return o.meets && !o.overPsu && o.source === 'market';
+  })[0];
+  if (!assert(opt, 'logi: no market option')) return;
+  assert(typeof opt.rushSurcharge === 'number' && opt.rushSurcharge >= C.RUSH_SURCHARGE_MIN,
+         'logi: options must quote their rush surcharge');
+  var aL = E.assignPart(job.id, need.index, opt.partId);
+  if (!assert(aL.ok && aL.orderedQty >= 1, 'logi: default assign should order: ' +
+              JSON.stringify(aL))) return;
+  var nv = E.getJobNeeds(job.id)[0];
+  assert(nv.onOrder >= 1 && nv.arrivesDay === aL.arrivesDay,
+         'logi: need view must show the truck');
+  var wL = E.workJob(job.id), gL = 0;
+  while (wL.ok && gL++ < 20) { s.hoursLeft = 8; wL = E.workJob(job.id); }
+  assert(!wL.ok && /waiting on parts/i.test(wL.error || ''),
+         'logi: work should wait readably at the barrier, got ' + JSON.stringify(wL));
+  E.endDay();
+  assert(job.needs[need.index].filledPartIds.length >= 1,
+         'logi: morning truck must fit the ordered part');
+  s.hoursLeft = 8;
+  var wErr = workToDone(E, job);
+  assert(!wErr && job.status === 'done', 'logi: delivered job never completed: ' + wErr);
+  // (d) RUSH jobs: x2.2 pay economics, auto-rush fills at no surcharge
+  assert(C.RUSH_PAY_MULT === 2.2, 'logi: RUSH pay multiplier must be 2.2');
+  var rushJob = null, guardR = 0;
+  while (!rushJob && guardR++ < 400) {
+    s.jobs.offers.length = 0;
+    Engine.Jobs.generateOffers(s, null);
+    var ro = s.jobs.offers.filter(function (o) {
+      return o.rush && o.fault && o.fault.partCategory;
+    })[0];
+    if (ro && E.acceptOffer(ro.id).ok) {
+      rushJob = E.getActiveJobs().filter(function (j) { return j.id === ro.id; })[0];
+    }
+  }
+  if (!assert(rushJob, 'logi: no RUSH repair generated')) return;
+  disarmDecisions(rushJob); pokeBigPsu(E, rushJob);
+  s.hoursLeft = 8;
+  if (!assert(E.diagnoseJob(rushJob.id).ok, 'logi: rush diagnose failed')) return;
+  var rn = E.getJobNeeds(rushJob.id)[0];
+  if (rn) {
+    var rOpt = rn.options.filter(function (o) {
+      return o.meets && !o.overPsu && o.source === 'market';
+    })[0];
+    if (rOpt) {
+      var cashR = s.cash;
+      var aR = E.assignPart(rushJob.id, rn.index, rOpt.partId);
+      var gR = 0;
+      while (aR.ok && aR.mishap && rushJob.needs[rn.index].filledPartIds.length < 1 && gR++ < 8) {
+        aR = E.assignPart(rushJob.id, rn.index, rOpt.partId);
+      }
+      assert(aR.ok && aR.filledNow >= 1 && (aR.surcharge || 0) === 0,
+             'logi: RUSH job fills same-day with no surcharge, got ' + JSON.stringify(aR));
+      assert(Math.abs((cashR - s.cash) - (aR.filledNow + aR.mishaps) * rOpt.price) < 0.05,
+             'logi: RUSH fill charges list only');
+    }
+  }
+  console.log('  overnight retail + summary ok, rush ' +
+              Engine.fmtMoney(expSur) + ' surcharge ok, waiting->truck->done ok, ' +
+              'RUSH x2.2 auto-rush fills free');
+}
+
+// ------------------------------------------------------------------
+// §19.4: fog of war — no pre-diagnosis leaks, reveal after.
+// ------------------------------------------------------------------
+function fogScenario() {
+  console.log('--- Repair fog of war (§19.4) ---');
+  var E = Engine;
+  var catWords = { ram: /\bram\b|\bmemory stick\b/i, gpu: /\bgpu\b|graphics card/i,
+                   cpu: /\bcpu\b|processor/i, psu: /\bpsu\b|power supply/i,
+                   storage: /hard (disk|drive)\b/i, motherboard: /motherboard/i,
+                   cooling: /\bcooling fan\b/i };
+  var checked = 0, leaks = [];
+  DATA.ERAS.forEach(function (era, ei) {
+    var r = E.newGame({ eraId: era.id, shopName: 'Fog', seed: 47001 + ei });
+    if (!r.ok) return;
+    var s = E.getState();
+    var guard = 0;
+    while (checked < 40 * (ei + 1) && guard++ < 60) {
+      s.jobs.offers.length = 0;
+      Engine.Jobs.generateOffers(s, null);
+      s.jobs.offers.forEach(function (o) {
+        if (o.type !== 'repair' && o.type !== 'device_repair') return;
+        if (!o.fault) return;
+        checked++;
+        var text = (o.title + ' ' + (o.blurb || o.blurbOverride || ''));
+        if (o.fault.desc && text.indexOf(o.fault.desc) !== -1) {
+          leaks.push(era.id + ': title/blurb contains fault desc "' + o.fault.desc + '"');
+        }
+        var cat = o.fault.partCategory;
+        if (cat && catWords[cat] && catWords[cat].test(text)) {
+          leaks.push(era.id + ': "' + o.title + '" names its ' + cat + ' fault');
+        }
+      });
+    }
+  });
+  assert(leaks.length === 0, 'fog: pre-diagnosis leaks:\n    ' + leaks.slice(0, 5).join('\n    '));
+  // reveal: post-diagnosis title carries the finding
+  var r2 = E.newGame({ eraId: DATA.ERAS[0].id, shopName: 'Fog2', seed: 47101 });
+  var s2 = E.getState();
+  s2.cash = 50000;
+  var off = findDecisionOffer(s2, function (o) {
+    return o.type === 'repair' && o.fault && o.fault.desc;
+  });
+  if (assert(off, 'fog: no repair to reveal')) {
+    E.acceptOffer(off.id);
+    var jb = E.getActiveJobs().filter(function (j) { return j.id === off.id; })[0];
+    disarmDecisions(jb);
+    s2.hoursLeft = 8;
+    var dr = E.diagnoseJob(jb.id);
+    assert(dr.ok && jb.title.indexOf(jb.fault.desc) !== -1 && /found:/.test(jb.title),
+           'fog: post-diagnosis title must append the finding, got "' + jb.title + '"');
+  }
+  console.log('  ' + checked + ' pre-diagnosis offers audited across eras — no ' +
+              'component names leaked; diagnosis appends the finding');
+}
+
+// ------------------------------------------------------------------
+// §19.5: multi-part fills — 2 sticks on a 4-slot board, capacity refusal.
+// ------------------------------------------------------------------
+function multiFillScenario() {
+  console.log('--- Multi-part upgrade fills (§19.5) ---');
+  var E = Engine;
+  var found = null, seed;
+  for (seed = 48001; seed < 48030 && !found; seed++) {
+    var r = E.newGame({ eraId: DATA.ERAS[DATA.ERAS.length - 1].id, shopName: 'Multi', seed: seed });
+    if (!r.ok) return;
+    var s = E.getState();
+    s.cash = 200000;
+    var offer = findDecisionOffer(s, function (o) {
+      if (o.type !== 'upgrade' || !o.needs[0]) return false;
+      var nd0 = o.needs[0];
+      return nd0.summable && nd0.sumKey === 'ramMB' && nd0.qty >= 2;
+    }, 120);
+    if (!offer) continue;
+    if (!E.acceptOffer(offer.id).ok) continue;
+    var job = E.getActiveJobs().filter(function (j) { return j.id === offer.id; })[0];
+    disarmDecisions(job); pokeBigPsu(E, job);
+    var need = E.getJobNeeds(job.id)[0];
+    if (!need || !need.summable) continue;
+    // a stick that needs exactly 2 units to hit the target
+    var two = need.options.filter(function (o) {
+      return o.countToMeet === 2 && !o.overPsu && o.source !== 'inventory';
+    })[0];
+    if (!two) continue;
+    found = { job: job, need: need, opt: two, state: s };
+  }
+  if (!assert(found, 'multi: no 2-stick-able ram upgrade found across seeds')) return;
+  var s5 = found.state, job5 = found.job, need5 = found.need, opt5 = found.opt;
+  assert(typeof need5.slotsFree === 'number' && need5.slotsFree >= 2 &&
+         typeof need5.target === 'number' && need5.sumAssigned === 0,
+         'multi: need view missing slotsFree/target/sumAssigned: ' +
+         JSON.stringify({ slotsFree: need5.slotsFree, target: need5.target }));
+  s5.hoursLeft = 8;
+  var a1 = E.assignPart(job5.id, need5.index, opt5.partId, { rush: true });
+  if (!assert(a1.ok, 'multi: first stick failed: ' + (a1.error || ''))) return;
+  var mid = E.getJobNeeds(job5.id)[0];
+  assert(mid.satisfied === false && mid.sumAssigned > 0 && mid.sumAssigned < mid.target,
+         'multi: one stick must not satisfy a 2-stick target');
+  var wMid = E.workJob(job5.id);
+  assert(!wMid.ok || wMid.hoursSpent === 0 || !wMid.completed,
+         'multi: install must stay blocked below target');
+  var a2 = E.assignPart(job5.id, need5.index, opt5.partId, { rush: true });
+  var g5 = 0;
+  while (a2.ok && a2.mishap && Engine.Jobs.summedAssigned(job5.needs[need5.index]) < mid.target &&
+         g5++ < 8) {
+    a2 = E.assignPart(job5.id, need5.index, opt5.partId, { rush: true });
+  }
+  if (!assert(a2.ok, 'multi: second stick failed: ' + (a2.error || ''))) return;
+  var after = E.getJobNeeds(job5.id)[0];
+  assert(after.satisfied === true && after.sumAssigned >= after.target,
+         'multi: two sticks must sum past the target (' + after.sumAssigned +
+         ' vs ' + after.target + ')');
+  var wErr = workToDone(E, job5);
+  assert(!wErr && job5.status === 'done',
+         'multi: summed fill never completed: ' + wErr);
+  assert((job5.result.notes || []).every(function (n) { return !/downgrade/i.test(n); }),
+         'multi: a target-meeting SET must not read as a downgrade');
+  // capacity refusal is readable: a stick too small to ever reach the target
+  var r6 = E.newGame({ eraId: DATA.ERAS[DATA.ERAS.length - 1].id, shopName: 'Multi2', seed: seed });
+  var s6 = E.getState();
+  s6.cash = 200000;
+  var offer6 = findDecisionOffer(s6, function (o) {
+    return o.type === 'upgrade' && o.needs[0] && o.needs[0].summable;
+  }, 120);
+  if (offer6 && E.acceptOffer(offer6.id).ok) {
+    var job6 = E.getActiveJobs().filter(function (j) { return j.id === offer6.id; })[0];
+    disarmDecisions(job6);
+    var need6 = E.getJobNeeds(job6.id)[0];
+    var tiny = need6.options.filter(function (o) {
+      return o.countToMeet > need6.slotsFree;
+    })[0];
+    if (tiny) {
+      var aT6 = E.assignPart(job6.id, need6.index, tiny.partId, { rush: true });
+      assert(!aT6.ok && /free slot/i.test(aT6.error || ''),
+             'multi: capacity refusal must be readable, got ' + JSON.stringify(aT6));
+    }
+  }
+  console.log('  2 sticks summed past the target on a multi-slot board, set-based ' +
+              'verdicts clean, capacity refusal readable');
+}
+
+// ------------------------------------------------------------------
+// §19.6: stock builds + peripheral bundles.
+// ------------------------------------------------------------------
+function stockBuildScenario() {
+  console.log('--- Stock builds & peripheral bundles (§19.6) ---');
+  var E = Engine, C = Engine.CONFIG;
+  var era = DATA.ERAS.filter(function (e) { return e.startYear >= 1996; })[0] ||
+            DATA.ERAS[DATA.ERAS.length - 1];
+  var r = E.newGame({ eraId: era.id, shopName: 'Stock', seed: 49001 });
+  if (!assert(r.ok, 'stock: newGame failed')) return;
+  var s = E.getState();
+  s.cash = 200000;
+  // gate: needs unlock + bench
+  var locked = E.startStockBuild();
+  if (!s.customBuildsUnlocked || !Engine.equipEffects(s).enablesBuilds) {
+    assert(!locked.ok, 'stock: must refuse without unlock/bench');
+  }
+  s.customBuildsUnlocked = true;
+  if (s.shop.equipment.indexOf('build-bench') === -1) s.shop.equipment.push('build-bench');
+  var st = E.startStockBuild();
+  if (!assert(st.ok, 'stock: start failed: ' + (st.error || ''))) return;
+  var job = E.getActiveJobs().filter(function (j) { return j.id === st.jobId; })[0];
+  assert(job.stockBuild === true && job.deadlineDay == null && job.pay === 0,
+         'stock: shop project shape wrong');
+  var conf = tryConfigureBuild(E, job);
+  if (!assert(conf === 'committed', 'stock: witness configure failed (' + conf + ')')) return;
+  if (job.partsArriveDay != null) E.endDay();   // §19.3: parts on the truck
+  s.hoursLeft = 8;
+  var wErr = workToDone(E, job);
+  if (!assert(!wErr && job.status === 'done' && job.machine &&
+              job.machine.stockBuild === true,
+              'stock: build never shelved: ' + (wErr || job.status))) return;
+  assert(job.machine.freshness >= C.STOCK_BUILD_FRESH_MIN &&
+         job.machine.freshness <= C.STOCK_BUILD_FRESH_MAX,
+         'stock: freshness premium out of band: ' + job.machine.freshness);
+  var appraise = E.appraiseRefurb(job.id);
+  assert(appraise.estimate > 0, 'stock: appraisal must price the machine');
+  // bundles: 2 peripherals from stock ride along at x1.15
+  var periphs = Engine.Jobs.purchasableByCategory(s, 'peripheral').slice(0, 2);
+  if (periphs.length < 2) { console.log('  (no peripherals this era — sold bare)'); }
+  var bundleIds = [];
+  periphs.forEach(function (pp) {
+    if (E.buyPart(pp.id, 1, { rush: true }).ok) bundleIds.push(pp.id);
+  });
+  var expBundle = 0;
+  bundleIds.forEach(function (pid) {
+    expBundle = Engine.round2(expBundle +
+      Engine.Pricing.priceOf(Engine.partById(pid), s) * C.BUNDLE_VALUE_MULT);
+  });
+  var tooMany = E.sellRefurb(job.id, { bundlePartIds: bundleIds.concat(
+    [bundleIds[0], bundleIds[0]]).slice(0, C.BUNDLE_MAX + 1) });
+  if (bundleIds.length) {
+    assert(!tooMany.ok, 'stock: over-limit bundle must refuse');
+  }
+  var sold = E.sellRefurb(job.id, { bundlePartIds: bundleIds });
+  if (!assert(sold.ok, 'stock: sale failed: ' + (sold.error || ''))) return;
+  assert(sold.bundled === bundleIds.length &&
+         Math.abs((sold.bundleValue || 0) - expBundle) < 0.05,
+         'stock: bundle premium math off (' + sold.bundleValue + ' vs ' + expBundle + ')');
+  bundleIds.forEach(function (pid) {
+    assert(!E.inventoryEntry(s, pid), 'stock: bundled peripheral must be consumed');
+  });
+  console.log('  shop project built & shelved (freshness x' + job.machine.freshness +
+              '), sold ' + Engine.fmtMoney(sold.price) + ' with ' + sold.bundled +
+              ' peripherals (+' + Engine.fmtMoney(sold.bundleValue) + ')');
+}
+
+// ------------------------------------------------------------------
+// §19.7: primary vs removable storage.
+// ------------------------------------------------------------------
+function storageRuleScenario() {
+  console.log('--- Primary vs removable storage (§19.7) ---');
+  var E = Engine;
+  // (a) 1988+: floppy-only storage refused with the exact problem string
+  var modern = DATA.ERAS.filter(function (e) { return e.startYear >= 1996; })[0];
+  var r = E.newGame({ eraId: modern.id, shopName: 'Storage', seed: 50001 });
+  if (!assert(r.ok, 'storage: newGame failed')) return;
+  var s = E.getState();
+  var parts = DATA.PARTS.filter(function (p) { return p.category === 'storage'; });
+  var removable = parts.filter(function (p) { return Engine.Compat.isRemovableStorage(p); });
+  var primary = parts.filter(function (p) { return !Engine.Compat.isRemovableStorage(p); });
+  assert(removable.length >= 2 && primary.length >= 2,
+         'storage: catalog missing removable flags (' + removable.length + ' removable)');
+  var flop = Engine.Jobs.purchasableByCategory(s, 'storage').filter(function (p) {
+    return Engine.Compat.isRemovableStorage(p);
+  })[0];
+  var prim = Engine.Jobs.purchasableByCategory(s, 'storage').filter(function (p) {
+    return !Engine.Compat.isRemovableStorage(p);
+  })[0];
+  if (flop && prim) {
+    // any witnessed full build, storage swapped for a floppy
+    var w = Engine.Jobs.witnessBuild(s, { minPerf: {}, minStyle: 0 });
+    if (assert(w, 'storage: no witness build')) {
+      var ids = w.partIds.filter(function (id) {
+        var p = Engine.partById(id);
+        return !(p && p.category === 'storage');
+      }).concat([flop.id]);
+      var v = Engine.Compat.validatePartList(ids, { requireFull: true,
+        year: Engine.currentYear(s) });
+      assert(v.problems.some(function (pr) {
+        return pr === "A floppy drive can't be the only storage (1988+)";
+      }), 'storage: floppy-only build must fail with the exact string, got ' +
+         JSON.stringify(v.problems));
+      var v2 = Engine.Compat.validatePartList(ids.concat([prim.id]), {
+        requireFull: true, year: Engine.currentYear(s) });
+      assert(!v2.problems.some(function (pr) { return /floppy/.test(pr); }),
+             'storage: adding a primary drive must clear the problem');
+    }
+    // the witness itself must anchor on a primary at 1988+
+    var w2 = Engine.Jobs.witnessBuild(s, { minPerf: {}, minStyle: 0 });
+    assert(w2 && w2.partIds.some(function (id) {
+      var p = Engine.partById(id);
+      return p && p.category === 'storage' && !Engine.Compat.isRemovableStorage(p);
+    }), 'storage: witness builds must include a primary drive (1988+)');
+  }
+  // (b) pre-1988: floppy-only is period-legitimate
+  var early = DATA.ERAS[0];
+  var r2 = E.newGame({ eraId: early.id, shopName: 'Storage83', seed: 50002 });
+  var s2 = E.getState();
+  var w3 = Engine.Jobs.witnessBuild(s2, { minPerf: {}, minStyle: 0 });
+  if (w3) {
+    var ids3 = w3.partIds;
+    var v3 = Engine.Compat.validatePartList(ids3, { requireFull: true,
+      year: Engine.currentYear(s2) });
+    assert(!v3.problems.some(function (pr) { return /floppy/.test(pr); }),
+           'storage: pre-1988 builds must not hit the floppy rule');
+  }
+  // (c) era-typical machines carry a floppy as an extra (1983-1995)
+  var withFloppy = 0, sampled = 0;
+  for (var d = 0; d < 15; d++) {
+    (s2.asIsMarket || []).forEach(function (m) {
+      sampled++;
+      if (m.partIds.some(function (id) {
+        var p = Engine.partById(id);
+        return p && Engine.Compat.isRemovableStorage(p);
+      })) withFloppy++;
+    });
+    E.endDay();
+  }
+  assert(sampled > 0 && withFloppy > 0,
+         'storage: era-typical machines should carry floppies (' + withFloppy +
+         '/' + sampled + ')');
+  console.log('  1988+ rule + exact problem string ok, witness parity ok, ' +
+              'pre-1988 floppy-only legit, ' + withFloppy + '/' + sampled +
+              ' era machines carry a floppy');
+}
+
+// ------------------------------------------------------------------
+// §19.9: copy polish — humanized notes, hidden hints, capacity units.
+// ------------------------------------------------------------------
+function polishScenario() {
+  console.log('--- Copy polish: humanized notes, hints, capacity units (§19.9) ---');
+  var E = Engine;
+  var r = E.newGame({ eraId: DATA.ERAS[0].id, shopName: 'Polish', seed: 51001 });
+  if (!assert(r.ok, 'polish: newGame failed')) return;
+  assert(E.fmtCapacity(0.0625) === '64 KB' && E.fmtCapacity(640) === '640 MB' &&
+         E.fmtCapacity(8192) === '8 GB' && E.fmtCapacity(2 * 1024 * 1024) === '2 TB',
+         'polish: fmtCapacity units wrong');
+  var sv = E.getStaffView();
+  sv.candidates.forEach(function (c) {
+    assert(!/[a-z]_[a-z]|\w\/\w/.test(c.effectNote || ''),
+           'polish: raw type ids in effectNote: "' + c.effectNote + '"');
+  });
+  var certsView = E.getCertifications() || {};
+  (certsView.earned || []).concat(certsView.available || []).forEach(function (c) {
+    assert(!/[a-z]_[a-z]/.test(c.effectsNote || ''),
+           'polish: raw ids in cert note: "' + c.effectsNote + '"');
+  });
+  var hidden = E.getAchievements().filter(function (a) { return a.hidden && !a.unlocked; });
+  assert(hidden.length > 0 && hidden.every(function (a) {
+    return typeof a.hint === 'string' && a.hint.length > 10;
+  }), 'polish: hidden achievements must carry hint strings');
+  console.log('  fmtCapacity KB/MB/GB/TB ok, no raw type-ids in staff/cert copy, ' +
+              hidden.length + ' hidden achievements hint');
 }
 
 // ------------------------------------------------------------------
@@ -5410,6 +6094,14 @@ distributorShortageScenario();
 distributorRelationshipScenario();
 distributorGrayScenario();
 distributorMarginScenario();
+phantomFillScenario();
+overspendTrapScenario();
+logisticsScenario();
+fogScenario();
+multiFillScenario();
+stockBuildScenario();
+storageRuleScenario();
+polishScenario();
 reputationScenario(DATA.ERAS[0]);
 survivalScenario(DATA.ERAS[0]);
 migrationScenario(DATA.ERAS[DATA.ERAS.length - 1]);

@@ -3471,7 +3471,16 @@
       }
       if (wk.barrier === 'delivery')
         return err('Waiting on parts — the courier arrives tomorrow morning');
-      if (wk.barrier === 'assign') return err('Assign a replacement part first');
+      if (wk.barrier === 'assign') {
+        // §19.3: if the blocking slot's parts are already ordered, say so
+        var blockedIdx = (job.steps[job.stepIndex] || {}).needIndex;
+        var truck = (state.pendingOrders || []).some(function (po) {
+          return po.jobId === job.id &&
+                 (blockedIdx == null || po.needIndex === blockedIdx);
+        });
+        if (truck) return err('Waiting on parts — arriving tomorrow morning');
+        return err('Assign a replacement part first');
+      }
       if (wk.barrier === 'wait') {
         var wst = job.steps[job.stepIndex];
         if (wst.needIndex != null) {   // an install-flavored wait still needs its part
@@ -4280,7 +4289,8 @@
 
   Jobs.appraiseRefurb = function (state, jobId) {
     var job = Jobs.findActive(state, jobId);
-    if (!job || job.type !== 'refurb' || !job.machine) return { estimate: 0 };
+    if (!job || (job.type !== 'refurb' && !job.stockBuild) || !job.machine)
+      return { estimate: 0 };
     return { estimate: refurbEstimate(state, job) };
   };
 

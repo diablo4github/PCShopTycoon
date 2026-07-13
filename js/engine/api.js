@@ -65,7 +65,7 @@
     if (!isFinite(seed)) seed = 42;
     var startDi = null;
     var state = {
-      version: 9,
+      version: 10,
       seed: seed,
       rng: Engine.seedRngStreams(seed),   // §17.5 five named streams
       shopName: String(opts.shopName ||
@@ -456,11 +456,25 @@
     if (obj.nextOrderId == null) obj.nextOrderId = 1;
     return obj;
   }
+  function migrateV9toV10(obj) {
+    obj.version = 10;
+    // §19.3: unified logistics — older pending orders were all wholesale
+    (obj.pendingOrders || []).forEach(function (o) {
+      if (!o.source) o.source = 'dist';
+      if (!('jobId' in o)) o.jobId = null;
+      if (!('needIndex' in o)) o.needIndex = null;
+    });
+    // §19.3: builds in flight predate the overnight-truck flag
+    [].concat(obj.jobs.offers || [], obj.jobs.active || []).forEach(function (j) {
+      if (j && !('partsArriveDay' in j)) j.partsArriveDay = null;
+    });
+    return obj;
+  }
   Engine.importSave = function (str) {
     var obj;
     try { obj = JSON.parse(String(str)); }
     catch (e) { return err('Not valid save JSON'); }
-    if (!obj || [1, 2, 3, 4, 5, 6, 7, 8, 9].indexOf(obj.version) === -1)
+    if (!obj || [1, 2, 3, 4, 5, 6, 7, 8, 9, 10].indexOf(obj.version) === -1)
       return err('Unsupported save version');
     // §17.5: v8 saves carry rng streams instead of the old single rngState
     var required = ['seed', 'eraId', 'startDate', 'day', 'cash',
@@ -477,6 +491,7 @@
     if (obj.version === 6) migrateV6toV7(obj);
     if (obj.version === 7) migrateV7toV8(obj);
     if (obj.version === 8) migrateV8toV9(obj);
+    if (obj.version === 9) migrateV9toV10(obj);
     Engine._state = obj;
     return { ok: true };
   };
@@ -525,17 +540,17 @@
     return S() ? Engine.Jobs.getJobNeeds(S(), jobId) : [];
   };
   // §10.3: assign reserves the part; the install happens at its step.
-  Engine.assignPart = function (jobId, needIndex, partId) {
+  Engine.assignPart = function (jobId, needIndex, partId, opts) {
     var bad = needLive(); if (bad) return bad;
-    return Engine.Jobs.assignPart(S(), jobId, needIndex, partId);
+    return Engine.Jobs.assignPart(S(), jobId, needIndex, partId, opts);
   };
   Engine.unassignPart = function (jobId, needIndex, partId) {
     var bad = needLive(); if (bad) return bad;
     return Engine.Jobs.unassignPart(S(), jobId, needIndex, partId);
   };
   // Deprecated alias for assignPart (one release, §10.3)
-  Engine.installPart = function (jobId, needIndex, partId) {
-    return Engine.assignPart(jobId, needIndex, partId);
+  Engine.installPart = function (jobId, needIndex, partId, opts) {
+    return Engine.assignPart(jobId, needIndex, partId, opts);
   };
   // §17.1: resolve a pending job decision (fork / approval call / tuning).
   Engine.decideJob = function (jobId, optionId) {
@@ -570,9 +585,9 @@
                        underBudget: false };
     return Engine.Jobs.validateBuild(S(), jobId);
   };
-  Engine.commitBuild = function (jobId) {
+  Engine.commitBuild = function (jobId, opts) {
     var bad = needLive(); if (bad) return bad;
-    return Engine.Jobs.commitBuild(S(), jobId);
+    return Engine.Jobs.commitBuild(S(), jobId, opts);
   };
   // Tooling entry point (§4): validate an arbitrary part-id list.
   Engine.validatePartList = function (partIds) {
@@ -588,7 +603,7 @@
   Engine.getMarket = function (filter) {
     return S() ? Engine.Pricing.getMarket(S(), filter) : [];
   };
-  Engine.buyPart = function (partId, qty) {
+  Engine.buyPart = function (partId, qty, opts) {
     var bad = needLive(); if (bad) return bad;
     var state = S();
     qty = Math.max(1, Math.floor(Number(qty) || 1));
@@ -606,8 +621,35 @@
     }
     Engine.addCash(state, -cost);
     Engine.ledgerAdd(state, 'partsCost', cost);
-    Engine.inventoryAdd(state, part.id, qty, unit);
-    return { ok: true, cost: cost };
+    // §19.3: retail buys ship overnight by default; rush pays the same-day
+    // premium and lands in stock immediately.
+    if (opts && opts.rush) {
+      var surcharge = Engine.round2(Math.max(Engine.CONFIG.RUSH_SURCHARGE_MIN,
+                                             cost * Engine.CONFIG.RUSH_SURCHARGE_PCT));
+      if (state.cash < surcharge) {
+        // roll the base purchase back — refuse cleanly rather than half-charge
+        Engine.addCash(state, cost);
+        Engine.ledgerAdd(state, 'partsCost', -cost);
+        return err('Not enough cash for rush shipping (' +
+                   Engine.fmtMoney(cost + surcharge) + ' all-in)');
+      }
+      Engine.addCash(state, -surcharge);
+      Engine.ledgerAdd(state, 'other', surcharge);
+      Engine.inventoryAdd(state, part.id, qty, unit);
+      return { ok: true, cost: Engine.round2(cost + surcharge),
+               rush: true, surcharge: surcharge };
+    }
+    state.nextOrderId = state.nextOrderId || 1;
+    state.pendingOrders = state.pendingOrders || [];
+    var arrives = state.day + Engine.CONFIG.RETAIL_LEAD_DAYS;
+    state.pendingOrders.push({
+      id: state.nextOrderId++, source: 'retail', distributorId: null,
+      partId: part.id, partName: part.name, distName: 'Retail market',
+      qty: qty, unitCost: unit, total: cost,
+      placedDay: state.day, arrivesDay: arrives, gray: false,
+      jobId: null, needIndex: null
+    });
+    return { ok: true, cost: cost, ordered: true, arrivesDay: arrives };
   };
   Engine.sellPart = function (partId, qty) {
     var bad = needLive(); if (bad) return bad;
@@ -812,20 +854,22 @@
     if (ef.jobTimeMult) {
       for (var k in ef.jobTimeMult) if (Object.prototype.hasOwnProperty.call(ef.jobTimeMult, k)) {
         var pct = Math.round((1 - ef.jobTimeMult[k]) * 100);
-        if (pct) bits.push((k === 'all' ? 'All work' : k) + ' ' + pct + '% faster');
+        if (pct) bits.push((k === 'all' ? 'All work' :
+          Engine.humanizeJobTypes([k])) + ' ' + pct + '% faster');   // §19.9 (#10)
       }
     }
     if (ef.payMult) {
       for (var k2 in ef.payMult) if (Object.prototype.hasOwnProperty.call(ef.payMult, k2)) {
         var ppct = Math.round((ef.payMult[k2] - 1) * 100);
-        if (ppct) bits.push(k2 + ' pay +' + ppct + '%');
+        if (ppct) bits.push(Engine.humanizeJobTypes([k2]) + ' pay +' + ppct + '%');
       }
     }
     if (ef.callbackMult != null && ef.callbackMult !== 1)
       bits.push('callbacks ' + Math.round((1 - ef.callbackMult) * 100) + '% less likely');
     if (ef.reliabilityBonus) bits.push('+' + ef.reliabilityBonus + ' effective reliability');
     if (ef.prestigeBonus) bits.push('+' + ef.prestigeBonus + ' prestige tier');
-    if (Array.isArray(ef.unlocks) && ef.unlocks.length) bits.push('unlocks ' + ef.unlocks.join(', '));
+    if (Array.isArray(ef.unlocks) && ef.unlocks.length)
+      bits.push('unlocks ' + Engine.humanizeJobTypes(ef.unlocks).toLowerCase());
     return bits.join(', ');
   }
   Engine.getCertifications = function () {
@@ -1095,8 +1139,9 @@
       return 'Everything ' + pctA + '% faster';
     }
     var pct = Math.round((1 - 1 / (1 + entry.skill)) * 100);
-    var kinds = (role.jobTypes || []).slice(0, 3).join('/');
-    return (kinds ? kinds : 'work') + ' up to ' + pct + '% faster';
+    // §19.9 (#10): humanized copy — no raw type-id lists
+    var kinds = Engine.humanizeJobTypes(role.jobTypes || []);
+    return (kinds ? kinds : 'Work') + ' up to ' + pct + '% faster';
   }
   Engine.getStaffView = function () {
     var state = S();
@@ -1403,7 +1448,9 @@
       return {
         id: a.id,
         name: masked ? '???' : a.name,
-        desc: masked ? 'A hidden achievement — you’ll know it when it happens.' : a.desc,
+        desc: masked ? (a.hint || 'A hidden achievement — you’ll know it when it happens.')
+                     : a.desc,
+        hint: masked ? (a.hint || null) : null,   // §19.9 (#6)
         unlocked: unlocked,
         hidden: !!a.hidden,
         dayLabel: unlocked && state ? Engine.dateInfo(day, state).label : null

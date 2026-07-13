@@ -68,9 +68,11 @@
   }
 
   function workAndReport(jobId, hours) {
+    var rectBefore = cardRectOf(jobId);   /* §19.9 #8 */
     var r = UI.act(function () {
       return (hours === null || hours === undefined) ? Engine.workJob(jobId) : Engine.workJob(jobId, hours);
     });
+    if (r && r.ok !== false && r.completed) spawnDoneGhost(rectBefore);
     reportWorkResult(jobId, r);
   }
 
@@ -84,6 +86,7 @@
   function workGraduated(jobId, mode) {
     if (typeof mode === 'number') { workAndReport(jobId, mode); return; }
 
+    var rectBefore = cardRectOf(jobId);   /* §19.9 #8 */
     var before = null;
     if (UI.engineReady()) {
       try {
@@ -119,6 +122,7 @@
       } catch (e2) { /* ignore */ }
     }
     UI.api(r); // toast on {ok:false}, refresh on success — mirrors UI.act's own tail
+    if (r && r.ok !== false && r.completed) spawnDoneGhost(rectBefore);   /* §19.9 #8 */
     reportWorkResult(jobId, r);
   }
 
@@ -138,6 +142,18 @@
     }
     return false;
   }
+  /* §19.3 — day the job's ordered parts land, when the engine says it's
+   * waiting on a delivery (feature-detected across likely field homes);
+   * null = not waiting on parts. */
+  function wbPartsArrival(j, st) {
+    if (!j || !st) return null;
+    var d = j.partsArriveDay !== undefined ? j.partsArriveDay
+      : (j.waitingParts && j.waitingParts.arrivesDay !== undefined ? j.waitingParts.arrivesDay
+        : (j.partsEta !== undefined ? j.partsEta : null));
+    if (d === null || d === undefined) return null;
+    return Number(d) > st.day ? Number(d) : null;
+  }
+
   function wbByDeadline(a, b) {
     var da = (a.deadlineDay === null || a.deadlineDay === undefined) ? Infinity : a.deadlineDay;
     var db = (b.deadlineDay === null || b.deadlineDay === undefined) ? Infinity : b.deadlineDay;
@@ -157,7 +173,8 @@
       if (isContract) b.contracts.push(j);
       else if (WB_CUSTOMER_TYPES.indexOf(j.type) !== -1) b.customer.push(j);
       if (j.type === 'refurb') b.projects.push(j);
-      if (!done && (findRunningWaitStep(j) || wbHasUnassignedNeed(j))) b.waiting.push(j);
+      if (!done && (findRunningWaitStep(j) || wbHasUnassignedNeed(j) ||
+        (wbPartsArrival(j, st) !== null))) b.waiting.push(j);   /* §19.3 in-transit */
     });
     Object.keys(b).forEach(function (k) { b[k].sort(wbByDeadline); });
     return b;
@@ -213,7 +230,10 @@
     }
 
     /* §16.1 — the As-Is Market lives under Shop Projects now. */
-    if (cur === 'projects') html += asIsMarketHTML(st);
+    if (cur === 'projects') {
+      html += stockBuildCTA(st);            /* §19.6 */
+      html += asIsMarketHTML(st);
+    }
 
     panel.innerHTML = html;
 
@@ -221,6 +241,24 @@
      * each select's current option. */
     var needSels = panel.querySelectorAll('select[id^="need-sel-"]');
     for (var ns = 0; ns < needSels.length; ns++) updateNeedRowUI(needSels[ns]);
+  }
+
+  /* §19.6 — player-initiated stock builds: the deliberate flip channel. */
+  function stockBuildCTA(st) {
+    if (!has('startStockBuild')) return '';
+    return '<div class="card stock-build-cta">' +
+      '<div class="card-title">🛠 Build one for the counter</div>' +
+      '<p class="muted small">Spec a machine on your own dime and sell it from the shop — no customer, ' +
+      'no deadline. Fresh builds fetch a premium, but flooding your local used market softens prices.</p>' +
+      '<div class="job-actions">' +
+        '<button type="button" class="btn btn-primary btn-sm" data-action="stock-build">Start a stock build</button>' +
+      '</div></div>';
+  }
+
+  /** §19.6 — is this job a shop-stock build (no customer/budget)? */
+  function isStockBuild(j) {
+    return !!(j && (j.type === 'stock_build' || j.stockBuild === true ||
+      (j.build && j.build.stock === true)));
   }
 
   function asIsMarketHTML(st) {
@@ -273,7 +311,7 @@
     var diagFallback = undiagnosed && (!hasSteps || engineV() < 0.4);
     var isDevice = j.type === 'device_repair'; /* §12.4 */
 
-    var h = '<div class="card job-card-full">';
+    var h = '<div class="card job-card-full" id="jobcard-' + j.id + '">';
 
     /* title row */
     h += '<div class="card-title">' + esc(j.title) +
@@ -303,6 +341,13 @@
     h += '<div class="bar-row"><span class="muted small">Progress</span>' +
       animatedBar('job-' + j.id, j.hoursDone, j.hoursRequired, 'wide') +
       '<span class="num small">' + fmtHours(j.hoursDone) + ' / ' + fmtHours(j.hoursRequired) + 'h <span class="muted">(at standard pace)</span></span></div>';
+
+    /* §19.3 — waiting on ordered parts (real date, §19.9 #2) */
+    var partsEtaDay = wbPartsArrival(j, st);
+    if (partsEtaDay !== null) {
+      h += '<div><span class="wait-status" title="Ordered parts arrive with the morning deliveries.">🚚 waiting on parts — arriving ' +
+        esc(S.fmtDay(partsEtaDay)) + '</span></div>';
+    }
 
     /* §11.6 — running wait-step status line */
     var runWait = findRunningWaitStep(j);
@@ -630,14 +675,30 @@
       assigned.forEach(function (ap) {
         var apId = (ap && typeof ap === 'object') ? ap.partId : ap;
         var apName = (ap && typeof ap === 'object' && ap.name) ? ap.name : partNameOf(apId);
-        h += '<span class="assigned-row"><span class="ok-mark">✓</span> ' + esc(apName) +
-          ' <span class="muted small">' + (canUnassign ? 'assigned — installs at its step' : 'installed') + '</span>' +
+        /* §19.3 — ordered parts in transit read clearly, with a real date */
+        var inTransit = !!(ap && typeof ap === 'object' &&
+          ap.arrivesDay !== undefined && ap.arrivesDay !== null &&
+          st0Day() !== null && ap.arrivesDay > st0Day());
+        h += '<span class="assigned-row">' +
+          (inTransit
+            ? '<span class="transit-mark">🚚</span> ' + esc(apName) +
+              ' <span class="transit-note small">on order — arriving ' + esc(S.fmtDay(ap.arrivesDay)) + '</span>'
+            : '<span class="ok-mark">✓</span> ' + esc(apName) +
+              ' <span class="muted small">' + (canUnassign ? 'assigned — installs at its step' : 'installed') + '</span>') +
           (canUnassign
             ? ' <button type="button" class="btn btn-sm btn-ghost" data-action="unassign" data-job="' + j.id +
               '" data-need="' + n.index + '" data-part="' + esc(apId) + '">Unassign</button>'
             : '') +
           '</span>';
       });
+
+      /* §19.5 — multi-part fills: slots-free chip + running total vs target */
+      if (n.slotsFree !== undefined && n.slotsFree !== null) {
+        h += '<span class="chip" title="Free board slots this need can still fill">' +
+          esc(n.slotsFree) + ' slot' + (Number(n.slotsFree) === 1 ? '' : 's') + ' free</span>';
+      }
+      var mpBar = multiProgressHTML(n);
+      if (mpBar) h += mpBar;
 
       if (!filledAll) {
         if (!n.options || !n.options.length) {
@@ -654,8 +715,11 @@
             var label = overspendPrefix(ovKind) +                // §10.4/§14.2
               (o.tasteMatch ? '♥ ' : '') + o.name +              // §9.2
               ' — ' + fm(o.price) +
-              (o.source === 'inventory' ? ' (in stock)' : ' (order from market)') +
+              (o.source === 'inventory' ? ' (in stock)'
+                : (logisticsLive(o) ? ' (order — arrives tomorrow)' : ' (order from market)')) + // §19.3
               (vs ? ' — ' + vsOriginalText(vs) : '') +
+              (o.countToMeet !== undefined && o.countToMeet !== null && o.countToMeet > 1
+                ? ' — ×' + o.countToMeet + ' to hit the target' : '') +                          // §19.5
               (overPsu ? ' — ⚡ PSU swap needed' : '') +
               (below ? ' — ' + belowReason : '');
             var repTxt = (o.replaces && o.replaces.name)
@@ -664,18 +728,26 @@
             h += '<option value="' + esc(o.partId) + '"' + (below ? ' disabled title="' + esc(belowReason) + '"' : '') +
               ' data-source="' + esc(o.source || 'market') + '"' +
               ' data-overspend-kind="' + esc(ovKind || '') + '"' +
+              (logisticsLive(o) ? ' data-rush-cost="' + esc(o.rushCost !== undefined ? o.rushCost : o.rushSurcharge) + '"' : '') +
               (overPsu ? ' data-over-psu="1" data-psu-watts="' + esc(psuWattsOf(o, n) || '') + '"' : '') +
               (repTxt ? ' data-replaces="' + esc(repTxt) + '"' : '') +
               (vs ? ' data-vs-cue="' + esc(vs.cmp) + '" data-vs-label="' + esc(vs.origLabel || '') +
                 '" data-vs-new="' + esc(vs.newLabel || '') + '"' : '') +
               '>' + esc(label) + '</option>';
           });
+          /* §19.5 — "Add another" phrasing once the need is partially filled */
+          var addAnother = assigned.length > 0;
           h += '</select>' +
             (has('getPartInfo')
               ? '<button type="button" class="info-btn" data-action="partinfo" data-from-select="' + selId + '" title="Part details">i</button>'
               : '') +
             '<button type="button" class="btn btn-primary btn-sm" id="need-btn-' + j.id + '-' + n.index +
-              '" data-action="install" data-job="' + j.id + '" data-need="' + n.index + '">Assign</button>';
+              '" data-action="install" data-job="' + j.id + '" data-need="' + n.index +
+              '" data-add="' + (addAnother ? 1 : 0) + '">' + (addAnother ? 'Add another' : 'Assign') + '</button>' +
+            /* §19.3 — rush variant: same assign, same-day, engine-priced */
+            '<button type="button" class="btn btn-sm btn-rush" id="need-rush-' + j.id + '-' + n.index +
+              '" data-action="install" data-job="' + j.id + '" data-need="' + n.index +
+              '" data-rush="1" hidden>Rush — today</button>';
           if (hasTasteOption(n.options)) {
             h += '<span class="taste-hit small" title="Matches the customer\'s taste for bonus pay">♥ = customer favorite</span>';
           }
@@ -695,6 +767,43 @@
     return (w === undefined || w === null) ? null : String(w);
   }
 
+  /* ---- §19.3 / §19.5 helpers (all feature-detected) ---- */
+
+  /** Today's day index, or null pre-engine. */
+  function st0Day() {
+    var st = getState();
+    return st ? st.day : null;
+  }
+
+  /** §19.3 shipped on this option? (market options carry a rush surcharge) */
+  function logisticsLive(o) {
+    return !!(o && o.source !== 'inventory' &&
+      (o.rushCost !== undefined || o.rushSurcharge !== undefined));
+  }
+
+  /** §19.5 — running total-vs-target bar for multi-part needs. Renders from
+   * whichever field pair the engine ships: {sumCurrent,sumTarget},
+   * {perfSum,perfTarget}, or progress {current,target}; sumLabel (a ready
+   * string like "96 MB of 128 MB") wins when present. */
+  function multiProgressHTML(n) {
+    if (!n) return '';
+    var curV = n.sumCurrent !== undefined ? n.sumCurrent
+      : (n.perfSum !== undefined ? n.perfSum
+        : (n.progress && n.progress.current !== undefined ? n.progress.current : null));
+    var tgtV = n.sumTarget !== undefined ? n.sumTarget
+      : (n.perfTarget !== undefined ? n.perfTarget
+        : (n.progress && n.progress.target !== undefined ? n.progress.target : null));
+    if (curV === null || tgtV === null || !isFinite(Number(tgtV)) || Number(tgtV) <= 0) {
+      return n.sumLabel ? '<span class="need-sum small">' + esc(n.sumLabel) + '</span>' : '';
+    }
+    var met = Number(curV) >= Number(tgtV);
+    var label = n.sumLabel || (curV + ' of ' + tgtV);
+    return '<span class="need-sum-row">' +
+      UI.barHTML(curV, tgtV, 'wide' + (met ? ' good' : '')) +
+      '<span class="need-sum small' + (met ? ' up' : '') + '">' + esc(label) +
+      (met ? ' ✓' : ' toward the target') + '</span></span>';
+  }
+
   /** Sync a need picker's button label + replaces/vs-original/overspend meta
    * line with its currently selected option (§10.3/§10.4/§14.2). */
   function updateNeedRowUI(sel) {
@@ -702,9 +811,31 @@
     if (!m) return;
     var opt = sel.options[sel.selectedIndex];
     var btn = document.getElementById('need-btn-' + m[1] + '-' + m[2]);
+    var rushCostAttr = opt ? opt.getAttribute('data-rush-cost') : null;
     if (btn) {
       var src = opt ? opt.getAttribute('data-source') : null;
-      btn.textContent = src === 'inventory' ? 'Assign from Stock' : 'Order & Assign';
+      var adding = btn.getAttribute('data-add') === '1';        // §19.5
+      if (src === 'inventory') {
+        btn.textContent = adding ? 'Add another from Stock' : 'Assign from Stock';
+      } else if (rushCostAttr !== null && rushCostAttr !== '') {
+        /* §19.3 — ordered parts land next morning */
+        btn.textContent = (adding ? 'Order another' : 'Order & Assign') + ' — arrives tomorrow';
+      } else {
+        btn.textContent = adding ? 'Order another' : 'Order & Assign';
+      }
+    }
+    /* §19.3 — rush variant appears only for market options with a priced
+     * surcharge (engine-exposed; in-stock parts are already instant) */
+    var rushBtn = document.getElementById('need-rush-' + m[1] + '-' + m[2]);
+    if (rushBtn) {
+      var showRush = rushCostAttr !== null && rushCostAttr !== '' &&
+        (opt ? opt.getAttribute('data-source') !== 'inventory' : false);
+      rushBtn.hidden = !showRush;
+      if (showRush) {
+        var rc = parseFloat(rushCostAttr);
+        rushBtn.textContent = 'Rush ' + (isFinite(rc) ? '+' + fm(rc) + ' ' : '') + '— today';
+        rushBtn.title = 'Pay the rush surcharge and have it on the bench today';
+      }
     }
     var meta = document.getElementById('need-meta-' + m[1] + '-' + m[2]);
     if (meta) {
@@ -838,16 +969,19 @@
 
     var b = j.build || {};
     var mp = b.minPerf || {};
+    var stock = isStockBuild(j);   /* §19.6 */
     var h = '<div class="build-cfg"><div class="sub-title">Build configurator</div>';
 
     /* target line */
     h += '<div class="meta-row muted small">' +
       (b.useCase ? '<span class="chip">' + esc(b.useCase) + '</span>' : '') +
-      '<span>Budget <b class="num">' + esc(fm(b.budget)) + '</b></span>' +
+      (stock
+        ? '<span class="chip">shop stock — your money, your spec</span>'
+        : '<span>Budget <b class="num">' + esc(fm(b.budget)) + '</b></span>') +
       (mp.cpu ? '<span>CPU ≥ ' + esc(mp.cpu) + '</span>' : '') +
       (mp.gpu ? '<span>GPU ≥ ' + esc(mp.gpu) + '</span>' : '') +
-      (mp.ramMB ? '<span>RAM ≥ ' + esc(mp.ramMB) + ' MB</span>' : '') +
-      (mp.storageGB ? '<span>Storage ≥ ' + esc(mp.storageGB) + ' GB</span>' : '') +
+      (mp.ramMB ? '<span>RAM ≥ ' + esc(S.fmtMB(mp.ramMB)) + '</span>' : '') +
+      (mp.storageGB ? '<span>Storage ≥ ' + esc(S.fmtGB(mp.storageGB)) + '</span>' : '') +
       (b.minStyle ? '<span>Style ≥ ' + esc(b.minStyle) + '</span>' : '') +
       '</div>';
 
@@ -1075,8 +1209,8 @@
       h += '<div class="perf-grid">' +
         perfCell('CPU', perf.cpu, mp.cpu) +
         perfCell('GPU', perf.gpu, mp.gpu) +
-        perfCell('RAM (MB)', perf.ramMB, mp.ramMB) +
-        perfCell('Storage (GB)', perf.storageGB, mp.storageGB) +
+        perfCell('RAM', perf.ramMB, mp.ramMB, S.fmtMB) +           /* §19.9 #16 */
+        perfCell('Storage', perf.storageGB, mp.storageGB, S.fmtGB) +
         '<div class="perf-cell' + (v.meetsTarget ? ' ok' : ' short') + '"><span class="muted small">Overall</span>' +
           '<b>' + (perf.composite !== null && perf.composite !== undefined ? Number(perf.composite).toFixed(2) : '—') +
           (v.meetsTarget ? ' ✓ meets target' : ' — below target') + '</b></div>' +
@@ -1084,11 +1218,27 @@
           '<span class="muted small">Style</span><b>' + esc(v.style !== undefined ? v.style : '—') + ' / ' + esc(b.minStyle) + '</b></div>' : '') +
         '</div>';
 
-      var over = !v.underBudget && (Number(v.partsCost) || 0) > (Number(v.budget) || 0);
-      h += '<div class="bar-row"><span class="muted small">Parts cost</span>' +
-        UI.barHTML(v.partsCost, v.budget, 'wide' + (over ? ' over' : '')) +
-        '<span class="num small' + (over ? ' down' : '') + '">' + esc(fm(v.partsCost)) + ' of ' + esc(fm(v.budget)) + ' budget' +
-        (over ? ' — OVER (eats your profit)' : '') + '</span></div>';
+      if (isStockBuild(j)) {
+        /* §19.6 — no budget on a stock build: show what it should sell for */
+        var estSale = (v.estimatedSale !== undefined && v.estimatedSale !== null) ? v.estimatedSale : null;
+        if (estSale === null && has('appraiseRefurb')) {
+          var ap2 = tryCall(function () { return Engine.appraiseRefurb(j.id); });
+          if (ap2 && ap2.ok !== false && ap2.estimate !== undefined) estSale = ap2.estimate;
+        }
+        h += '<div class="meta-row"><span class="muted small">Parts so far</span>' +
+          '<b class="num">' + esc(fm(v.partsCost)) + '</b>' +
+          (estSale !== null
+            ? '<span class="est-sale" title="Fresh-build premium included; every recent sale into your local used market softens the next price">est. sale value ~<b class="num">' +
+              esc(fm(estSale)) + '</b></span>'
+            : '<span class="muted small">sale value appraised at completion</span>') +
+          '</div>';
+      } else {
+        var over = !v.underBudget && (Number(v.partsCost) || 0) > (Number(v.budget) || 0);
+        h += '<div class="bar-row"><span class="muted small">Parts cost</span>' +
+          UI.barHTML(v.partsCost, v.budget, 'wide' + (over ? ' over' : '')) +
+          '<span class="num small' + (over ? ' down' : '') + '">' + esc(fm(v.partsCost)) + ' of ' + esc(fm(v.budget)) + ' budget' +
+          (over ? ' — OVER (eats your profit)' : '') + '</span></div>';
+      }
 
       h += '<div class="job-actions">' +
         '<button type="button" class="btn btn-primary btn-sm" data-action="commit-build" data-job="' + j.id + '"' +
@@ -1103,13 +1253,14 @@
     return h;
   }
 
-  function perfCell(label, val, target) {
+  function perfCell(label, val, target, fmtFn) {
     if (!target) return '';
     var ok = (Number(val) || 0) >= Number(target);
-    var shown = (val === null || val === undefined) ? '—' : val;
+    var shown = (val === null || val === undefined) ? '—' : (fmtFn ? fmtFn(val) : val);
+    var tgt = fmtFn ? fmtFn(target) : target;
     return '<div class="perf-cell' + (ok ? ' ok' : ' short') + '">' +
       '<span class="muted small">' + esc(label) + '</span>' +
-      '<b class="num">' + esc(shown) + ' / ' + esc(target) + '</b></div>';
+      '<b class="num">' + esc(shown) + ' / ' + esc(tgt) + '</b></div>';
   }
 
   /* ---- actions ---- */
@@ -1164,19 +1315,28 @@
         UI.act(function () { return Engine.stripRefurb(jobId); }, 'Machine stripped — salvage moved to inventory');
       }, { yesLabel: 'Strip for Parts', title: 'Strip for parts' });
     },
-    'install': function (el, jobId) { /* §10.3: assign (installPart is the deprecated alias) */
+    'install': function (el, jobId) { /* §10.3 assign; §19.3 optional rush */
       var needIdx = parseInt(el.getAttribute('data-need'), 10);
       var sel = document.getElementById('need-sel-' + jobId + '-' + needIdx);
       var pid = sel && sel.value;
       if (!pid) { UI.toast('Pick a part first', 'info'); return; }
       var useAssign = has('assignPart');
+      var rush = el.getAttribute('data-rush') === '1';
       var ir = UI.act(function () {
-        return useAssign ? Engine.assignPart(jobId, needIdx, pid) : Engine.installPart(jobId, needIdx, pid);
+        if (!useAssign) return Engine.installPart(jobId, needIdx, pid);
+        return rush ? Engine.assignPart(jobId, needIdx, pid, { rush: true })
+                    : Engine.assignPart(jobId, needIdx, pid);
       });
       if (ir && ir.ok !== false) {
-        var msg2 = useAssign ? 'Part assigned — it installs when its step is worked' : 'Part installed';
+        var msg2 = useAssign
+          ? (rush ? 'Part rushed — on the bench today'
+            : (ir.arrivesDay !== undefined && ir.arrivesDay !== null && ir.arrivesDay > (st0Day() || 0)
+              ? 'Part ordered — arriving ' + S.fmtDay(ir.arrivesDay)            /* §19.3/§19.9 #2 */
+              : 'Part assigned — it installs when its step is worked'))
+          : 'Part installed';
         if (ir.cost) msg2 += ' — ' + fm(ir.cost);
         if (ir.filledNow !== null && ir.filledNow !== undefined) msg2 += ' (' + ir.filledNow + ' this batch)';
+        if (ir.remaining) msg2 += ' • ' + ir.remaining + ' still to source';     /* §19.1 partial fills */
         UI.toast(msg2, 'success');
       }
     },
@@ -1188,8 +1348,12 @@
       }, 'Part returned to inventory');
     },
     'sell-refurb': function (el, jobId) {
-      var sr = UI.act(function () { return Engine.sellRefurb(jobId); });
-      if (sr && sr.ok !== false) UI.toast('Machine sold for ' + fm(sr.price), 'success', 5000);
+      openSellModal(jobId);   /* §19.6 — bundle picker on the sell confirm */
+    },
+    'stock-build': function () { /* §19.6 */
+      if (!has('startStockBuild')) { UI.toast('Stock builds are not available yet', 'info'); return; }
+      UI.act(function () { return Engine.startStockBuild(); },
+        'Stock build started — spec it out on the bench');
     },
     'appraise': function (el, jobId) {
       var ar = tryCall(function () { return Engine.appraiseRefurb(jobId); });
@@ -1212,6 +1376,114 @@
         'Machine bought — it is on your Workbench as a refurb job');
     }
   });
+
+  /* ------------------------------------------------------------------ *
+   * §19.6 — sell confirm with peripheral-bundle picker (up to 3 from
+   * inventory; the +15% bundle premium is priced engine-side — the UI
+   * shows engine-provided bundleValue when present, else the market value
+   * with an honest note).
+   * ------------------------------------------------------------------ */
+  function doSellMachine(jobId, bundleIds) {
+    var sr = UI.act(function () {
+      return (bundleIds && bundleIds.length)
+        ? Engine.sellRefurb(jobId, { bundlePartIds: bundleIds })
+        : Engine.sellRefurb(jobId);
+    });
+    if (sr && sr.ok !== false) {
+      UI.toast('Machine sold for ' + fm(sr.price) +
+        (bundleIds && bundleIds.length
+          ? ' — ' + bundleIds.length + ' peripheral' + (bundleIds.length === 1 ? '' : 's') + ' bundled in'
+          : ''), 'success', 5000);
+    }
+  }
+
+  function openSellModal(jobId) {
+    var periphs = [];
+    if (has('getInventoryView')) {
+      arr(tryCall(function () { return Engine.getInventoryView(); })).forEach(function (it) {
+        if (it && it.category === 'peripheral' && (it.qty || 0) > 0) periphs.push(it);
+      });
+    }
+    if (!periphs.length) { doSellMachine(jobId, []); return; }   // nothing to bundle — sell as before
+
+    var est = null;
+    if (has('appraiseRefurb')) {
+      var ap = tryCall(function () { return Engine.appraiseRefurb(jobId); });
+      if (ap && ap.ok !== false && ap.estimate !== undefined) est = ap.estimate;
+    }
+    var haveBundleVals = periphs.every(function (it) { return it.bundleValue !== undefined && it.bundleValue !== null; });
+
+    var body = '<div class="sell-bundle">' +
+      (est !== null ? '<p>Machine appraises at about <b class="num">' + esc(fm(est)) + '</b>.</p>' : '') +
+      '<p class="muted small">Throw in up to <b>3</b> peripherals from the shelf — bundled extras sell at a premium ' +
+      'over their market value' + (haveBundleVals ? '' : ' (premium applied at sale)') + '.</p>';
+    periphs.forEach(function (it, i) {
+      var shown = haveBundleVals ? it.bundleValue : it.curPrice;
+      body += '<label class="bundle-row"><input type="checkbox" class="bundle-check" data-part="' + esc(it.partId) +
+        '" data-value="' + esc(haveBundleVals ? it.bundleValue : '') + '" id="bundle-ck-' + i + '">' +
+        '<span class="bundle-name">' + esc(it.name) + '</span>' +
+        '<span class="num muted small">' + esc(fm(shown)) + (haveBundleVals ? ' bundled' : ' market') + '</span>' +
+        '</label>';
+    });
+    body += '<div class="bundle-total small"' + (haveBundleVals ? '' : ' hidden') + '>Bundle adds: <b class="num" id="bundle-total-val">' +
+      esc(fm(0)) + '</b></div></div>';
+
+    var modal = UI.modal({
+      title: 'Sell machine',
+      html: body,
+      buttons: [
+        { label: 'Cancel', cls: 'btn' },
+        { label: 'Sell', cls: 'btn btn-primary', onClick: function () {
+            var picked = [];
+            document.querySelectorAll('.bundle-check:checked').forEach(function (c) {
+              picked.push(c.getAttribute('data-part'));
+            });
+            doSellMachine(jobId, picked);
+          } }
+      ]
+    });
+    if (!modal) return;
+    modal.el.addEventListener('change', function (e) {
+      var t = e.target;
+      if (!t || !t.classList || !t.classList.contains('bundle-check')) return;
+      var checked = modal.el.querySelectorAll('.bundle-check:checked');
+      if (checked.length > 3) {           // §19.6 cap: up to 3
+        t.checked = false;
+        UI.toast('Three peripherals per bundle — pick your best', 'info');
+        return;
+      }
+      var totEl = modal.el.querySelector('#bundle-total-val');
+      if (totEl) {
+        var sum = 0;
+        modal.el.querySelectorAll('.bundle-check:checked').forEach(function (c) {
+          sum += parseFloat(c.getAttribute('data-value')) || 0;
+        });
+        totEl.textContent = fm(sum);
+      }
+    });
+  }
+
+  /* ------------------------------------------------------------------ *
+   * §19.9 #8 — completion flash: the re-render removes the finished card
+   * instantly (input never waits); a short-lived "ghost" at its old spot
+   * plays the success flash + collapse. Skipped under reduced motion.
+   * ------------------------------------------------------------------ */
+  function cardRectOf(jobId) {
+    var el = document.getElementById('jobcard-' + jobId);
+    return el && el.getBoundingClientRect ? el.getBoundingClientRect() : null;
+  }
+  function spawnDoneGhost(rect) {
+    if (!rect || !(UI.motionOK && UI.motionOK())) return;
+    var z = (UI.zoom && UI.zoom.factor) || 1;
+    var d = document.createElement('div');
+    d.className = 'job-done-ghost';
+    d.style.left = (rect.left / z) + 'px';
+    d.style.top = (rect.top / z) + 'px';
+    d.style.width = (rect.width / z) + 'px';
+    d.style.height = (rect.height / z) + 'px';
+    document.body.appendChild(d);
+    window.setTimeout(function () { if (d.parentNode) d.parentNode.removeChild(d); }, 460);
+  }
 
   /* §10.3/§10.4 — need pickers: keep the button label ("Assign from
    * Stock" vs "Order & Assign") and the replaces/overspend meta line in

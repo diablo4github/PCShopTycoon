@@ -216,7 +216,9 @@
       gpu: 0.8, cpu: 0.6, motherboard: 0.5
     },
     DIFF_MULT: [0.9, 1.05, 1.2, 1.4, 1.6],  // index difficulty-1
-    RUSH_CHANCE: 0.08, RUSH_PAY_MULT: 1.8,
+    // §19.3: rush jobs pay 1.8 -> 2.2 — the premium now also covers auto-rush
+    // shipping on their market fills (same-day parts at no extra charge).
+    RUSH_CHANCE: 0.08, RUSH_PAY_MULT: 2.2,
     OFFER_BASE: 2, OFFER_HARD_MAX: 6,       // clamp(…, 2, 6+offerBonus)
     DEADLINE_MIN: 2, DEADLINE_MAX: 7,
     CONTRACT_DEADLINE_MIN: 12, CONTRACT_DEADLINE_MAX: 25,
@@ -417,13 +419,32 @@
     DIST_TOTAL_DISC_CAP: 0.35,      // sanity ceiling on any stacked order discount
     DIST_ALLOC_QTY: 3,              // shortage allocation cap at Preferred+ (list price)
     DIST_GRAY_REL_PENALTY: 10,      // gray-market parts: -10 reliability when consumed
-    DIST_GRAY_REL_FLOOR: 40         // ...never below 40
+    DIST_GRAY_REL_FLOOR: 40,        // ...never below 40
+
+    // §19.3 universal logistics — three honest supply tiers: wholesale
+    // (2-5 days, cheapest), retail (next morning, list price), rush
+    // (same-day, list + premium).
+    RETAIL_LEAD_DAYS: 1,            // market buys arrive next morning
+    RUSH_SURCHARGE_PCT: 0.25,       // same-day premium on the order total...
+    RUSH_SURCHARGE_MIN: 10,         // ...never less than this
+    DEADLINE_PAD_PARTS: 1,          // repairs/upgrades wait for parts now
+    DEADLINE_PAD_BUILD: 2,          // builds & contracts source many parts
+
+    // §19.6 stock builds & peripheral bundles
+    STOCK_BUILD_FRESH_MIN: 1.05,    // freshness premium over parts value
+    STOCK_BUILD_FRESH_MAX: 1.15,
+    BUNDLE_MAX: 3,                  // peripherals attachable to any machine sale
+    BUNDLE_VALUE_MULT: 1.15,        // each adds market value x this
+
+    // §19.7 primary-vs-removable storage
+    PRIMARY_STORAGE_YEAR: 1988,     // builds need a non-removable drive from here
+    MACHINE_FLOPPY_YEARS: [1983, 1995]  // era-typical extra floppy in customer machines
   };
 
   // ------------------------------------------------------------------
   // Live state reference (set by api.js newGame/importSave)
   // ------------------------------------------------------------------
-  Engine.VERSION = '0.8';        // §18: parseFloat-compatible with the UI's >=0.4 gate
+  Engine.VERSION = '0.9';        // §19: parseFloat-compatible with the UI's >=0.4 gate
   Engine._state = null;
   Engine.getData = function () { return root.DATA || {}; };
 
@@ -544,6 +565,44 @@
     var s = state || Engine._state;
     var start = s ? s.startDate : '1983-03-01';
     return Engine.isoToEpochDay(iso) - Engine.isoToEpochDay(start);
+  };
+
+  // §19.9 (#10): human labels for job types — engine copy must never emit
+  // raw id lists like "software/data_recovery".
+  Engine.JOB_TYPE_LABELS = {
+    repair: 'repairs', upgrade: 'upgrades', software: 'software work',
+    data_recovery: 'data recovery', cleaning: 'cleanings',
+    build: 'custom builds', contract: 'contract work',
+    enthusiast: 'enthusiast work', peripheral: 'peripheral fixes',
+    device_repair: 'device repairs', refurb: 'refurb work',
+    callback: 'callbacks', business_account: 'account work'
+  };
+  Engine.jobTypeLabel = function (t) {
+    return Engine.JOB_TYPE_LABELS[t] || String(t).replace(/_/g, ' ');
+  };
+  Engine.humanizeJobTypes = function (types) {
+    var labels = (types || []).map(Engine.jobTypeLabel);
+    if (!labels.length) return '';
+    var s = labels.length === 1 ? labels[0] :
+      labels.slice(0, -1).join(', ') + ' and ' + labels[labels.length - 1];
+    return s.charAt(0).toUpperCase() + s.slice(1);
+  };
+
+  // §19.9 (#16): dynamic capacity units. Input is MB (the engine's ramMB
+  // axis); storageGB callers pass gb * 1024. "64 KB", "640 KB", "8 MB",
+  // "1.2 GB", "2 TB" — never "0.0625 MB".
+  Engine.fmtCapacity = function (mb) {
+    if (mb == null || !isFinite(mb)) return '?';
+    function n(x) {
+      var r = Math.round(x * 10) / 10;
+      return (r % 1 === 0) ? String(Math.round(r)) : r.toFixed(1);
+    }
+    var kb = mb * 1024;
+    if (kb < 1000) return n(kb) + ' KB';
+    if (mb < 1000) return n(mb) + ' MB';
+    var gb = mb / 1024;
+    if (gb < 1000) return n(gb) + ' GB';
+    return n(gb / 1024) + ' TB';
   };
 
   Engine.dateInfo = function (dayIndex, state) {
@@ -1313,15 +1372,19 @@
     // Hidden ones — fun to stumble into; getAchievements masks them as "???".
     { id: 'crt-bite', name: 'The Tube Bites Back', hidden: true,
       desc: 'Get bitten by a CRT you should not have opened.',
+      hint: 'Some old monitors hold a grudge — and a charge.',
       check: function (s) { return evCount(s, 'crt-injury') >= 1; } },
     { id: 'night-owl', name: 'Closing Time? Never Heard of It', hidden: true,
       desc: 'Work yourself all the way to the overtime floor.',
+      hint: 'How late can one bench night go?',
       check: function (s) { return evCount(s, 'overtime-floor') >= 1; } },
     { id: 'comeback', name: 'Back from the Brink', hidden: true,
       desc: 'Recover from a negative bank balance.',
+      hint: 'Something about clawing your way out of the red…',
       check: function (s) { return evCount(s, 'grace-recovered') >= 1; } },
     { id: 'credit-clean', name: 'Paid in Full', hidden: true,
       desc: 'Draw on the credit line and pay every cent back.',
+      hint: 'Bankers remember the ones who settle up.',
       check: function (s) { return evCount(s, 'credit-repaid-full') >= 1; } }
   ];
 })(typeof window !== 'undefined' ? window : globalThis);

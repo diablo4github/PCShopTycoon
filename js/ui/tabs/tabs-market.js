@@ -130,16 +130,40 @@
         '<th class="num">30d</th><th>Trend</th><th class="num">Owned</th><th>Buy</th>' +
         '</tr></thead><tbody>';
       var mktCash = Number(st.cash) || 0;
+      /* §19.3 — retail arrives next morning; a rush surcharge (engine-
+       * exposed per row) buys same-day. Feature-detected: rows without the
+       * field keep the classic instant Buy. */
+      var logisticsOn = rows.some(function (r) {
+        return r && (r.rushCost !== undefined || r.rushSurcharge !== undefined);
+      });
+      function rushCostOf(r) {
+        var v = r.rushCost !== undefined ? r.rushCost : r.rushSurcharge;
+        return (v === null || v === undefined) ? null : Number(v);
+      }
       /* §16.3a — a Buy you can't afford is disabled with the shortfall,
        * never a silent no-op (price is a UI-known estimate; the engine
        * stays the authority when it IS clickable). */
       function buyBtn(r, qty) {
         var need = (Number(r.price) || 0) * qty;
         var short = Math.max(0, need - mktCash);
+        var tip = short > 0 ? 'Need ' + fm(short) + ' more'
+          : (logisticsOn ? 'Arrives tomorrow morning' : '');
         return '<button type="button" class="btn btn-sm" data-action="buy" data-part="' + esc(r.partId) +
           '" data-qty="' + qty + '"' +
-          (short > 0 ? ' disabled title="Need ' + esc(fm(short)) + ' more"' : '') +
-          '>Buy ' + qty + '</button>';
+          (short > 0 ? ' disabled' : '') +
+          (tip ? ' title="' + esc(tip) + '"' : '') +
+          '>Buy ' + qty + (logisticsOn ? ' · tmrw' : '') + '</button>';
+      }
+      function rushBtn(r) {
+        var rush = rushCostOf(r);
+        if (rush === null) return '';
+        var need = (Number(r.price) || 0) + rush;
+        var short = Math.max(0, need - mktCash);
+        return ' <button type="button" class="btn btn-sm btn-rush" data-action="buy" data-part="' + esc(r.partId) +
+          '" data-qty="1" data-rush="1"' +
+          (short > 0 ? ' disabled title="Need ' + esc(fm(short)) + ' more"'
+            : ' title="Pay the rush surcharge for same-day delivery"') +
+          '>Rush +' + esc(fm(rush)) + ' — today</button>';
       }
       rows.forEach(function (r) {
         var c1 = Number(r.change1) || 0;
@@ -162,7 +186,7 @@
             (has('getPartInfo')
               ? '<button type="button" class="info-btn" data-action="partinfo" data-part="' + esc(r.partId) + '" title="Part details">i</button> '
               : '') +
-            buyBtn(r, 1) + ' ' + buyBtn(r, 5) +
+            buyBtn(r, 1) + ' ' + buyBtn(r, 5) + rushBtn(r) +
           '</td>' +
           '</tr>';
       });
@@ -226,13 +250,18 @@
         var eta = (o.arrivesDay !== undefined && o.arrivesDay !== null)
           ? Math.max(0, o.arrivesDay - st.day) : null;
         var canCancel = has('cancelOrder') && (eta === null || eta > 0);
+        /* §19.3 — retail one-day orders share this list; mark the channel */
+        var isRetail = !o.distributorId || o.source === 'retail' || o.retail === true;
         h += '<div class="order-row">' +
           '<span class="order-what"><b class="num">' + esc(o.qty || 1) + '×</b> ' +
             esc(supPartName(o.partId, o.name)) + '</span>' +
           '<span class="meta-row small">' +
+            '<span class="chip">' + (isRetail ? 'retail' : 'wholesale') + '</span>' +
             (o.total !== undefined && o.total !== null ? '<span class="chip">paid ' + esc(fm(o.total)) + '</span>' : '') +
+            /* §19.9 #2 — real dates, never "day N" */
             '<span class="chip">' + (eta === null ? 'in transit'
-              : (eta === 0 ? 'arrives tomorrow morning' : 'ETA ' + eta + ' day' + (eta === 1 ? '' : 's'))) + '</span>' +
+              : (eta === 0 ? 'arrives tomorrow morning'
+                : 'arrives ' + esc(S.fmtDay(o.arrivesDay)))) + '</span>' +
           '</span>' +
           (canCancel
             ? '<button type="button" class="btn btn-sm btn-ghost" data-action="sup-cancel" data-order="' + esc(o.id) + '"' +
@@ -289,17 +318,24 @@
           if (!dl) return;
           var expiresIn = (dl.expiresDay !== undefined && dl.expiresDay !== null)
             ? Math.max(0, dl.expiresDay - st.day) : null;
+          /* §19.9 #11 — remaining allocation straight from the engine view;
+           * the post-buy refresh re-pulls it so the row updates immediately */
+          var remaining = (dl.remaining !== undefined && dl.remaining !== null) ? Number(dl.remaining)
+            : ((dl.maxQty !== undefined && dl.maxQty !== null) ? Number(dl.maxQty) : null);
+          var soldOut = remaining !== null && remaining <= 0;
           h += '<div class="deal-row">' +
             '<span class="deal-what">' + esc(supPartName(dl.partId, dl.name)) + '</span>' +
             '<span class="meta-row small">' +
               '<span class="chip deal-chip">−' + esc(Math.round((dl.dealDiscount || 0) * 100)) + '%</span>' +
               (dl.dealPrice !== undefined && dl.dealPrice !== null
                 ? '<span class="num"><b>' + esc(fm(dl.dealPrice)) + '</b></span>' : '') +
-              (dl.maxQty ? '<span class="muted">max ' + esc(dl.maxQty) + '</span>' : '') +
-              (expiresIn !== null ? '<span class="muted">' + (expiresIn === 0 ? 'last day' : expiresIn + 'd left') + '</span>' : '') +
+              (remaining !== null
+                ? '<span class="muted">' + (soldOut ? 'sold out' : remaining + (dl.maxQty ? ' of ' + esc(dl.maxQty) : '') + ' left') + '</span>'
+                : '') +
+              (expiresIn !== null ? '<span class="muted">' + (expiresIn === 0 ? 'last day' : 'ends ' + esc(S.fmtDay(dl.expiresDay))) + '</span>' : '') +
             '</span>' +
             '<button type="button" class="btn btn-primary btn-sm" data-action="sup-deal" data-dist="' + esc(d.id) +
-              '" data-part="' + esc(dl.partId) + '">Buy 1</button>' +
+              '" data-part="' + esc(dl.partId) + '"' + (soldOut ? ' disabled title="This week\'s allocation is gone"' : '') + '>Buy 1</button>' +
             '</div>';
         });
         h += '</div>';
@@ -344,7 +380,7 @@
       if (qres && qres.ok !== false && qres.unitCost !== undefined) {
         prev.innerHTML = '<b class="num">' + esc(fm(qres.unitCost)) + '</b>/unit · total <b class="num">' +
           esc(fm(qres.total !== undefined ? qres.total : qres.unitCost * qty)) + '</b>' +
-          (qres.arrivesDay !== undefined && qres.arrivesDay !== null ? ' · lands day ' + esc(qres.arrivesDay) : '');
+          (qres.arrivesDay !== undefined && qres.arrivesDay !== null ? ' · lands ' + esc(S.fmtDay(qres.arrivesDay)) : '');   /* §19.9 #2 */
         return;
       }
     }
@@ -389,8 +425,16 @@
     'buy': function (el) {
       var bpid = el.getAttribute('data-part');
       var bqty = parseInt(el.getAttribute('data-qty'), 10) || 1;
-      var br = UI.act(function () { return Engine.buyPart(bpid, bqty); });
-      if (br && br.ok !== false) UI.toast('Bought ' + bqty + ' — ' + fm(br.cost), 'success');
+      var rush = el.getAttribute('data-rush') === '1';   /* §19.3 */
+      var br = UI.act(function () {
+        return rush ? Engine.buyPart(bpid, bqty, { rush: true }) : Engine.buyPart(bpid, bqty);
+      });
+      if (br && br.ok !== false) {
+        var when = rush ? ' — rushed, on the shelf today'
+          : (br.arrivesDay !== undefined && br.arrivesDay !== null
+              ? ' — arrives ' + S.fmtDay(br.arrivesDay) : '');
+        UI.toast('Bought ' + bqty + ' — ' + fm(br.cost) + when, 'success');
+      }
     },
 
     /* ---- §18.1 suppliers ---- */
@@ -407,7 +451,7 @@
         UI.toast('Order placed — ' + qty + ' unit' + (qty === 1 ? '' : 's') +
           (por.unitCost !== undefined ? ' at ' + fm(por.unitCost) + ' each' : '') +
           (por.total !== undefined ? ' (' + fm(por.total) + ' paid up front)' : '') +
-          (por.arrivesDay !== undefined && por.arrivesDay !== null ? ' — arrives day ' + por.arrivesDay : ''),
+          (por.arrivesDay !== undefined && por.arrivesDay !== null ? ' — arrives ' + S.fmtDay(por.arrivesDay) : ''),   /* §19.9 #2 */
           'success', 6000);
       }
     },
@@ -423,7 +467,7 @@
       var dr = UI.act(call);
       if (dr && dr.ok !== false) {
         UI.toast('Deal locked in' + (dr.unitCost !== undefined ? ' — ' + fm(dr.unitCost) : '') +
-          (dr.arrivesDay !== undefined && dr.arrivesDay !== null ? ', arrives day ' + dr.arrivesDay : ''), 'success');
+          (dr.arrivesDay !== undefined && dr.arrivesDay !== null ? ', arrives ' + S.fmtDay(dr.arrivesDay) : ''), 'success');   /* §19.9 #2 */
       }
     },
     'sup-cancel': function (el) {

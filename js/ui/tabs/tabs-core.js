@@ -127,6 +127,41 @@
   }
 
   /* ------------------------------------------------------------------ *
+   * §19.9 (#2) — real dates everywhere: "Apr 6, 1983", never "day N".
+   * §19.9 (#16) — capacity units via Engine.fmtCapacity where shipped.
+   * ------------------------------------------------------------------ */
+
+  /** Short real date for a day index ("Apr 6, 1983"); '' when unknown. */
+  function fmtDay(dayIndex) {
+    if (dayIndex === null || dayIndex === undefined || !isFinite(Number(dayIndex))) return '';
+    try {
+      var di = Engine.dateInfo(Number(dayIndex));
+      if (di && di.monthName) {
+        return String(di.monthName).slice(0, 3) + ' ' + di.d + ', ' + di.y;
+      }
+    } catch (e) { /* engine not ready */ }
+    return 'day ' + dayIndex;
+  }
+
+  /** RAM sizes arrive in MB; storage in GB. Engine.fmtCapacity(megabytes)
+   * picks the honest magnitude ("640 KB", "8 MB", "1.2 GB") — adopted
+   * everywhere capacities render; plain suffixes remain the fallback. */
+  function fmtMB(mb) {
+    if (mb === null || mb === undefined) return '';
+    if (has('fmtCapacity')) {
+      try { return Engine.fmtCapacity(Number(mb)); } catch (e) { /* fall through */ }
+    }
+    return mb + ' MB';
+  }
+  function fmtGB(gb) {
+    if (gb === null || gb === undefined) return '';
+    if (has('fmtCapacity')) {
+      try { return Engine.fmtCapacity(Number(gb) * 1024); } catch (e) { /* fall through */ }
+    }
+    return gb + ' GB';
+  }
+
+  /* ------------------------------------------------------------------ *
    * §14.2 — vs-original quality cue + graded overspend, shared by the
    * needs picker, the build schematic's slot popover, and the classic
    * select-list fallback. Every field here is feature-detected: an engine
@@ -268,8 +303,8 @@
     var bits = [];
     if (perf.cpu !== undefined) bits.push('CPU ' + perf.cpu);
     if (perf.gpu !== undefined) bits.push('GPU ' + perf.gpu);
-    if (perf.ramMB !== undefined) bits.push(perf.ramMB + ' MB');
-    if (perf.storageGB !== undefined) bits.push(perf.storageGB + ' GB');
+    if (perf.ramMB !== undefined) bits.push(fmtMB(perf.ramMB));            // §19.9 #16
+    if (perf.storageGB !== undefined) bits.push(fmtGB(perf.storageGB));    // §19.9 #16
     if (perf.speed !== undefined) bits.push('speed ' + perf.speed);
     if (perf.cool !== undefined) bits.push('cooling ' + perf.cool);
     return bits.join(' · ');
@@ -427,8 +462,10 @@
       var stGroup = el.getAttribute('data-group');
       var stId = el.getAttribute('data-subtab');
       if (stGroup && stId) {
+        var switching = UI.state.subTab[stGroup] !== stId;
         UI.state.subTab[stGroup] = stId;
         T.render(stGroup);   // group names equal tab panel ids
+        if (switching && UI.animatePanel) UI.animatePanel(document.getElementById('tab-' + stGroup)); // §19.9 #8
       }
     },
     'scrollto': function (el) { /* §14.5 Shop sub-nav — pure UI, no engine call */
@@ -469,5 +506,6 @@
   S.perfStr = perfStr; S.statusChip = statusChip;
   S.wikiDetailHTML = wikiDetailHTML; S.showPartInfo = showPartInfo;
   S.animatedBar = animatedBar; S.jobIdOf = jobIdOf;
+  S.fmtDay = fmtDay; S.fmtMB = fmtMB; S.fmtGB = fmtGB;   /* §19.9 #2/#16 */
 
 })();

@@ -976,21 +976,49 @@
   /* Overnight delivery into inventory. Storage rules stay real: a big order
    * can push the shop into overage fees at month end (§16). */
   Sim.deliverOrders = function (state, summary) {
+    // §19.3: committed builds whose market parts land this morning
+    (state.jobs.active || []).forEach(function (job) {
+      if (job.partsArriveDay != null && state.day >= job.partsArriveDay) {
+        job.partsArriveDay = null;
+        if (summary && summary.deliveries)
+          summary.deliveries.push('Build parts for "' + job.title + '"');
+        Engine.pushNews(state, 'money', 'Parts delivered',
+          'Everything for "' + job.title + '" is on the bench.');
+      }
+    });
     if (!state.pendingOrders || !state.pendingOrders.length) return;
     var keep = [];
     for (var i = 0; i < state.pendingOrders.length; i++) {
       var o = state.pendingOrders[i];
       if (o.arrivesDay > state.day) { keep.push(o); continue; }
-      Engine.inventoryAdd(state, o.partId, o.qty, o.unitCost);
-      if (o.gray) {
-        state.grayStock = state.grayStock || {};
-        state.grayStock[o.partId] = (state.grayStock[o.partId] || 0) + o.qty;
+      // §19.3: orders bound to a job slot install themselves on arrival;
+      // anything that no longer fits (job gone, slot filled) is shop stock.
+      var toStock = o.qty, line;
+      if (o.jobId != null) {
+        var rec = Engine.Jobs.receiveOrderedParts(state, o);
+        toStock = rec.leftover;
+        if (rec.landed > 0) {
+          line = rec.landed + '× ' + o.partName +
+                 (rec.jobTitle ? ' — fitted to "' + rec.jobTitle + '"' : '');
+          if (summary && summary.deliveries) summary.deliveries.push(line);
+          Engine.pushNews(state, 'money', 'Parts delivered: ' + o.partName,
+            rec.landed + ' unit' + (rec.landed > 1 ? 's' : '') +
+            (rec.jobTitle ? ' went straight onto "' + rec.jobTitle + '".' :
+                            ' arrived.'));
+        }
       }
-      var line = o.qty + '× ' + o.partName + ' from ' + o.distName;
-      if (summary && summary.deliveries) summary.deliveries.push(line);
-      Engine.pushNews(state, 'money', 'Delivery: ' + o.partName,
-        o.qty + ' unit' + (o.qty > 1 ? 's' : '') + ' from ' + o.distName +
-        ' into stock at ' + Engine.fmtMoney(o.unitCost) + ' each.');
+      if (toStock > 0) {
+        Engine.inventoryAdd(state, o.partId, toStock, o.unitCost);
+        if (o.gray) {
+          state.grayStock = state.grayStock || {};
+          state.grayStock[o.partId] = (state.grayStock[o.partId] || 0) + toStock;
+        }
+        line = toStock + '× ' + o.partName + ' from ' + o.distName;
+        if (summary && summary.deliveries) summary.deliveries.push(line);
+        Engine.pushNews(state, 'money', 'Delivery: ' + o.partName,
+          toStock + ' unit' + (toStock > 1 ? 's' : '') + ' from ' + o.distName +
+          ' into stock at ' + Engine.fmtMoney(o.unitCost) + ' each.');
+      }
     }
     state.pendingOrders = keep;
   };

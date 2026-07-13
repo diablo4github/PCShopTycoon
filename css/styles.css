@@ -2035,3 +2035,130 @@ body.era-early .account-card { border-left-color: var(--accent); }
   margin-top: 6px;
   overflow-wrap: break-word;
 }
+
+/* ==========================================================================
+   v0.9 additions (SPEC §19) — Logistics & Fog
+   ========================================================================== */
+
+/* ---------- §19.3 logistics: rush buttons + in-transit cues ---------- */
+.btn-rush {
+  border-color: var(--warn);
+  color: #8a4c12;
+  background: rgba(201, 118, 43, 0.10);
+  font-weight: 700;
+  white-space: nowrap;
+}
+.btn-rush:hover { background: rgba(201, 118, 43, 0.18); border-color: #8a4c12; }
+.transit-mark { font-size: 12px; }
+.transit-note {
+  color: #8a4c12;
+  font-weight: 600;
+  overflow-wrap: break-word;
+}
+
+/* ---------- §19.5 multi-part fills ---------- */
+.need-sum-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-basis: 100%;
+  min-width: 0;
+}
+.need-sum-row .bar { flex: 0 1 160px; }
+.need-sum { color: var(--muted); overflow-wrap: break-word; min-width: 0; }
+.need-sum.up { color: var(--good); font-weight: 700; }
+
+/* ---------- §19.6 stock builds & bundles ---------- */
+.stock-build-cta {
+  border-style: dashed;
+  border-color: var(--border-strong);
+  background: var(--panel-bg-alt);
+  margin: 10px 0;
+}
+.stock-build-cta .card-title { font-size: 14px; }
+.est-sale { color: var(--good); font-weight: 600; font-size: 12.5px; }
+.sell-bundle { display: flex; flex-direction: column; gap: 6px; }
+.bundle-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-bg-alt);
+  cursor: pointer;
+  min-width: 0;
+}
+.bundle-row:hover { border-color: var(--border-strong); }
+.bundle-row .bundle-name { flex: 1 1 auto; min-width: 0; overflow-wrap: break-word; }
+.bundle-row .num { white-space: nowrap; }
+.bundle-total {
+  border-top: 1px dashed var(--border);
+  padding-top: 6px;
+  margin-top: 2px;
+  font-weight: 600;
+}
+
+/* ==========================================================================
+   §19.9 #8 — the motion pass.
+   Every animation/transition below (and above) is decorative: content is
+   rendered and interactive before the first frame plays, so input is never
+   blocked. Entrances live behind (prefers-reduced-motion: no-preference);
+   a global reduce block at the end silences the whole app's motion —
+   including pre-v0.9 keyframes — for users who ask for less.
+   ========================================================================== */
+@media (prefers-reduced-motion: no-preference) {
+  /* tab / sub-tab switch: 170ms fade-slide on the freshly shown panel */
+  .anim-in { animation: panel-in 0.17s ease-out; }
+
+  /* modal entrance: overlay fade + dialog scale, 150ms */
+  .modal-overlay { animation: overlay-in 0.15s ease-out; }
+  .modal { animation: modal-in 0.15s cubic-bezier(0.2, 0.9, 0.35, 1); }
+
+  /* sub-tab pills settle rather than snap */
+  .subtab-pill { transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease; }
+}
+@keyframes panel-in {
+  from { opacity: 0; transform: translateY(5px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes overlay-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes modal-in {
+  from { opacity: 0; transform: scale(0.96) translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* job completion ghost — spawned by JS only when motion is allowed; a
+ * success flash then a quick collapse at the finished card's old spot.
+ * position/size are set inline from the card's rect. */
+.job-done-ghost {
+  position: fixed;
+  z-index: 350;
+  pointer-events: none;
+  border: 2px solid var(--good);
+  border-radius: var(--radius);
+  background: rgba(28, 124, 60, 0.12);
+  box-shadow: 0 0 0 3px rgba(28, 124, 60, 0.18);
+  transform-origin: 50% 0;
+  animation: job-done 0.42s ease-in forwards;
+}
+@keyframes job-done {
+  0% { opacity: 0; transform: none; }
+  22% { opacity: 1; }
+  55% { opacity: 0.9; transform: none; }
+  100% { opacity: 0; transform: scaleY(0.05); }
+}
+
+/* the reduce block: one switch turns the whole shop's motion off */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  .job-done-ghost { display: none; }
+}

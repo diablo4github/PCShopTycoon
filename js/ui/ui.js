@@ -591,7 +591,23 @@
     });
   };
 
+  /** §19.9 #8 — the whole motion pass sits behind prefers-reduced-motion. */
+  UI.motionOK = function () {
+    try { return !window.matchMedia('(prefers-reduced-motion: reduce)').matches; }
+    catch (e) { return true; }
+  };
+
+  /** §19.9 #8 — retrigger the 170ms fade-slide entrance on a panel. Purely
+   * cosmetic: content is already rendered and interactive underneath. */
+  UI.animatePanel = function (panel) {
+    if (!panel || !UI.motionOK()) return;
+    panel.classList.remove('anim-in');
+    void panel.offsetWidth;               // restart the CSS animation
+    panel.classList.add('anim-in');
+  };
+
   UI.switchTab = function (id) {
+    var switching = UI.state.activeTab !== id;
     UI.state.activeTab = id;
     var bar = document.getElementById('tab-bar');
     if (bar) {
@@ -605,6 +621,7 @@
       panels[j].hidden = (panels[j].id !== 'tab-' + id);
     }
     if (UI.tabs && UI.tabs.render) UI.tabs.render(id);
+    if (switching) UI.animatePanel(document.getElementById('tab-' + id)); // §19.9 #8
   };
 
   /* ------------------------------------------------------------------ *

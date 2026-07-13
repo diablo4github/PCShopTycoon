@@ -737,6 +737,21 @@
     return c ? c.name + ' system' : 'aging system';
   }
 
+  /* §19.4 fog of war: a pre-diagnosis title never names the component — the
+   * customer's own words are the hint. Prefer a DATA-authored symptom, else
+   * the first clause of a complaint, clipped at a word boundary. */
+  function symptomSuffix(tmpl, complaint) {
+    var sym = tmpl && tmpl.symptom;
+    if (!sym && complaint) {
+      sym = String(complaint).split(/[.!?]/)[0];
+      if (sym.length > 60) {
+        sym = sym.slice(0, 60);
+        sym = sym.slice(0, Math.max(20, sym.lastIndexOf(' '))) + '…';
+      }
+    }
+    return sym || null;
+  }
+
   // pay = laborRate(year) * hoursRequired * difficultyMult * typeMult  (§5.4)
   function basePay(state, type, hoursRequired, difficulty) {
     var C = CFG();
@@ -751,8 +766,9 @@
 
   // Human formatting for minimum-spec requirements (§9.3)
   function fmtPerfReq(key, v) {
-    if (key === 'ramMB') return v >= 1024 ? Engine.round2(v / 1024) + ' GB' : Engine.round2(v) + ' MB';
-    if (key === 'storageGB') return v >= 1 ? Engine.round2(v) + ' GB' : Math.round(v * 1000) + ' MB';
+    // §19.9 (#16): capacities render in whatever unit the magnitude warrants
+    if (key === 'ramMB') return Engine.fmtCapacity(v);
+    if (key === 'storageGB') return Engine.fmtCapacity(v * 1024);
     if (key === 'gpu') return 'graphics score ' + Engine.round2(v);
     if (key === 'cpu') return 'CPU score ' + Engine.round2(v);
     return Engine.round2(v) + ' ' + key;
@@ -1429,9 +1445,11 @@
         // waives the downgrade penalty (they WANT the cheapest working part).
         job.budgetAsk = Engine.chance(C.BUDGET_REPAIR_CHANCE, 'offers');
         var repairBox = (job.machine && job.machine.name) || machineFlavor(state, year);
-        job.title = 'Repair: ' + repairBox + ' — ' + tmpl.desc;
         if (Array.isArray(tmpl.complaints) && tmpl.complaints.length)
           job.blurbOverride = Engine.pick(tmpl.complaints, 'offers');   // §10.5 complaint copy
+        // §19.4 fog: machine + symptom — never the fault itself
+        var sym = symptomSuffix(tmpl, job.blurbOverride);
+        job.title = 'Repair: ' + repairBox + (sym ? ' — ' + sym : '');
         break;
       }
       case 'upgrade': {
@@ -1513,8 +1531,18 @@
           fmtPerfReq(picked.upgKey, picked.origVal) : 'nothing installed';
         var label = picked.upgName + ' — bigger than the current ' + origLabel +
                     ' → at least ' + fmtPerfReq(picked.upgKey, picked.minVal);
+        // §19.5: RAM/storage (and GPU on 2+-slot boards) fills are summable —
+        // qty becomes the board's free slot count (replaced part frees its
+        // own slot), and minPerf is judged on the assigned TOTAL.
+        var slotCap = machineSlotsFor(picked.machine, picked.uc);
+        var occ = machineOccupied(picked.machine, picked.uc);
+        var freeSlots = Math.max(1, slotCap - occ + (picked.origPart ? 1 : 0));
+        var summable = SUMMABLE_CATS[picked.uc] &&
+                       (picked.uc !== 'gpu' || slotCap >= 2);
         job.needs = [{ category: picked.uc, anyOfTags: picked.fitTags, minPerf: minPerf,
-                       qty: 1, filledPartIds: [], label: label,
+                       qty: summable ? freeSlots : 1, filledPartIds: [], label: label,
+                       summable: !!summable,
+                       sumKey: summable ? picked.upgKey : null,
                        originalPartId: picked.origPart ? picked.origPart.id : null }];
         // §16.3c: rough parts-cost range shown pre-accept (playtest P2.3) —
         // today's market prices of the qualifying parts. Min = cheapest that
@@ -1758,9 +1786,10 @@
             (modern ? C.APPLE_MODERN_PARTS_MULT : 1));
           job.devicePayBase = Math.round(Engine.uniform(arange[0], arange[1], 'offers'));
           job.hoursRequired = job.fault.laborHours;
-          job.title = 'Device repair: ' + adev.name + ' — ' + ainfo.desc;
           if (Array.isArray(ainfo.complaints) && ainfo.complaints.length)
             job.blurbOverride = Engine.pick(ainfo.complaints, 'offers');
+          var asym = symptomSuffix(ainfo, job.blurbOverride);   // §19.4 fog
+          job.title = 'Device repair: ' + adev.name + (asym ? ' — ' + asym : '');
         } else {
           var mdev = Engine.pick(mobileDevicesActive(state), 'offers');
           if (!mdev) return null;
@@ -1783,9 +1812,10 @@
             (mf.tpl.partsCostFactor != null ? mf.tpl.partsCostFactor : 0.3) * mvalue);
           job.devicePayBase = null;   // mobile: fault labor x laborRate (post-switch)
           job.hoursRequired = job.fault.laborHours;
-          job.title = 'Device repair: ' + mdev.name + ' — ' + mdesc;
           if (Array.isArray(mf.tpl.complaints) && mf.tpl.complaints.length)
             job.blurbOverride = Engine.pick(mf.tpl.complaints, 'offers');
+          var msym = symptomSuffix(mf.tpl, job.blurbOverride);   // §19.4 fog
+          job.title = 'Device repair: ' + mdev.name + (msym ? ' — ' + msym : '');
         }
         break;
       }
@@ -1838,7 +1868,14 @@
     job.title = Engine.fillCopyTokens(job.title, copyCtx);
     job.blurb = Engine.fillCopyTokens(job.blurb, copyCtx);
 
-    // Rush jobs: repair/software/upgrade, 8%: due today, pay x1.8 (§5.4)
+    // §19.3: parts arrive next morning now — deadlines stretch to compensate
+    if (job.deadlineDay != null) {
+      if (job.type === 'repair' || job.type === 'upgrade')
+        job.deadlineDay += C.DEADLINE_PAD_PARTS;
+      else if (job.type === 'build' || job.type === 'contract')
+        job.deadlineDay += C.DEADLINE_PAD_BUILD;
+    }
+    // Rush jobs: repair/software/upgrade, 8%: due today, pay x2.2 (§5.4/§19.3)
     if ((job.type === 'repair' || job.type === 'software' || job.type === 'upgrade') &&
         Engine.chance(C.RUSH_CHANCE, 'offers')) {
       job.rush = true;
@@ -2155,6 +2192,11 @@
       // §17.1: post-diagnosis estimate update — rough parts range for the card
       job.partsEstimate = needPartsEstimate(state, need);
     }
+    // §19.4: the fog lifts — the title now carries the actual finding
+    if (job.fault && job.fault.desc &&
+        job.title.indexOf(job.fault.desc) === -1) {
+      job.title += ' — found: ' + job.fault.desc;
+    }
     // §17.1: an armed diagnosis fork goes live the moment the fault is known
     fireForkDecision(state, job);
     // Append the repair phase (dedupe already happened at assembly, §11.3)
@@ -2218,6 +2260,62 @@
   // ------------------------------------------------------------------
   // Needs & parts
   // ------------------------------------------------------------------
+  // §19.5 multi-part fills: RAM/storage (and GPU on 2+-slot boards) upgrade
+  // needs are satisfied by the SUM of assigned units, capped by the machine
+  // board's free slots.
+  var SUMMABLE_CATS = { ram: true, storage: true, gpu: true };
+  function machineSlotsFor(machine, category) {
+    var mobo = null;
+    if (machine) {
+      for (var i = 0; i < machine.partIds.length; i++) {
+        var mp = Engine.partById(machine.partIds[i]);
+        if (mp && mp.category === 'motherboard') mobo = mp;
+      }
+    }
+    var n = mobo && mobo.slots ? mobo.slots[category] : null;
+    if (!isFinite(n) || n == null) n = category === 'gpu' ? 1 : 2;
+    return n;
+  }
+  function machineOccupied(machine, category) {
+    var c = 0;
+    if (machine) {
+      for (var i = 0; i < machine.partIds.length; i++) {
+        var mp = Engine.partById(machine.partIds[i]);
+        if (mp && mp.category === category) c++;
+      }
+    }
+    return c;
+  }
+  function summedAssigned(need) {
+    if (!need.sumKey) return 0;
+    var total = 0;
+    for (var i = 0; i < need.filledPartIds.length; i++) {
+      var p = Engine.partById(need.filledPartIds[i]);
+      if (p) total += (p.perf || {})[need.sumKey] || 0;
+    }
+    return total;
+  }
+  Jobs.summedAssigned = summedAssigned;
+  function sumTarget(need) {
+    return need.minPerf ? (need.minPerf[need.sumKey] || 0) : 0;
+  }
+  // A need is DONE when its units are in (or, summable, its total is hit).
+  function needSatisfied(need) {
+    if (!need) return false;
+    if (need.summable) {
+      return need.filledPartIds.length >= 1 && summedAssigned(need) >= sumTarget(need);
+    }
+    return need.filledPartIds.length >= need.qty;
+  }
+  Jobs.needSatisfied = needSatisfied;
+  // How many units of this part would reach the remaining target (>=1).
+  function countToMeet(part, need) {
+    var unit = (part.perf || {})[need.sumKey] || 0;
+    if (unit <= 0) return Infinity;
+    var left = Math.max(0, sumTarget(need) - summedAssigned(need));
+    return Math.max(1, Math.ceil(left / unit - 1e-9));
+  }
+
   // Returns null if the part satisfies the need, else a readable problem string.
   function candidateProblem(part, need, state) {
     if (!part) return 'Unknown part';
@@ -2245,6 +2343,12 @@
       return part.name + ' (' + (part.watts || 0) + 'W) is under the quoted ' +
              need.minWatts + 'W supply';
     }
+    if (need.summable && !meetsForNeed(part, need)) {
+      var slotsLeft0 = need.qty - need.filledPartIds.length;
+      return part.name + ' can’t reach ' + minPerfText(need.minPerf) +
+             ' within the board’s ' + slotsLeft0 + ' free slot' +
+             (slotsLeft0 === 1 ? '' : 's');
+    }
     if (!meetsMinPerf(part, need)) {
       return part.name + ' is below the required spec — needs at least ' +
              minPerfText(need.minPerf);
@@ -2252,6 +2356,7 @@
     return null;
   }
   function meetsMinPerf(part, need) {
+    if (need && need.summable) return meetsForNeed(part, need);   // §19.5
     if (need.minPerf) {
       var keys = Object.keys(need.minPerf);
       for (var k = 0; k < keys.length; k++) {
@@ -2262,6 +2367,15 @@
     if (need.osFamily && osFamilyOf(part) !== need.osFamily) return false;
     if (need.minWatts && (part.watts || 0) < need.minWatts) return false;   // §17.1
     return true;
+  }
+  // §19.5: for summable needs "meets" = this part can still reach the target
+  // within the board's free slots (alone or stacked with itself).
+  function meetsForNeed(part, need) {
+    if (!need.summable) return meetsMinPerf(part, need);
+    var unit = (part.perf || {})[need.sumKey] || 0;
+    if (unit <= 0) return false;
+    var slotsLeft = need.qty - need.filledPartIds.length;
+    return countToMeet(part, need) <= Math.max(0, slotsLeft);
   }
   // Category/tag fit only — below-spec parts still appear in pickers, greyed (§9.3),
   // EXCEPT OS-request mismatches, which §11.4 restricts out of the list entirely.
@@ -2292,6 +2406,22 @@
   }
   Jobs.needPartsEstimate = needPartsEstimate;
 
+  /* §19.2: the cheapest currently-purchasable part that genuinely satisfies
+   * a need is NEVER an overspend — when the market's floor is pricey, that's
+   * the market's fault, not the player's. Both flag and score use this. */
+  function cheapestQualifyingPrice(state, need) {
+    var cands = purchasableByCategory(state, need.category);
+    var best = null;
+    for (var i = 0; i < cands.length; i++) {
+      if (!candidateListed(cands[i], need, state)) continue;
+      if (!meetsMinPerf(cands[i], need)) continue;
+      var v = P().priceOf(cands[i], state);
+      if (best == null || v < best) best = v;
+    }
+    return best || 0;
+  }
+  Jobs.cheapestQualifyingPrice = cheapestQualifyingPrice;
+
   Jobs.getJobNeeds = function (state, jobId) {
     var job = Jobs.findActive(state, jobId);
     if (!job) return [];
@@ -2304,10 +2434,11 @@
       // overspend thresholds + class-defining metric (for the vs-original cue).
       var orig = need.originalPartId ? Engine.partById(need.originalPartId) : null;
       var origVal = orig ? P().priceOf(orig, state) : 0;
+      var cqp = orig ? cheapestQualifyingPrice(state, need) : 0;   // §19.2
       var threshold = orig ?
-        Math.max(C.OVERSPEND_MULT * origVal, origVal + Engine.laborRate(year)) : Infinity;
+        Math.max(C.OVERSPEND_MULT * origVal, origVal + Engine.laborRate(year), cqp) : Infinity;
       var hardThreshold = orig ?
-        Math.max(C.OVERSPEND_HARD_MULT * origVal, origVal + Engine.laborRate(year)) : Infinity;
+        Math.max(C.OVERSPEND_HARD_MULT * origVal, origVal + Engine.laborRate(year), cqp) : Infinity;
       var replaces = orig ? { name: orig.name, value: origVal } : null;
       var perfKey = perfKeyForCategory(need.category);
       var origMetric = (orig && perfKey != null) ? ((orig.perf || {})[perfKey] || 0) : null;
@@ -2347,6 +2478,11 @@
         };
         // §17.1: canonical field the UI reads for the over-PSU callout.
         if (opt.overPsu) opt.psuWatts = machinePsuWatts(job);
+        // §19.3: what same-day courier service would add (per unit, floor $10)
+        if (opt.source === 'market') {
+          opt.rushSurcharge = Engine.round2(Math.max(C.RUSH_SURCHARGE_MIN,
+            opt.price * C.RUSH_SURCHARGE_PCT));
+        }
         options.push(opt);
       }
       options.sort(function (a, b) { return a.price - b.price; });
@@ -2361,11 +2497,35 @@
                         name: ap ? ap.name : used[a].partId,
                         source: used[a].fromStock ? 'stock' : 'ordered' });
       }
-      out.push({ index: i, label: need.label, category: need.category,
+      // §19.3: units on the overnight truck for this slot
+      var onOrder = 0, orderEta = null;
+      (state.pendingOrders || []).forEach(function (po) {
+        if (po.jobId !== job.id || po.needIndex !== i) return;
+        onOrder += po.qty;
+        if (orderEta == null || po.arrivesDay < orderEta) orderEta = po.arrivesDay;
+      });
+      var entry = { index: i, label: need.label, category: need.category,
                  qty: need.qty, filled: need.filledPartIds.length,
+                 onOrder: onOrder, arrivesDay: orderEta,   // §19.3
                  assigned: assigned, replaces: replaces, options: options,
                  machinePsuWatts: machinePsuWatts(job) || null,   // §17.1
-                 minWatts: need.minWatts || null });
+                 minWatts: need.minWatts || null };
+      // §19.5: running-total context for the "Add another" picker flow
+      if (need.summable) {
+        entry.summable = true;
+        entry.sumKey = need.sumKey;
+        entry.target = sumTarget(need);
+        entry.targetLabel = fmtPerfReq(need.sumKey, entry.target);
+        entry.sumAssigned = summedAssigned(need);
+        entry.sumLabel = fmtPerfReq(need.sumKey, entry.sumAssigned);
+        entry.satisfied = needSatisfied(need);
+        entry.slotsFree = Math.max(0, need.qty - need.filledPartIds.length - onOrder);
+        options.forEach(function (o5) {
+          var p5 = Engine.partById(o5.partId);
+          if (p5) o5.countToMeet = countToMeet(p5, need);
+        });
+      }
+      out.push(entry);
     }
     return out;
   };
@@ -2426,14 +2586,17 @@
     return Math.ceil(draw * CFG().PSU_HEADROOM) > watts;
   }
 
-  Jobs.assignPart = function (state, jobId, needIndex, partId) {
+  Jobs.assignPart = function (state, jobId, needIndex, partId, opts) {
     var job = Jobs.findActive(state, jobId);
     if (!job) return err('Job not active');
     Jobs.ensureSteps(state, job);
     var idx = Number(needIndex);
     var need = job.needs[idx];
     if (!need) return err('No such part slot');
-    if (need.filledPartIds.length >= need.qty) return err('That slot is already filled');
+    if (need.filledPartIds.length >= need.qty) {
+      return err(need.summable ? 'No free slots left on the board'
+                               : 'That slot is already filled');
+    }
     var part = Engine.partById(partId);
     var problem = candidateProblem(part, need, state);
     if (problem) return err(problem);
@@ -2469,8 +2632,24 @@
     var C = CFG();
     var equip = Engine.equipEffects(state);
     var mishapP = C.MISHAP_PART_DAMAGE * equip.mishapMult;
-    var toFill = need.qty - need.filledPartIds.length;
+    // §19.3: units already ordered for this slot count as committed — no
+    // double-buying by an impatient second click (or a looping bot).
+    var onOrder = 0;
+    (state.pendingOrders || []).forEach(function (po) {
+      if (po.jobId === job.id && po.needIndex === idx) onOrder += po.qty;
+    });
+    var toFill = need.qty - need.filledPartIds.length - onOrder;
+    // §19.5: summable needs fill one unit per action ("Add another" flow)
+    if (need.summable) toFill = Math.min(toFill, 1);
+    if (toFill <= 0) {
+      return err('Parts for this slot are already on the truck — arriving ' +
+                 'tomorrow morning');
+    }
+    // §19.3 rush: explicit {rush:true}, or a RUSH job whose 2.2x premium
+    // bakes same-day shipping in at no extra charge.
+    var rush = !!(opts && opts.rush) || !!job.rush;
     var spent = 0, filledNow = 0, mishaps = 0;
+    var rushBuyTotal = 0;   // market money moved same-day (surcharge basis)
 
     for (var u = 0; u < toFill; u++) {
       var inv = Engine.inventoryEntry(state, part.id);
@@ -2495,6 +2674,8 @@
           state.grayStock[part.id]--;
           grayUnit = true;
         }
+      } else if (!rush) {
+        break;   // §19.3: market units are ORDERED below (arrive tomorrow)
       } else {
         var buyPrice = P().priceOf(part, state, { buy: true });
         if (state.cash < buyPrice) {
@@ -2506,6 +2687,7 @@
         Engine.addCash(state, -buyPrice);
         Engine.ledgerAdd(state, 'partsCost', buyPrice);
         spent = Engine.round2(spent + buyPrice);
+        rushBuyTotal = Engine.round2(rushBuyTotal + buyPrice);
         paid = buyPrice;
       }
       // ESD / handling mishap while prepping: part destroyed, must re-source (§5.5)
@@ -2531,11 +2713,92 @@
       // §10.1: premium parts add bench time to their install step
       if (part.tier === 'premium') nudgeStep(job, idx, C.PREMIUM_STEP_NUDGE);
     }
+    // §19.3: same-day courier premium on rush market buys — waived for RUSH
+    // jobs (their 2.2x pay already covers it).
+    var surcharge = 0;
+    if (rush && !job.rush && rushBuyTotal > 0) {
+      surcharge = Engine.round2(Math.max(C.RUSH_SURCHARGE_MIN,
+                                         rushBuyTotal * C.RUSH_SURCHARGE_PCT));
+      Engine.addCash(state, -surcharge);
+      Engine.ledgerAdd(state, 'other', surcharge);
+      spent = Engine.round2(spent + surcharge);
+    }
+    // §19.3/§19.1: order the remainder at list — arrives tomorrow morning and
+    // auto-fills this slot. Paid up front; affordability caps the quantity
+    // (partial fills stay readable and inventory-conserving).
+    var remaining = need.qty - need.filledPartIds.length - onOrder;
+    var orderedQty = 0, arrivesDay = null;
+    if (!rush && remaining > 0) {
+      var listPrice = P().priceOf(part, state, { buy: true });
+      var affordable = listPrice > 0 ?
+        Math.floor((state.cash + 1e-9) / listPrice) : remaining;
+      orderedQty = Math.max(0, Math.min(remaining, affordable));
+      if (orderedQty > 0) {
+        var run2 = supplyRun(state);
+        if (!run2.ok) {
+          if (!filledNow && !mishaps) return run2;
+          orderedQty = 0;
+        } else {
+          var orderTotal = Engine.round2(listPrice * orderedQty);
+          Engine.addCash(state, -orderTotal);
+          Engine.ledgerAdd(state, 'partsCost', orderTotal);
+          spent = Engine.round2(spent + orderTotal);
+          arrivesDay = state.day + C.RETAIL_LEAD_DAYS;
+          state.nextOrderId = state.nextOrderId || 1;
+          state.pendingOrders = state.pendingOrders || [];
+          state.pendingOrders.push({
+            id: state.nextOrderId++, source: 'retail', distributorId: null,
+            partId: part.id, partName: part.name, distName: 'Retail market',
+            qty: orderedQty, unitCost: listPrice, total: orderTotal,
+            placedDay: state.day, arrivesDay: arrivesDay, gray: false,
+            jobId: job.id, needIndex: idx
+          });
+        }
+      } else if (!filledNow && !mishaps) {
+        return err('Not enough cash for ' + part.name + ' (' +
+                   Engine.fmtMoney(listPrice) + ')');
+      }
+    }
     return { ok: true, cost: spent, filledNow: filledNow,
              mishap: mishaps > 0, mishaps: mishaps,
-             filled: need.filledPartIds.length, qty: need.qty };
+             filled: need.filledPartIds.length, qty: need.qty,
+             remaining: Engine.round2(need.qty - need.filledPartIds.length -
+                                      onOrder - orderedQty),
+             orderedQty: orderedQty, arrivesDay: arrivesDay,
+             rush: rush && rushBuyTotal > 0, surcharge: surcharge };
   };
   Jobs.installPart = Jobs.assignPart;   // deprecated alias (one release, §10.3)
+
+  /* §19.3: a delivered retail order bound to a job slot installs itself.
+   * Returns {landed, leftover} — leftovers (job gone / slot filled) go to
+   * the shop's own stock via the caller. Delivered units skip the bench
+   * mishap roll (the courier handled them; ESD risk was the rush/stock
+   * path's prep). */
+  Jobs.receiveOrderedParts = function (state, order) {
+    var job = Jobs.findActive(state, order.jobId);
+    var part = Engine.partById(order.partId);
+    var landed = 0;
+    if (job && part) {
+      var need = job.needs[order.needIndex];
+      if (need && need.category === part.category) {
+        var space = need.qty - need.filledPartIds.length;
+        var use = Math.max(0, Math.min(space, order.qty));
+        for (var u = 0; u < use; u++) {
+          need.filledPartIds.push(part.id);
+          job.partsUsed = job.partsUsed || [];
+          job.partsUsed.push({ partId: part.id,
+                               price: P().priceOf(part, state),
+                               cost: order.unitCost, fromStock: false,
+                               ordered: true, gray: false,
+                               needIndex: order.needIndex });
+          if (part.tier === 'premium') nudgeStep(job, order.needIndex, CFG().PREMIUM_STEP_NUDGE);
+          landed++;
+        }
+      }
+    }
+    return { landed: landed, leftover: order.qty - landed,
+             jobTitle: job ? job.title : null };
+  };
 
   /* §10.3: UNASSIGN a part — returns it to inventory (ordered parts too; you
    * own them). Allowed until the step that installs it has completed. */
@@ -2804,7 +3067,7 @@
     };
   };
 
-  Jobs.commitBuild = function (state, jobId) {
+  Jobs.commitBuild = function (state, jobId, opts) {
     var g = buildJobOrErr(state, jobId);
     if (g.error) return err(g.error);
     var job = g.job;
@@ -2824,8 +3087,18 @@
       toBuy.push(part);
       cost = Engine.round2(cost + P().priceOf(part, state, { buy: true }));
     }
-    if (state.cash < cost)
-      return err('Not enough cash for parts (' + Engine.fmtMoney(cost) + ' needed)');
+    // §19.3: market-sourced build parts ship overnight by default; rush pays
+    // the same-day premium. RUSH jobs never occur for builds, so no waiver.
+    var rushB = !!(opts && opts.rush);
+    var surchargeB = 0;
+    if (rushB && cost > 0) {
+      var C19 = CFG();
+      surchargeB = Engine.round2(Math.max(C19.RUSH_SURCHARGE_MIN,
+                                          cost * C19.RUSH_SURCHARGE_PCT));
+    }
+    if (state.cash < cost + surchargeB)
+      return err('Not enough cash for parts (' +
+                 Engine.fmtMoney(cost + surchargeB) + ' needed)');
     if (toBuy.length) {
       var run = supplyRun(state);
       if (!run.ok) return run;
@@ -2852,7 +3125,19 @@
     job.build.committed = true;
     job.build.validated = true;   // UI contract: hides configurator, shows Work
     job.needs = [];
-    return { ok: true, cost: cost };
+    if (surchargeB > 0) {
+      Engine.addCash(state, -surchargeB);
+      Engine.ledgerAdd(state, 'other', surchargeB);
+    }
+    // §19.3: anything bought at market is on the overnight truck — bench work
+    // can't start until the morning it lands (rush skips the wait).
+    var arrivesB = null;
+    if (toBuy.length && !rushB) {
+      arrivesB = state.day + CFG().RETAIL_LEAD_DAYS;
+      job.partsArriveDay = arrivesB;
+    }
+    return { ok: true, cost: Engine.round2(cost + surchargeB),
+             arrivesDay: arrivesB, rush: rushB, surcharge: surchargeB };
   };
   function claimedSoFar(partIds, uptoIdx, partId) {
     var n = 0;
@@ -2905,13 +3190,15 @@
     // fresh 8h day (hard wedge). Never barrier before diagnosis;
     // performDiagnosis re-marks the plan against the real repair steps.
     if (job.needsDiagnosis && !job.diagnosed) planStep = null;
+    // §19.3: committed builds whose market parts are still on the truck
+    if (job.partsArriveDay != null) return { hours: 0, barrier: 'delivery' };
     for (var i = job.stepIndex; i < job.steps.length; i++) {
       var st = job.steps[i];
       if (planStep != null && i >= planStep) { barrier = 'decision-plan'; break; }
       if (st.kind === 'wait') { barrier = 'wait'; break; }
       if (st.needIndex != null) {
         var nd = job.needs[st.needIndex];
-        if (!nd || nd.filledPartIds.length < nd.qty) { barrier = 'assign'; break; }
+        if (!nd || !needSatisfied(nd)) { barrier = 'assign'; break; }   // §19.5
       }
       total += st.hours * (1 - (st.progress || 0));
       if (singleStep) break;
@@ -2925,6 +3212,14 @@
     if (st.needIndex != null) performInstall(state, job, st.needIndex);
     job.stepIndex++;
     if (st.diag) performDiagnosis(state, job);   // may append repair steps
+    // §19.4: devices skip the diagnose phase — their fog lifts once the
+    // first bench step (intake/triage) is done.
+    if (job.type === 'device_repair' && !job.findingShown &&
+        job.fault && job.fault.desc &&
+        job.title.indexOf(job.fault.desc) === -1) {
+      job.findingShown = true;
+      job.title += ' — found: ' + job.fault.desc;
+    }
   }
 
   // Consume std-hours across the checklist; installs fire as steps complete.
@@ -2936,7 +3231,7 @@
       if (st.kind === 'wait') break;   // §11.6: waits advance in parallel only
       if (st.needIndex != null) {
         var nd = job.needs[st.needIndex];
-        if (!nd || nd.filledPartIds.length < nd.qty) break;   // blocked install
+        if (!nd || !needSatisfied(nd)) break;   // blocked install (§19.5-aware)
       }
       var rem = st.hours * (1 - (st.progress || 0));
       if (left >= rem - 1e-9) {
@@ -3100,12 +3395,14 @@
         job.decisionPlan = null;
         return { ok: true, hoursSpent: 0, completed: false };
       }
+      if (wk.barrier === 'delivery')
+        return err('Waiting on parts — the courier arrives tomorrow morning');
       if (wk.barrier === 'assign') return err('Assign a replacement part first');
       if (wk.barrier === 'wait') {
         var wst = job.steps[job.stepIndex];
         if (wst.needIndex != null) {   // an install-flavored wait still needs its part
           var wnd = job.needs[wst.needIndex];
-          if (!wnd || wnd.filledPartIds.length < wnd.qty)
+          if (!wnd || !needSatisfied(wnd))
             return err('Assign a replacement part first');
         }
         if (wst.running)
@@ -3314,13 +3611,15 @@
           var qOrig = Engine.partById(qNd.originalPartId);
           if (!qOrig) continue;
           var qUsedList = job.partsUsed || [];
-          var qUsed = null;
+          var qUsedAll = [];
           for (var qu = 0; qu < qUsedList.length; qu++) {
             var qe = qUsedList[qu];
             if (qe.needIndex != null && qe.needIndex !== qv) continue;
             if (qNd.filledPartIds.indexOf(qe.partId) === -1) continue;
-            qUsed = qe; break;
+            qUsedAll.push(qe);
+            if (!qNd.summable) break;   // legacy: one representative unit
           }
+          var qUsed = qUsedAll[0];
           if (!qUsed) continue;
           var qNewPart = Engine.partById(qUsed.partId);
           if (!qNewPart) continue;
@@ -3329,6 +3628,19 @@
           var qOrigVal = P().priceOf(qOrig, state);
           var qOrigMetric = qKey != null ? ((qOrig.perf || {})[qKey] || 0) : null;
           var qNewMetric = qKey != null ? ((qNewPart.perf || {})[qKey] || 0) : null;
+          // §19.5: summable sets are judged as a SET — summed price, summed
+          // metric (two modest sticks vs one big one is a fair trade).
+          if (qNd.summable) {
+            var qSetPrice = 0, qSetMetric = 0;
+            for (var qs = 0; qs < qUsedAll.length; qs++) {
+              qSetPrice += qUsedAll[qs].price || 0;
+              var qsp = Engine.partById(qUsedAll[qs].partId);
+              if (qsp && qKey != null) qSetMetric += (qsp.perf || {})[qKey] || 0;
+            }
+            qUsed = { partId: qUsed.partId, price: Engine.round2(qSetPrice),
+                      needIndex: qv };
+            if (qKey != null) qNewMetric = qSetMetric;
+          }
           var qOrigLabel = qKey != null ? fmtPerfReq(qKey, qOrigMetric) : Engine.fmtMoney(qOrigVal);
           var qNewLabel = qKey != null ? fmtPerfReq(qKey, qNewMetric) : Engine.fmtMoney(qUsed.price);
 
@@ -3357,10 +3669,11 @@
           // the UI can still show a "waived" tooltip); the score/note ding
           // itself is waived when the part matches a customer taste (fanboys)
           // or the job type is enthusiast.
+          var qCqp = cheapestQualifyingPrice(state, qNd);   // §19.2 fairness
           var qThresh = Math.max(C.OVERSPEND_MULT * qOrigVal,
-                                 qOrigVal + Engine.laborRate(year));
+                                 qOrigVal + Engine.laborRate(year), qCqp);
           var qHardThresh = Math.max(C.OVERSPEND_HARD_MULT * qOrigVal,
-                                     qOrigVal + Engine.laborRate(year));
+                                     qOrigVal + Engine.laborRate(year), qCqp);
           var qOverspent = qUsed.price > qThresh;
           if (qOverspent) {
             var qHard = qUsed.price > qHardThresh;

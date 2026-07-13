@@ -101,6 +101,13 @@ PARTS.forEach(function (p, i) {
     if (!isNum(p.powerDraw) || p.powerDraw < 0) err(label + ': powerDraw missing/invalid');
     if (p.watts !== undefined) err(label + ': watts is psu-only');
   }
+  // v0.9 §19.7: removable flag (Zip/Jaz/LS-120/optical/tape/floppy) — storage-only, true-only
+  if (p.removable !== undefined && (p.removable !== true || p.category !== 'storage')) {
+    err(label + ': removable must be exactly true and only on storage parts (§19.7)');
+  }
+  if (p.category === 'storage' && /floppy|\bzip\b|\bjaz\b|ls-120|superdisk|ez ?135|tape|cd-r|dvd|blu-ray|optical/i.test(p.name) && p.removable !== true) {
+    err(label + ': removable-media storage (by name) must carry removable: true (§19.7)');
+  }
   // style only on case & cooling
   if (p.style !== undefined) {
     if (p.category !== 'case' && p.category !== 'cooling') err(label + ': style only allowed on case/cooling');
@@ -246,7 +253,13 @@ function findBuild(y) {
     }
     var cpus = pool.cpu.filter(fits);
     var rams = pool.ram.filter(fits);
-    var stors = pool.storage.filter(fits);
+    // v0.9 §19.7: from 1988 the witness build's storage must be PRIMARY — floppy
+    // (STOR-FDD) or removable media never satisfy it alone. Pre-1988 floppy-only
+    // builds are legitimate PC/XT reality (the educational point).
+    var stors = pool.storage.filter(fits).filter(function (s) {
+      if (y < 1988) return true;
+      return s.removable !== true && tagsIn(s, 'STOR').indexOf('STOR-FDD') === -1;
+    });
     var oss = pool.os.filter(fits);
     // case check is reversed: mobo's FF tag must appear in the case's accepted list
     var cases = pool['case'].filter(function (c) { return overlap(mbFF, c.platformTags); });
@@ -516,6 +529,31 @@ Object.keys(FL.faults || {}).forEach(function (k) {
     }
   });
 });
+
+// ---------------------------------------------------------------- v0.9 §19.4 fog-of-war clue audit
+// Pre-diagnosis, the complaint IS the hint: it must never name the faulty
+// category outright (the literal partCategory word, or its obvious retail
+// synonyms). Knowledgeable players read the period clue instead (parity errors
+// -> memory; click-of-death -> drive; one long + two short beeps -> video...).
+var COMPLAINT_BANS = {
+  ram: /\bram\b|\bmemory\b|\bsimm\b|\bdimm\b/i,
+  storage: /\bstorage\b|hard (disk|drive)|\bhdd\b|\bssd\b/i,
+  gpu: /\bgpu\b|video card|graphics card/i,
+  psu: /\bpsu\b|power supply/i,
+  motherboard: /\bmotherboard\b|system board|\bmobo\b/i,
+  cpu: /\bcpu\b|\bprocessor\b/i,
+  cooling: /\bcooling\b|\bheatsink\b|\bcooler\b|\bfan\b/i
+};
+Object.keys(COMPLAINT_BANS).forEach(function (k) {
+  (FL.faults && FL.faults[k] || []).forEach(function (f, i) {
+    (f.complaints || []).forEach(function (c, j) {
+      if (COMPLAINT_BANS[k].test(c)) {
+        err('FLAVOR.faults.' + k + '[' + i + '].complaints[' + j + ']: names the faulty category ("' +
+          (c.match(COMPLAINT_BANS[k]) || [''])[0] + '") — complaints must clue, not name (§19.4)');
+      }
+    });
+  });
+});
 var PERIPH_KINDS = ['printer', 'crt', 'lcd', 'modem', 'input', 'scanner', 'other'];
 (FL.peripheralItems || []).forEach(function (it) {
   var l = 'FLAVOR.peripheralItems.' + it.name;
@@ -524,6 +562,10 @@ var PERIPH_KINDS = ['printer', 'crt', 'lcd', 'modem', 'input', 'scanner', 'other
   if (!Array.isArray(it.faultDescs) || it.faultDescs.length < 2 || !it.faultDescs.every(isStr)) err(l + ': needs >= 2 faultDescs');
 });
 needLen(FL.staffNames, 25, 'staffNames');
+// v0.9 §19.9(#17): easter-egg names present in the pools (sentinel check)
+if ((FL.staffNames || []).indexOf('Ada Lovejoy') === -1) err('FLAVOR.staffNames: missing the §19.9 easter-egg additions (sentinel "Ada Lovejoy")');
+if ((FL.lastNames || []).indexOf('Babbage') === -1) err('FLAVOR.lastNames: missing the §19.9 easter-egg additions (sentinel "Babbage")');
+if ((FL.firstNames || []).indexOf('Ada') === -1) err('FLAVOR.firstNames: missing the §19.9 easter-egg additions (sentinel "Ada")');
 
 // ---------------------------------------------------------------- v0.3 (§10.7) staff roles
 var JOB_TYPES = ['repair', 'upgrade', 'build', 'refurb', 'data_recovery', 'software', 'cleaning', 'peripheral', 'contract', 'enthusiast', 'callback', 'device_repair'];
@@ -614,9 +656,13 @@ TS.forEach(function (t, i) {
   else t.steps.forEach(function (s, j) {
     if (!isStr(s.label)) err(l + ' step[' + j + ']: label required');
     if (!isNum(s.hours) || s.hours <= 0 || s.hours > 2) err(l + ' step[' + j + ']: hours must be in (0, 2]');
+    if (Math.abs(s.hours * 10 - Math.round(s.hours * 10)) > 1e-9 && Math.abs(s.hours * 4 - Math.round(s.hours * 4)) > 1e-9) {
+      err(l + ' step[' + j + ']: hours must sit on the 0.1 grid (or quarter-hours)');
+    }
     if (s.cond !== undefined && CONDS.indexOf(s.cond) === -1) err(l + ' step[' + j + ']: unknown cond ' + s.cond);
     if (s.minYear !== undefined && !isInt(s.minYear)) err(l + ' step[' + j + ']: minYear invalid');
     if (s.maxYear !== undefined && !isInt(s.maxYear)) err(l + ' step[' + j + ']: maxYear invalid');
+    if (s.wait !== undefined && s.wait !== true) err(l + ' step[' + j + ']: wait must be exactly true when present (§19.8)');
   });
 });
 
@@ -691,6 +737,20 @@ COMBOS.forEach(function (c) {
     if (r.sumMax > 6.5) { err('TASK_STEPS: ' + key + ' max hours (with cond steps) ' + r.sumMax + ' > 6.5'); matrixFails++; }
   });
 });
+
+// v0.9 §19.8: software installs must be dominated by unattended wait steps, not labor.
+// Uses the engine's classification contract: explicit wait:true flags (the engine also
+// auto-detects wait-ish labels, so this is the conservative lower bound).
+(function () {
+  var r = resolveSteps('software', null, 'os_install', 1999);
+  if (!r) return; // already reported by the matrix
+  var inY = r.tpl.steps.filter(function (s) {
+    return (s.minYear === undefined || 1999 >= s.minYear) && (s.maxYear === undefined || 1999 <= s.maxYear) && s.cond === undefined;
+  });
+  var waitH = 0, laborH = 0;
+  inY.forEach(function (s) { if (s.wait === true) waitH += s.hours; else laborH += s.hours; });
+  if (waitH <= laborH) err('TASK_STEPS os_install@1999: wait-step hours (' + waitH + ') must exceed hands-on labor (' + laborH + ') — installs are watching progress bars (§19.8)');
+})();
 
 // ---------------------------------------------------------------- v0.5 §13.1 CHRONICLE
 var CHRON_TAGS = ['hardware', 'software', 'gaming', 'internet', 'business', 'culture'];
@@ -1162,6 +1222,11 @@ console.log('v0.8 Supply Lines: Distributors ' + DIST.length + ' (' +
   DIST.filter(function (d) { return d.grayMarket; }).length + ' gray-market: ' +
   DIST.filter(function (d) { return d.grayMarket; }).map(function (d) { return d.id; }).join(', ') +
   ') | Audio article: ' + (audioArt ? 'present (unlock ' + audioArt.unlockYear + ')' : 'MISSING'));
+console.log('v0.9 Logistics & Fog: Removable storage ' + PARTS.filter(function (p) { return p.removable === true; }).length +
+  ' | complaint fog-lint on ' + Object.keys(COMPLAINT_BANS).length + ' fault categories' +
+  ' | wait-flagged steps ' + TS.reduce(function (n, t) { return n + t.steps.filter(function (s) { return s.wait === true; }).length; }, 0) +
+  ' | easter eggs: staff ' + (FL.staffNames || []).filter(function (n) { return ['Ada Lovejoy', 'Gary Kildare', 'Linus Thorwald', 'Steve Wozniacki', 'Doug Engelbert', 'Laura Kroft'].indexOf(n) !== -1; }).length +
+  ' + names 6');
 
 if (warnings.length) {
   console.log('\nWARNINGS (' + warnings.length + '):');

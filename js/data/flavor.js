@@ -11,7 +11,10 @@
       "Latoya", "Craig", "Melissa", "Todd", "Rachel", "Omar", "Heather", "Jason", "Amber", "Derek",
       "Priya", "Kyle", "Jasmine", "Trevor", "Megan", "Andre", "Brittany", "Cody", "Vanessa", "Marcus",
       "Aisha", "Logan", "Chloe", "Dmitri", "Sofia", "Tyler", "Mei", "Brandon", "Zoe", "Hector",
-      "Ingrid", "Noah", "Fatima", "Ethan", "Rosa", "Caleb", "Nadia", "Jared", "Lucia", "Wes"
+      "Ingrid", "Noah", "Fatima", "Ethan", "Rosa", "Caleb", "Nadia", "Jared", "Lucia", "Wes",
+      // v0.9 §19.9(#17) — quiet nods to computing history; ordinary enough as first
+      // names to combine with any surname and pass unnoticed
+      "Ada", "Grace", "Vint"
     ],
     lastNames: [
       "Nguyen", "Kowalski", "Ramirez", "O'Brien", "Chen", "Petersen", "Washington", "Gutierrez", "Kaminski", "Blackwell",
@@ -20,7 +23,9 @@
       "McAllister", "Silva", "Brandt", "Tucker", "Reyes", "Olsen", "Faulkner", "Dominguez", "Weiss", "Choi",
       "Barnett", "Moreau", "Copeland", "Ferraro", "Singh", "Larsen", "Whitfield", "Mendoza", "Kirby", "Tanaka",
       "Holloway", "Beaumont", "Cruz", "Gallagher", "Patel", "Sorensen", "Mercer", "Ibarra", "Quinn", "Zhang",
-      "Ashford", "Romano", "Drummond", "Espinoza", "Kaur", "Lindgren", "Prescott", "Navarro", "Stein", "Watts"
+      "Ashford", "Romano", "Drummond", "Espinoza", "Kaur", "Lindgren", "Prescott", "Navarro", "Stein", "Watts",
+      // v0.9 §19.9(#17) — historical-computing surnames, ordinary enough to pass unnoticed
+      "Babbage", "Turing", "Cray"
     ],
     customerTypes: [
       { id: "home", label: "Home user" },
@@ -36,21 +41,21 @@
     // v0.3 (§10.5): every fault carries customer-voice complaints (symptoms only, no part-name spoilers).
     faults: {
       ram: [
-        { desc: "Random crashes and parity errors under load", laborHours: 1, complaints: ["It crashes at random and flashes some 'parity error' message at me.", "It just dies in the middle of things — no pattern I can find.", "It falls over every time I try to run {SW}, though other things seem fine."] },
+        { desc: "Random crashes and parity errors under load", laborHours: 1, complaints: ["It crashes at random and flashes some 'parity error' message at me.", "It falls over at random — worse the more I have open at once. One thing at a time seems fine.", "It falls over every time I try to run {SW}, though other things seem fine."] },
         { desc: "Memory count comes up short at boot", laborHours: 1, complaints: ["The number it counts up at startup looks smaller than it used to.", "Programs refuse to open, saying there isn't enough room to run."] },
         { desc: "Constant blue screens from a bad memory module", laborHours: 1.5, complaints: ["Blue screens. Constantly. A different message every time.", "Every hour or so the whole screen goes blue and it restarts itself."] },
         { desc: "Machine beeps endlessly and refuses to POST", laborHours: 1, complaints: ["It just beeps over and over and never starts up.", "Turn it on and it screams beeps at me. Nothing ever shows on screen."] },
-        { desc: "Corrupted files from failing memory", laborHours: 2, complaints: ["Files keep coming up scrambled or won't open at all.", "Documents I saved yesterday are garbage today."] }
+        { desc: "Corrupted files from failing memory", laborHours: 2, complaints: ["Files I just saved come up scrambled — but everything from last year opens fine.", "Big copies come out mangled, and the same file copies differently every time I try."] }
       ],
       storage: [
         { desc: "Drive makes a rhythmic clicking and won't spin up", laborHours: 2, complaints: ["It makes this tick... tick... tick sound and never gets going.", "There's a rhythmic clicking from inside and the screen just waits forever."] },
         { desc: "Boot failure: operating system not found", laborHours: 1.5, complaints: ["It says 'operating system not found'. It found it fine last week.", "Black screen with a message about no system. I didn't change anything!"] },
         { desc: "Bad sectors spreading — drive dying", laborHours: 2, complaints: ["It freezes when opening certain files, and it's getting worse.", "Long pauses, odd noises, and now some folders won't open at all."] },
-        { desc: "Drive vanishes from the system intermittently", laborHours: 1.5, complaints: ["Some days it starts fine, other days it acts like half of it is missing.", "My files disappear and reappear depending on its mood."] },
+        { desc: "Drive vanishes from the system intermittently", laborHours: 1.5, complaints: ["Some days it boots right up; other days it claims there's nothing to boot from at all.", "My files disappear and reappear depending on its mood."] },
         { desc: "Grinding from the drive bay, files crawling", laborHours: 2, complaints: ["Horrible grinding noise and everything takes forever to open.", "It sounds like it's chewing gravel in there."] }
       ],
       gpu: [
-        { desc: "No video output — dead video card", laborHours: 1, complaints: ["The machine sounds like it's running but the screen stays black.", "Power light on, fans on, picture: none."] },
+        { desc: "No video output — dead video card", laborHours: 1, complaints: ["It starts with one long beep and two short ones, and nothing ever shows on the screen.", "Power light on, fans on, picture: none."] },
         { desc: "Garbage and artifacts all over the display", laborHours: 1.5, complaints: ["The screen fills with weird characters and colored confetti.", "Random blocks and squiggles all over everything I open."] },
         { desc: "Display cuts out when the machine warms up", laborHours: 2, complaints: ["The picture's fine for ten minutes, then it blinks out.", "The longer it runs, the worse the picture gets, until it just quits."] },
         { desc: "Vertical stripes from failing video hardware", laborHours: 1, complaints: ["There are colored stripes down the whole screen.", "Vertical lines everywhere — like looking through a picket fence."] },
@@ -71,7 +76,7 @@
         { desc: "Intermittent board — boots every third try", laborHours: 2, complaints: ["It starts maybe one time in three.", "Some mornings it boots, some mornings it just sits there."] }
       ],
       cpu: [
-        { desc: "Processor dead — powers on but never runs", laborHours: 1.5, complaints: ["It powers up but never actually starts doing anything.", "Lights and fans, but the screen never wakes up."] },
+        { desc: "Processor dead — powers on but never runs", laborHours: 1.5, complaints: ["It powers up but never actually starts doing anything.", "The fans spin up to full blast and stay there roaring, but the screen never wakes up."] },
         { desc: "Overheating processor throttling the machine", laborHours: 1, complaints: ["It gets slower and slower the longer it runs.", "After an hour it's crawling, and the case is hot to the touch.", "Open {SW} and within minutes it slows to a crawl and the case bakes."] },
         { desc: "Bent pins after a botched home upgrade", laborHours: 2, complaints: ["I tried an upgrade myself. It has not gone well.", "After my little DIY project it won't start at all. Please don't judge."] },
         { desc: "Processor failing under load — math errors", laborHours: 1.5, complaints: ["Big spreadsheets come out with wrong numbers, then it locks up.", "Heavy work makes it freeze or spit out errors."] }
@@ -277,7 +282,10 @@
       "Winnie Achebe", "Cliff Sandoval", "Marge Halvorsen", "Dewey Watts", "Anh Truong",
       "Bernice Kaplan", "Otis Redfield", "Paulina Cruz", "Vern Osterberg", "Kenji Morita",
       "Lucille Draper", "Ray-Ray Jefferson", "Ingrid Halloran", "Mo Farouk", "Betsy Lindstrom",
-      "Chip Delacroix", "Yolanda Reyes", "Stu Grabowski", "Priyanka Rao", "Wendell Fontaine"
+      "Chip Delacroix", "Yolanda Reyes", "Stu Grabowski", "Priyanka Rao", "Wendell Fontaine",
+      // v0.9 §19.9(#17) — era-appropriate homages & puns; altered spellings keep them deniable
+      "Ada Lovejoy", "Gary Kildare", "Linus Thorwald", "Steve Wozniacki",
+      "Doug Engelbert", "Laura Kroft"
     ],
     shopNameSuggestions: [
       "Circuit & Solder", "The Byte Shop", "Silicon Alley Repair", "Motherboard Medics",
@@ -323,10 +331,10 @@
     ] },
     { type: "repair", partCategory: "storage", subtype: null, minYear: null, maxYear: null, steps: [
       { label: "Interview customer & log symptoms", hours: 0.25 },
-      { label: "Attempt emergency data backup", hours: 0.5 },
+      { label: "Attempt emergency data backup", hours: 0.5, wait: true },
       { label: "Replace failed drive", hours: 0.5 },
       { label: "Low-level format & set interleave", hours: 0.5, maxYear: 1991 },
-      { label: "Partition, format & restore data", hours: 0.75 },
+      { label: "Partition, format & restore data", hours: 0.75, wait: true },
       { label: "Clone image onto new drive", hours: 0.5, minYear: 2010 },
       { label: "Verify boot & surface scan", hours: 0.25 }
     ] },
@@ -349,11 +357,11 @@
       { label: "Interview customer & log symptoms", hours: 0.25 },
       { label: "Strip machine to the bench", hours: 0.75 },
       { label: "Inspect board & read POST codes", hours: 0.5 },
-      { label: "Swap system board", hours: 0.75 },
+      { label: "Swap system board", hours: 1.0 },
       { label: "Transfer CPU, memory & cards", hours: 0.5 },
       { label: "Set board jumpers & switches", hours: 0.25, maxYear: 1997 },
       { label: "Configure BIOS & boot order", hours: 0.25, minYear: 1995 },
-      { label: "Rebuild & burn-in", hours: 0.75 }
+      { label: "Rebuild & burn-in", hours: 1.0 }
     ] },
     { type: "repair", partCategory: "cooling", subtype: null, minYear: null, maxYear: null, steps: [
       { label: "Interview customer & log symptoms", hours: 0.25 },
@@ -380,11 +388,11 @@
     ] },
     { type: "upgrade", partCategory: "storage", subtype: null, minYear: null, maxYear: null, steps: [
       { label: "Confirm upgrade goal with customer", hours: 0.25 },
-      { label: "Back up user data", hours: 0.5 },
-      { label: "Mount & cable new drive", hours: 0.25 },
+      { label: "Back up user data", hours: 0.5, wait: true },
+      { label: "Mount & cable new drive", hours: 0.5 },
       { label: "Set master/slave jumpers", hours: 0.25, minYear: 1986, maxYear: 2005 },
-      { label: "Partition & format", hours: 0.5 },
-      { label: "Migrate system to new drive", hours: 0.5, minYear: 2010 },
+      { label: "Partition & format", hours: 0.5, wait: true },
+      { label: "Migrate system to new drive", hours: 0.5, minYear: 2010, wait: true },
       { label: "Verify boot & restore data", hours: 0.25 }
     ] },
     { type: "upgrade", partCategory: "gpu", subtype: null, minYear: null, maxYear: null, steps: [
@@ -436,8 +444,8 @@
       { label: "Cable up & tidy", hours: 0.5 },
       { label: "First POST & setup", hours: 0.25 },
       { label: "Set jumpers & CMOS options", hours: 0.25, maxYear: 1997 },
-      { label: "Install operating system", hours: 0.75 },
-      { label: "Install drivers & updates", hours: 0.5, minYear: 1995 },
+      { label: "Install operating system", hours: 0.75, wait: true },
+      { label: "Install drivers & updates", hours: 0.5, minYear: 1995, wait: true },
       { label: "Benchmark & validate targets", hours: 0.25, minYear: 1997 },
       { label: "Final QC & handoff", hours: 0.25 }
     ] },
@@ -469,7 +477,7 @@
       { label: "Strip down & deep clean", hours: 0.75 },
       { label: "Replace the faulty part", hours: 0.75 },
       { label: "Reseat & service everything else", hours: 0.5 },
-      { label: "Fresh OS & era software load", hours: 0.75 },
+      { label: "Fresh OS & era software load", hours: 0.75, wait: true },
       { label: "Overnight burn-in checklist", hours: 0.5 },
       { label: "Polish, price & shelf", hours: 0.25 }
     ] },
@@ -489,11 +497,11 @@
     ] },
     // ---------------- software ----------------
     { type: "software", partCategory: null, subtype: "os_install", minYear: null, maxYear: null, steps: [
-      { label: "Back up user data", hours: 0.5 },
+      { label: "Back up user data", hours: 0.5, wait: true },
       { label: "Wipe & partition", hours: 0.25 },
-      { label: "Install operating system", hours: 0.75 },
-      { label: "Install drivers & updates", hours: 0.5, minYear: 1995 },
-      { label: "Restore data & settings", hours: 0.5 },
+      { label: "Install operating system", hours: 1.0, wait: true },
+      { label: "Install drivers & updates", hours: 0.5, minYear: 1995, wait: true },
+      { label: "Restore data & settings", hours: 0.5, wait: true },
       { label: "Final checks & handoff notes", hours: 0.25 }
     ] },
     { type: "software", partCategory: null, subtype: "virus", minYear: null, maxYear: null, steps: [
@@ -557,10 +565,10 @@
     { type: "peripheral", partCategory: null, subtype: "crt", minYear: null, maxYear: null, steps: [
       { label: "Intake & symptom check", hours: 0.25 },
       { label: "Discharge tube & verify zero voltage", hours: 0.25, cond: "crt-kit" },
-      { label: "Open back & inspect HV section", hours: 0.5 },
-      { label: "Replace failed flyback/section parts", hours: 0.75 },
-      { label: "Adjust focus & geometry", hours: 0.5 },
-      { label: "Soak test", hours: 0.5 }
+      { label: "Open back & inspect HV section", hours: 0.75 },
+      { label: "Replace failed flyback/section parts", hours: 1.0 },
+      { label: "Adjust focus & geometry", hours: 0.75 },
+      { label: "Soak test", hours: 0.75, wait: true }
     ] },
     { type: "peripheral", partCategory: null, subtype: "lcd", minYear: null, maxYear: null, steps: [
       { label: "Intake & symptom check", hours: 0.25 },
@@ -641,7 +649,7 @@
       { label: "Heat-gun the adhesive frame", hours: 0.5 },
       { label: "Lift the glass with picks & suction", hours: 0.5 },
       { label: "Swap panel, battery or port flex", hours: 0.5 },
-      { label: "Rebond, clamp & cure", hours: 0.5 },
+      { label: "Rebond, clamp & cure", hours: 0.5, wait: true },
       { label: "Battery calibration & final test", hours: 0.5 }
     ] }
   ];

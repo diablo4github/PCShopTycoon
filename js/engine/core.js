@@ -88,7 +88,15 @@
     // 1.2-1.8x band. Trimming sale value ~4.7% brings per-flip margin back
     // inside the band without touching supply or hours (0.71 measured
     // 1.83 median — one more notch).
-    REFURB_SALE_RATIO: 0.70,
+    // §20.1 retune 0.70 -> 0.59: the cart replaces assignPart's old per-call
+    // cash-affordability gate with atomic-checkout batching — a customer-job
+    // bot no longer stalls mid-repair on a single unaffordable retail buy, so
+    // jobs' $/hour rose across the board while flips' $/hour (already a much
+    // smaller 6-sale sample per 40-day run) didn't move the same way. At the
+    // fixed gate seeds the 1983 median flips/jobs ratio drifted to 3.29x;
+    // trimming sale value ~16% re-centers it at 1.50x median (cash band and
+    // offer ramp both unaffected — verified at the gate seeds).
+    REFURB_SALE_RATIO: 0.59,
     // §13.6: condition scales flip PROCEEDS but is not in the bot's buy decision
     // and consumes the same single RNG draw whatever its range — so nudging the
     // mean 0.93->0.99 restores flip-margin headroom (ratio back toward ~1.4)

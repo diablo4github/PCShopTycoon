@@ -2860,13 +2860,13 @@
     var idx = Number(needIndex);
     var need = job.needs[idx];
     if (!need) return err('No such part slot');
-    if (!need.filledPartIds.length) {
-      // §20.2: nothing installed yet, but there may be an in-cart reservation
-      // for this slot (assignPart's un-stocked path) — release that instead.
-      var rel = Engine.cartReleaseNeedLink(state, job.id, idx, partId || null);
-      if (rel.ok) return { ok: true, unlinkedFromCart: true, returned: rel.partId, qty: rel.qty };
-      return err('Nothing assigned to that slot');
-    }
+    // §20.2: cart reservations release FIRST (LIFO — they were added after any
+    // stock fills, and they're not owned/charged yet, so "un-assigning" them
+    // is pure bookkeeping). Only when no cart link matches does this fall
+    // through to un-reserving an actually-assigned part.
+    var rel = Engine.cartReleaseNeedLink(state, job.id, idx, partId || null);
+    if (rel.ok) return { ok: true, unlinkedFromCart: true, returned: rel.partId, qty: rel.qty };
+    if (!need.filledPartIds.length) return err('Nothing assigned to that slot');
     var st = installStepFor(job, idx);
     if (st && st.done) return err('Already installed — too late to unassign');
     var pid = partId != null ? String(partId) :

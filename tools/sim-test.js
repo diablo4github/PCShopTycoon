@@ -316,10 +316,30 @@ function botFillOpts(E, job) {
 // §20.1: a reasonable player checks the cart out once it has grown a line —
 // otherwise non-rush assignPart calls just sit unconverted in the cart
 // forever (§20.2 replaced the old "order it now" behavior with "add to cart
-// now"). Cheap (0.2h) and safe to call repeatedly (no-op on an empty cart);
-// waits for affordability rather than forcing a checkout the bot can't pay.
+// now"). Checkout is ATOMIC, so an unaffordable multi-unit line (an 8-unit
+// contract slot, say) would wedge the whole cart until cash catches up — the
+// pre-cart assignPart handled this with an affordability-capped PARTIAL
+// order, and the player's cart-era remedy is trimming the line down. The bot
+// does the same: release one unit at a time from the priciest job-linked
+// line (unassignPart frees the slot to re-cart later) until the checkout
+// clears. Cheap (0.2h) and safe to call repeatedly (no-op on an empty cart).
 function botCheckoutCart(E) {
   var cart = E.getCart();
+  if (!cart.count) return false;
+  var guard = 0;
+  while (cart.total > E.getState().cash + 1e-6 && guard++ < 60) {
+    var best = null;
+    cart.items.forEach(function (it) {
+      (it.jobLinks || []).forEach(function (l) {
+        if (l.qty > 0 && (!best || it.unitPrice > best.unitPrice))
+          best = { unitPrice: it.unitPrice, link: l, partId: it.partId };
+      });
+    });
+    if (!best) break;
+    var u = E.unassignPart(best.link.jobId, best.link.needIndex, best.partId);
+    if (!u.ok || !u.unlinkedFromCart) break;
+    cart = E.getCart();
+  }
   if (!cart.count) return false;
   if (cart.total > E.getState().cash + 1e-6) return false;
   var r = E.checkoutCart({ retailShipping: 'next-day' });
@@ -5251,13 +5271,21 @@ function phantomFillScenario() {
   var dbl = E.assignPart(job2.id, need2.index, opt2.partId);
   assert(!dbl.ok && /cart|truck/i.test(dbl.error || ''),
          'phantom: double-click must not double-book, got ' + JSON.stringify(dbl));
+  // §20.1: setCartQty refuses to drop below the line's job-linked total
+  if (cartQtyB >= 2) {
+    var floorB = E.setCartQty(b.itemId, cartQtyB - 1);
+    assert(!floorB.ok && /promised|below/i.test(floorB.error || ''),
+           'phantom: setCartQty below the linked total must refuse readably, got ' +
+           JSON.stringify(floorB));
+  }
   // checkout charges exactly the cart line, orders it next-day, job-linked
   var chk = E.checkoutCart({ retailShipping: 'next-day' });
   if (!assert(chk.ok, 'phantom: checkout failed: ' + (chk.error || ''))) return;
   var chargedB = (cashB - s.cash);
   assert(Math.abs(chargedB - (cartQtyB * opt2.price)) < 0.05,
          'phantom: ordered units must be paid at checkout, not before');
-  assert(chk.filledNow === 0 && (E.getPendingOrders() || []).some(function (o) {
+  // (raw state read: the getPendingOrders VIEW doesn't expose job links)
+  assert(chk.filledNow === 0 && (s.pendingOrders || []).some(function (o) {
     return o.jobId === job2.id && o.needIndex === need2.index && o.qty === cartQtyB;
   }), 'phantom: checkout must create the job-linked pending order');
   assert(E.getCart().items.length === 0, 'phantom: cart must be empty after checkout');
@@ -5283,7 +5311,7 @@ function phantomFillScenario() {
   var s3 = E.getState();
   s3.cash = 60000;
   s3.reputation.prestige = 2;
-  var conserved = true, dayBad = -1;
+  var conserved = true, dayBad = -1, orphanBad = null;
   for (var d = 0; d < 40 && conserved; d++) {
     E.getOffers().slice().forEach(function (o) {
       if (o.crt) { E.declineOffer(o.id); return; }
@@ -5328,12 +5356,29 @@ function phantomFillScenario() {
       var live = (E.inventoryEntry(s3, pid3) || { qty: 0 }).qty;
       if ((shadow[pid3] || 0) !== live) { conserved = false; dayBad = d; }
     });
+    // §20.2 orphan-link invariant: after every overnight, each cart jobLink
+    // must point at a job still on the active list (completed/abandoned/
+    // deadline-swept jobs clean their links on the way out).
+    if (orphanBad == null) {
+      var activeIds = {};
+      s3.jobs.active.forEach(function (jA) { activeIds[jA.id] = true; });
+      ((s3.cart && s3.cart.items) || []).forEach(function (it) {
+        (it.jobLinks || []).forEach(function (l) {
+          if (!activeIds[l.jobId] && orphanBad == null) {
+            orphanBad = 'day ' + d + ': cart line ' + it.partId +
+                        ' links dead job #' + l.jobId;
+          }
+        });
+      });
+    }
   }
   Engine.inventoryAdd = origAdd;
   Engine.inventoryRemove = origRemove;
   assert(conserved, 'phantom: inventory conservation broke on day ' + dayBad);
-  console.log('  rush 1+7 charged ok, default 1 now + 7 on the truck ok, ' +
-              'double-click guarded, 40-day shadow-ledger sweep conserved');
+  assert(orphanBad == null, 'phantom: orphan cart jobLink survived — ' + orphanBad);
+  console.log('  rush 1+7 charged ok, default 1 now + 7 in the cart -> checkout ok, ' +
+              'double-click guarded, 40-day shadow-ledger sweep conserved, ' +
+              'zero orphan cart links');
 }
 
 // ------------------------------------------------------------------
@@ -5824,6 +5869,341 @@ function storageRuleScenario() {
 }
 
 // ------------------------------------------------------------------
+// §20.1/§20.2/§20.3: shopping cart lifecycle — browse feed, add/merge/qty/
+// remove, job-linked lines, atomic checkout (both shipping modes), wrapper
+// isolation, morning delivery auto-fill.
+// ------------------------------------------------------------------
+function cartScenario() {
+  console.log('--- Shopping cart lifecycle (§20.1/§20.2/§20.3) ---');
+  var E = Engine, C = Engine.CONFIG;
+  var r = E.newGame({ eraId: eraOf1996().id, shopName: 'Cart', seed: 52001 });
+  if (!assert(r.ok, 'cart: newGame failed')) return;
+  var s = E.getState();
+  s.cash = 50000;
+  assert(C.CHECKOUT_HOURS === 0.2, 'cart: CONFIG.CHECKOUT_HOURS must be 0.2');
+
+  // Empty-cart guards
+  var empty = E.getCart();
+  assert(empty.items.length === 0 && empty.groups.length === 0 &&
+         empty.total === 0 && empty.count === 0, 'cart: empty view shape wrong');
+  assert(!E.checkoutCart({ retailShipping: 'next-day' }).ok,
+         'cart: empty checkout must refuse');
+
+  // §20.3 browse feed: era-filtered, source-priced
+  var cat = E.getSourceCatalog('retail', {});
+  assert(cat.categories.length >= 3 && cat.categories.every(function (c2) {
+    return c2.id && c2.label && c2.count >= 1;
+  }), 'cart: retail catalog categories malformed');
+  var ramCat = E.getSourceCatalog('retail', { category: 'ram' });
+  assert(ramCat.rows.length >= 1 && ramCat.rows.every(function (row) {
+    return row.category === 'ram' && row.unitPrice > 0 && row.year >= 1970;
+  }), 'cart: category filter must narrow rows');
+  var probeRow = ramCat.rows[0];
+  var probePart = Engine.partById(probeRow.partId);
+  assert(Math.abs(probeRow.unitPrice -
+                  Engine.Pricing.priceOf(probePart, s, { buy: true })) < 0.01,
+         'cart: retail rows must price at buy-side priceOf');
+  var open = openDistributors(E).filter(function (d) { return !d.grayMarket; })[0] ||
+             openDistributors(E)[0];
+  if (!assert(open, 'cart: no unlocked distributor at 1996')) return;
+  var dcat = E.getSourceCatalog(open.id, { category: 'ram' });
+  assert(dcat.rows.length >= 1, 'cart: supplier catalog empty');
+  var lockedD = E.getDistributors().filter(function (d) { return d.locked; })[0];
+  if (lockedD) {
+    var lcat = E.getSourceCatalog(lockedD.id, {});
+    assert(lcat.categories.length === 0 && lcat.rows.length === 0,
+           'cart: locked distributor must browse empty');
+  }
+
+  // Add + merge (retail), supplier line, live pricing, group shapes
+  var partA = probePart;
+  var a1 = E.addToCart('retail', partA.id, 2);
+  assert(a1.ok && a1.itemId >= 1, 'cart: addToCart failed: ' + (a1.error || ''));
+  var a2 = E.addToCart('retail', partA.id, 1);
+  assert(a2.ok && a2.itemId === a1.itemId, 'cart: same source+part must merge');
+  var supPart = Engine.partById(dcat.rows[0].partId);
+  var a3 = E.addToCart(open.id, supPart.id, 5);
+  assert(a3.ok && a3.itemId !== a1.itemId, 'cart: supplier line failed: ' + (a3.error || ''));
+  var view = E.getCart();
+  assert(view.items.length === 2 && view.count === 8, 'cart: line/count math wrong');
+  var lineA = view.items.filter(function (it) { return it.id === a1.itemId; })[0];
+  var lineS = view.items.filter(function (it) { return it.id === a3.itemId; })[0];
+  assert(lineA.qty === 3 && lineA.source === 'retail' && lineA.sourceName &&
+         Math.abs(lineA.unitPrice - Engine.Pricing.priceOf(partA, s, { buy: true })) < 0.01 &&
+         Math.abs(lineA.lineTotal - Engine.round2(lineA.unitPrice * 3)) < 0.01,
+         'cart: retail line must price live at buy-side');
+  var q5 = E.quoteOrder(open.id, supPart.id, 5);
+  assert(lineS.qty === 5 && Math.abs(lineS.unitPrice - q5.unitCost) < 0.01 &&
+         Math.abs(lineS.lineTotal - q5.total) < 0.01,
+         'cart: supplier line must price via quoteOrder at the LINE qty');
+  var gRetail = view.groups.filter(function (g) { return g.source === 'retail'; })[0];
+  var gSup = view.groups.filter(function (g) { return g.source === open.id; })[0];
+  var expFee = Engine.round2(Math.max(C.RUSH_SURCHARGE_MIN,
+                                      C.RUSH_SURCHARGE_PCT * lineA.lineTotal));
+  assert(gRetail && Array.isArray(gRetail.shipping) &&
+         gRetail.shipping[0].id === 'same-day' &&
+         Math.abs(gRetail.shipping[0].fee - expFee) < 0.01 &&
+         gRetail.shipping[1].id === 'next-day' && gRetail.shipping[1].fee === 0,
+         'cart: retail group shipping options wrong');
+  assert(gSup && gSup.shipping === null && gSup.leadDays === q5.leadDays,
+         'cart: supplier group must carry fixed leadDays, no shipping choice');
+  assert(Math.abs(view.total - Engine.round2(lineA.lineTotal + lineS.lineTotal)) < 0.01,
+         'cart: total must exclude the courier fee');
+
+  // setCartQty up/down/zero-removes
+  assert(E.setCartQty(a3.itemId, 6).ok && E.getCart().count === 9, 'cart: qty raise failed');
+  assert(E.setCartQty(a3.itemId, 0).ok &&
+         E.getCart().items.every(function (it) { return it.id !== a3.itemId; }),
+         'cart: qty 0 must remove the line');
+  var a4 = E.addToCart(open.id, supPart.id, 5);   // restore the supplier line
+
+  // §20.2: Cart & Assign — un-stocked assign becomes a job-linked cart line
+  var offer = findDecisionOffer(s, function (o) {
+    return o.type === 'repair' && o.fault && o.fault.partCategory && !o.rush;
+  });
+  if (!assert(offer, 'cart: no part-fault repair generated')) return;
+  E.acceptOffer(offer.id);
+  var job = E.getActiveJobs().filter(function (j) { return j.id === offer.id; })[0];
+  disarmDecisions(job); pokeBigPsu(E, job);
+  s.hoursLeft = 8;
+  if (!assert(E.diagnoseJob(job.id).ok, 'cart: diagnose failed')) return;
+  var need = E.getJobNeeds(job.id)[0];
+  var opt = need.options.filter(function (o) {
+    return o.meets && !o.overPsu && o.source === 'market' && o.partId !== partA.id;
+  })[0] || need.options.filter(function (o) {
+    return o.meets && !o.overPsu && o.source === 'market';
+  })[0];
+  if (!assert(opt, 'cart: no market option for the need')) return;
+  if (!assert(opt.partId !== partA.id,
+              'cart: probe collision — need option is the plain retail part')) return;
+  var aj = E.assignPart(job.id, need.index, opt.partId);
+  assert(aj.ok && aj.inCart === true && aj.itemId != null,
+         'cart: un-stocked assign must return {ok, inCart, itemId}, got ' + JSON.stringify(aj));
+  var nv = E.getJobNeeds(job.id)[0];
+  assert(nv.inCart >= 1, 'cart: need view must expose inCart qty');
+  var linked = E.getCart().items.filter(function (it) { return it.id === aj.itemId; })[0];
+  assert(linked && linked.jobLinks.length === 1 && linked.jobLinks[0].jobId === job.id &&
+         linked.jobLinks[0].jobTitle === job.title,
+         'cart: job link must carry the job title for the UI');
+  // qty 0 = explicit removal (removeCartItem semantics): link clears, slot
+  // re-opens. (The below-linked-total REFUSAL needs a multi-unit link — the
+  // §19.1 phantom scenario probes that on its 7-unit contract line.)
+  var rm0 = E.setCartQty(aj.itemId, 0);
+  assert(rm0.ok && (rm0.unlinked || []).length === 1 &&
+         E.getJobNeeds(job.id)[0].inCart === 0,
+         'cart: qty-0 removal must unlink the job slot, got ' + JSON.stringify(rm0));
+  var ajB = E.assignPart(job.id, need.index, opt.partId);
+  assert(ajB.ok && ajB.inCart === true, 'cart: re-assign after removal failed');
+  // unassign the in-cart slot -> link + line shrink away; then re-assign
+  var un = E.unassignPart(job.id, need.index);
+  assert(un.ok && un.unlinkedFromCart === true &&
+         E.getJobNeeds(job.id)[0].inCart === 0,
+         'cart: unassign must release the cart link');
+  var aj2 = E.assignPart(job.id, need.index, opt.partId);
+  assert(aj2.ok && aj2.inCart === true, 'cart: re-assign failed');
+
+  // §20.1 ATOMIC checkout failure: nothing moves on any refusal path
+  var cartBefore = JSON.stringify(E.getCart());
+  var ordersBefore = (s.pendingOrders || []).length;
+  var cashSave = s.cash;
+  var hoursB4 = s.hoursLeft;
+  var totalNow = E.getCart().total;
+  s.cash = Engine.round2(totalNow - 1);
+  var fail1 = E.checkoutCart({ retailShipping: 'next-day' });
+  assert(!fail1.ok && /cash/i.test(fail1.error || ''),
+         'cart: underfunded checkout must refuse readably');
+  assert(s.cash === Engine.round2(totalNow - 1) && s.hoursLeft === hoursB4 &&
+         JSON.stringify(E.getCart()) === cartBefore &&
+         (s.pendingOrders || []).length === ordersBefore,
+         'cart: failed checkout must leave cash/hours/cart/orders untouched');
+  s.cash = cashSave;
+  var hoursSave = s.hoursLeft;
+  s.hoursLeft = -E.getConfig().overtimeCap;   // too exhausted for the 0.2h
+  var fail2 = E.checkoutCart({ retailShipping: 'next-day' });
+  assert(!fail2.ok && s.cash === cashSave &&
+         JSON.stringify(E.getCart()) === cartBefore,
+         'cart: exhausted checkout must charge nothing');
+  s.hoursLeft = hoursSave;
+  assert(!E.checkoutCart({ retailShipping: 'teleport' }).ok,
+         'cart: bogus shipping choice must refuse');
+
+  // Next-day checkout: one 0.2h spend, lines -> pendingOrders with links
+  var cash0 = s.cash, hours0 = s.hoursLeft;
+  var finalView = E.getCart();
+  var chk = E.checkoutCart({ retailShipping: 'next-day' });
+  if (!assert(chk.ok, 'cart: checkout failed: ' + (chk.error || ''))) return;
+  assert(chk.hoursSpent === 0.2 && Engine.round1(hours0 - s.hoursLeft) === 0.2,
+         'cart: checkout must cost exactly CHECKOUT_HOURS');
+  assert(chk.courierFee === 0 && Math.abs(chk.charged - finalView.total) < 0.01 &&
+         Math.abs((cash0 - s.cash) - chk.charged) < 0.01,
+         'cart: next-day charge must equal the cart total, no fee');
+  assert(E.getCart().items.length === 0, 'cart: checkout must empty the cart');
+  assert((s.pendingOrders || []).some(function (o) {
+    return o.source === 'retail' && o.jobId === job.id && o.needIndex === need.index;
+  }), 'cart: linked retail line must become a job-linked retail order');
+  assert((s.pendingOrders || []).some(function (o) {
+    return o.distributorId === open.id && o.partId === supPart.id &&
+           o.arrivesDay === s.day + q5.leadDays;
+  }), 'cart: supplier line must ship at the distributor lead');
+  E.endDay();
+  assert(job.needs[need.index].filledPartIds.length >= 1,
+         'cart: morning truck must auto-fill the linked need');
+  assert((E.inventoryEntry(s, partA.id) || { qty: 0 }).qty >= 3,
+         'cart: plain retail line must land in stock next morning');
+
+  // Same-day checkout: one cart-level courier fee, instant everything
+  s.hoursLeft = 8;
+  var sdPart = Engine.Jobs.purchasableByCategory(s, 'cooling')[0] ||
+               Engine.Jobs.purchasableByCategory(s, 'storage')[0];
+  if (!assert(sdPart, 'cart: no part for the same-day probe')) return;
+  E.addToCart('retail', sdPart.id, 2);
+  var sdView = E.getCart();
+  var sdFee = Engine.round2(Math.max(C.RUSH_SURCHARGE_MIN,
+                                     C.RUSH_SURCHARGE_PCT * sdView.total));
+  var invBefore = (E.inventoryEntry(s, sdPart.id) || { qty: 0 }).qty;
+  var cashSd = s.cash;
+  var chk2 = E.checkoutCart({ retailShipping: 'same-day' });
+  assert(chk2.ok && Math.abs(chk2.courierFee - sdFee) < 0.01 &&
+         Math.abs(chk2.charged - (sdView.total + sdFee)) < 0.01 &&
+         Math.abs((cashSd - s.cash) - chk2.charged) < 0.01,
+         'cart: same-day fee math off: ' + JSON.stringify(chk2));
+  assert((E.inventoryEntry(s, sdPart.id) || { qty: 0 }).qty === invBefore + 2,
+         'cart: same-day lines must land in stock immediately');
+
+  // §20.1 wrappers stay OFF the player's cart & skip the supply-run gate
+  E.addToCart('retail', partA.id, 1);
+  var cartSnap = JSON.stringify(E.getCart());
+  s.hoursLeft = 8;
+  var h1 = s.hoursLeft;
+  var bw = E.buyPart(sdPart.id, 1);
+  assert(bw.ok && bw.ordered === true && Engine.round1(h1 - s.hoursLeft) === 0.2,
+         'cart: buyPart wrapper must cost 0.2h and order next-day');
+  assert(s.supplyRunDoneToday === false,
+         'cart: part purchases must not consume the supply-run gate');
+  var bw2 = E.buyPart(sdPart.id, 1);   // second buy, same day: another flat 0.2h
+  assert(bw2.ok && Engine.round1(h1 - s.hoursLeft) === 0.4,
+         'cart: no once-a-day gating on wrapper buys');
+  var pw = E.placeOrder(open.id, supPart.id, 1);
+  assert(pw.ok, 'cart: placeOrder wrapper failed: ' + (pw.error || ''));
+  assert(JSON.stringify(E.getCart()) === cartSnap,
+         'cart: wrappers must never touch the player’s cart');
+  var clr = E.clearCart();
+  assert(clr.ok && E.getCart().items.length === 0, 'cart: clearCart failed');
+  console.log('  browse/add/merge/qty ok, job link + unassign ok, atomic refusals ' +
+              'clean, next-day links -> truck -> auto-fill ok, same-day fee ' +
+              Engine.fmtMoney(sdFee) + ' ok, wrappers isolated at 0.2h');
+}
+
+// ------------------------------------------------------------------
+// §20.4 (#4): abandoning a stock build never touches reputation and returns
+// every committed part to inventory; the news line is the neutral shop-project
+// one (no "undefined will not be recommending the shop").
+// ------------------------------------------------------------------
+function stockBuildAbandonScenario() {
+  console.log('--- Stock-build abandon: parts back, zero rating delta (§20.4) ---');
+  var E = Engine;
+  var era = DATA.ERAS.filter(function (e) { return e.startYear >= 1996; })[0] ||
+            DATA.ERAS[DATA.ERAS.length - 1];
+  var r = E.newGame({ eraId: era.id, shopName: 'Shelve', seed: 53001 });
+  if (!assert(r.ok, 'shelve: newGame failed')) return;
+  var s = E.getState();
+  s.cash = 200000;
+  s.customBuildsUnlocked = true;
+  if (s.shop.equipment.indexOf('build-bench') === -1) s.shop.equipment.push('build-bench');
+  var st = E.startStockBuild();
+  if (!assert(st.ok, 'shelve: start failed: ' + (st.error || ''))) return;
+  var job = E.getActiveJobs().filter(function (j) { return j.id === st.jobId; })[0];
+  var conf = tryConfigureBuild(E, job);
+  if (!assert(conf === 'committed', 'shelve: configure failed (' + conf + ')')) return;
+  var committed = (job.partsUsed || []).map(function (pu) { return pu.partId; });
+  if (!assert(committed.length >= 5, 'shelve: build committed too few parts')) return;
+  var ratingBefore = s.reputation.rating;
+  var histBefore = s.reputation.history.length;
+  var failsBefore = s.reputation.jobsFailed;
+  var invCount = function (pid) { return (E.inventoryEntry(s, pid) || { qty: 0 }).qty; };
+  var invBefore = {};
+  committed.forEach(function (pid) { invBefore[pid] = invBefore[pid] || invCount(pid); });
+  var ab = E.abandonJob(job.id);
+  assert(ab.ok && Array.isArray(ab.returned) && ab.returned.length === committed.length,
+         'shelve: abandon must return every committed part, got ' + JSON.stringify(ab));
+  assert(s.reputation.rating === ratingBefore &&
+         s.reputation.history.length === histBefore &&
+         s.reputation.jobsFailed === failsBefore,
+         'shelve: stock-build abandon must never touch reputation');
+  var shortfall = committed.filter(function (pid) {
+    var want = committed.filter(function (p2) { return p2 === pid; }).length;
+    return invCount(pid) < (invBefore[pid] || 0) + want;
+  });
+  assert(shortfall.length === 0,
+         'shelve: parts missing from inventory after abandon: ' + shortfall.join(','));
+  var news = E.getNews(1)[0];
+  assert(news && /Shop project shelved/.test(news.headline) &&
+         /parts back on the shelf/.test(news.body) &&
+         news.body.indexOf('undefined') === -1,
+         'shelve: neutral news line wrong: ' + JSON.stringify(news));
+  console.log('  ' + committed.length + ' parts returned, rating ' +
+              ratingBefore.toFixed(2) + ' unchanged, neutral news line ok');
+}
+
+// ------------------------------------------------------------------
+// §20.4 (#6): device jobs never grow catalog-part needs — a 40-day run in the
+// device-heavy era asserts no device job ever carries an unfillable need and
+// every armed device discovery is device-billed (addCategory null).
+// ------------------------------------------------------------------
+function deviceNeedsScenario() {
+  console.log('--- Device jobs: no part-adding discoveries, 40 days (§20.4) ---');
+  var E = Engine;
+  var era = DATA.ERAS[DATA.ERAS.length - 1];
+  var r = E.newGame({ eraId: era.id, shopName: 'DeviceRun', seed: 54001 });
+  if (!assert(r.ok, 'devneeds: newGame failed')) return;
+  var s = E.getState();
+  s.cash = 100000;
+  var deviceJobsSeen = 0, bad = null;
+  function auditDeviceJob(j) {
+    if (!j || j.type !== 'device_repair') return;
+    deviceJobsSeen++;
+    if ((j.needs || []).length > 0 && !bad) {
+      bad = j.title + ': device job carries ' + j.needs.length + ' catalog need(s)';
+    }
+    var disc = j.decisionPlan && j.decisionPlan.discovery;
+    if (disc && disc.addCategory != null && !bad) {
+      bad = j.title + ': device discovery adds category "' + disc.addCategory + '"';
+    }
+  }
+  for (var d = 0; d < 40; d++) {
+    E.getOffers().slice().forEach(function (o) {
+      auditDeviceJob(o);
+      if (o.type === 'device_repair') E.acceptOffer(o.id);
+      else E.declineOffer(o.id);
+    });
+    var guard = 0, progress = true;
+    while (progress && guard++ < 120) {
+      progress = false;
+      E.getActiveJobs().slice().forEach(function (j) {
+        auditDeviceJob(j);
+        if (s.hoursLeft < 0.3) return;
+        if (botResolveDecision(E, j)) { auditDeviceJob(j); progress = true; }
+        if (j.needsDiagnosis && !j.diagnosed) {
+          if (E.diagnoseJob(j.id).ok) progress = true;
+          return;
+        }
+        var w = E.workJob(j.id, 'job');
+        if (w.ok && w.hoursSpent > 0) progress = true;
+        if (w.ok && w.decisionPending && botResolveDecision(E, j)) progress = true;
+        auditDeviceJob(j);
+      });
+    }
+    var res = E.endDay();
+    if (!res.ok || s.flags.gameOver) break;
+  }
+  assert(bad == null, 'devneeds: ' + bad);
+  assert(deviceJobsSeen >= 3,
+         'devneeds: too few device jobs sampled (' + deviceJobsSeen + ') to trust the sweep');
+  console.log('  ' + deviceJobsSeen + ' device-job sightings over 40 days — zero ' +
+              'catalog needs, every discovery device-billed');
+}
+
+// ------------------------------------------------------------------
 // §19.9: copy polish — humanized notes, hidden hints, capacity units.
 // ------------------------------------------------------------------
 function polishScenario() {
@@ -6167,6 +6547,9 @@ fogScenario();
 multiFillScenario();
 stockBuildScenario();
 storageRuleScenario();
+cartScenario();               // §20.1/§20.2/§20.3
+stockBuildAbandonScenario();  // §20.4 (#4)
+deviceNeedsScenario();        // §20.4 (#6)
 polishScenario();
 reputationScenario(DATA.ERAS[0]);
 survivalScenario(DATA.ERAS[0]);

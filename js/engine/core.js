@@ -88,7 +88,13 @@
     // 1.2-1.8x band. Trimming sale value ~4.7% brings per-flip margin back
     // inside the band without touching supply or hours (0.71 measured
     // 1.83 median — one more notch).
-    REFURB_SALE_RATIO: 0.70,
+    // v0.9.1 retune 0.70 -> 0.69: the §17.1 PSU-gate delta fix unwedged the
+    // 1983 flip lane (weak-PSU-era machines used to bogus-gate most
+    // replacement assigns), lifting the mixed-bot flip $/hour to a 1.82x
+    // median vs jobs — a hair over the 1.2-1.8 band. One notch re-centers it
+    // at 1.71x (cash band, offer ramp, and both dedicated parity guards
+    // verified in-band at the gate seeds).
+    REFURB_SALE_RATIO: 0.69,
     // §13.6: condition scales flip PROCEEDS but is not in the bot's buy decision
     // and consumes the same single RNG draw whatever its range — so nudging the
     // mean 0.93->0.99 restores flip-margin headroom (ratio back toward ~1.4)

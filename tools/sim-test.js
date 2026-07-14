@@ -920,7 +920,12 @@ function runDedicatedBot(era, mode, seed) {
   }
 
   var cashEnd = E.getState().cash;
+  // opPerDay: OPERATING $/day — the sum of per-completion margins (payout or
+  // sale minus that job's own parts/machine costs), excluding the fixed
+  // costs (rent, utilities, one-off equipment) both bots pay identically.
+  var opSum = perEvent.reduce(function (a, b) { return a + b; }, 0);
   return { perDay: Engine.round2((cashEnd - cashStart) / 60), events: perEvent,
+           opPerDay: Engine.round2(opSum / 60),
            dayNets: dayNets,
            count: mode === 'jobs' ? jobsDone : flipsSold, cashEnd: cashEnd };
 }
@@ -948,6 +953,17 @@ function jobsVsFlipsDedicatedScenario(era, seedBase) {
   // compensated once via ASIS_ARRIVAL_CHANCE 0.33 -> 0.46). Measured
   // medians across misc-stream trajectory variants: 2.80-3.15. The wedge
   // bug itself read 4.1-4.2 here, so 3.5 still trips on a real collapse.
+  // DEVIATION (reported, v0.9.1): the ratio now compares OPERATING $/day
+  // (per-completion margins) instead of raw net-cash/day. The §17.1
+  // PSU-gate delta fix unwedged the 1983 flip lane (weak-PSU-era machines
+  // used to bogus-gate most replacements, stranding 60-75% of bought
+  // machines); a fully-flowing dedicated flipper at 1983 completes ~30
+  // thin-margin flips whose NET-of-rent-and-equipment $/day hovers near
+  // zero, and the abs-ratio formula degenerates on a near-zero denominator
+  // (seed 71020: flips improved -$28.79 -> -$11.53/day and jobs unwedged
+  // $64 -> $131/day, yet the old ratio read 2.22 -> 11.39). Operating $/day
+  // excludes only the fixed costs BOTH bots pay identically, so a genuine
+  // collapse (wedged lane, tiny margin sum) still explodes the ratio.
   var ratios = [], allFlipEvents = [], okPairs = 0;
   var lastJob = null, lastFlip = null;
   for (var si = 0; si < GUARD_SEEDS.length; si++) {
@@ -956,12 +972,14 @@ function jobsVsFlipsDedicatedScenario(era, seedBase) {
     var flipRun = runDedicatedBot(era, 'flips', seed + 1);
     if (!jobRun || !flipRun) continue;
     lastJob = jobRun; lastFlip = flipRun;
-    var hi = Math.max(Math.abs(jobRun.perDay), Math.abs(flipRun.perDay));
-    var lo = Math.min(Math.abs(jobRun.perDay), Math.abs(flipRun.perDay));
+    var hi = Math.max(Math.abs(jobRun.opPerDay), Math.abs(flipRun.opPerDay));
+    var lo = Math.min(Math.abs(jobRun.opPerDay), Math.abs(flipRun.opPerDay));
     var ratio = lo > 0 ? hi / lo : (hi > 0 ? 99 : 1);
-    console.log('  seed ' + seed + ': jobs ' + Engine.fmtMoney(jobRun.perDay) +
-                '/day (' + jobRun.count + ' jobs) | flips ' +
-                Engine.fmtMoney(flipRun.perDay) + '/day (' + flipRun.count +
+    console.log('  seed ' + seed + ': jobs ' + Engine.fmtMoney(jobRun.opPerDay) +
+                '/day op (net ' + Engine.fmtMoney(jobRun.perDay) + ', ' +
+                jobRun.count + ' jobs) | flips ' +
+                Engine.fmtMoney(flipRun.opPerDay) + '/day op (net ' +
+                Engine.fmtMoney(flipRun.perDay) + ', ' + flipRun.count +
                 ' flips) — ratio ' + ratio.toFixed(2) + 'x');
     if (jobRun.count >= 3 && flipRun.count >= 2) {
       ratios.push(ratio);
@@ -4491,6 +4509,114 @@ function psuGateScenario() {
 }
 
 // ------------------------------------------------------------------
+// §17.1 QA fix (v0.9.1): the PSU gate is DELTA-based. A machine generated
+// over-drawn (weak supply under heavy parts) must still accept a
+// like-for-like / low-draw repair swap with NO psu decision armed — the
+// machine ran yesterday; a repair is never a PSU upsell moment. A genuinely
+// heavier swap on the same weak supply still gates exactly as before.
+// Repair needs are crafted WITHOUT originalPartId (the live-bug shape):
+// machineDrawAfterSwap must fall back to the machine's own displaced part
+// instead of double-counting it.
+// ------------------------------------------------------------------
+function psuDeltaScenario() {
+  console.log('--- PSU gate delta fix: over-drawn machines stay repairable (§17.1 QA) ---');
+  var E = Engine, C = Engine.CONFIG;
+  var r = E.newGame({ eraId: 'era2004', seed: 55007, shopName: 'PSU Delta' });
+  if (!r.ok) { console.log('  (era2004 unavailable — skipped)'); return; }
+  var s = E.getState();
+  s.cash = 100000;
+  function byDraw(cat, dir) {
+    return Engine.Jobs.purchasableByCategory(s, cat).slice().sort(function (a, b) {
+      return dir === 'desc' ? (b.powerDraw || 0) - (a.powerDraw || 0)
+                            : (a.powerDraw || 0) - (b.powerDraw || 0);
+    });
+  }
+  var heavyGpu = byDraw('gpu', 'desc')[0];
+  var lightGpu = byDraw('gpu', 'asc')[0];
+  var weakPsu = Engine.Jobs.purchasableByCategory(s, 'psu').slice().sort(function (a, b) {
+    return (a.watts || 0) - (b.watts || 0);
+  })[0];
+  var oldStorage = byDraw('storage', 'asc')[0];
+  var rigged = heavyGpu && lightGpu && weakPsu && oldStorage &&
+    Math.ceil((2 * (heavyGpu.powerDraw || 0) + (oldStorage.powerDraw || 0)) *
+              C.PSU_HEADROOM) > (weakPsu.watts || 0) &&
+    (heavyGpu.powerDraw || 0) > (lightGpu.powerDraw || 0);
+  if (!rigged) {
+    if (!REAL()) { console.log('  (mock catalog too thin for the rig — skipped)'); return; }
+    assert(false, 'psudelta: catalog lacks the over-drawn rig');
+    return;
+  }
+  function craftRepair(faultCat, machineIds, faultIdx) {
+    var job = {
+      id: s.jobs.nextId++, type: 'repair', subtype: null, rush: false,
+      title: 'Delta probe ' + faultCat, blurb: '',
+      customer: { name: 'Probe', type: 'home' }, taste: null, pay: 100,
+      offeredDay: s.day, deadlineDay: s.day + 5, difficulty: 2,
+      speed: 'standard', status: 'active', hoursRequired: 1, hoursDone: 0,
+      steps: [{ id: 's1', label: 'Swap in the replacement part', hours: 1,
+                done: false, progress: 0, needIndex: 0, kind: 'labor', running: false }],
+      stepIndex: 0, diagnosed: true, needsDiagnosis: false,
+      fault: { desc: 'probe', partCategory: faultCat, laborHours: 1 },
+      // The live-bug shape: plain repair need with NO originalPartId
+      needs: [{ category: faultCat, anyOfTags: null, minPerf: null, qty: 1,
+                filledPartIds: [], label: 'Replacement ' + faultCat,
+                originalPartId: null }],
+      build: null, units: 1, unitsDone: 0,
+      machine: { name: 'Overdrawn box', year: 2004, partIds: machineIds.slice(),
+                 askPrice: null, boughtFor: null, faultPartIdx: faultIdx,
+                 condition: null, faultRepaired: false, specSummary: 'probe' },
+      peripheral: null, osRequest: null, device: null, deviceModern: false,
+      devicePartsCost: 0, devicePayBase: null, drTier: 0, crt: false,
+      budgetAsk: false, result: null, decision: null, decisionPlan: null,
+      partsArriveDay: null
+    };
+    s.jobs.active.push(job);
+    return job;
+  }
+  // (a) like-for-like storage swap (0W delta) on the over-drawn machine:
+  // no overPsu flag, no refusal, no psu decision armed.
+  var jobA = craftRepair('storage',
+    [heavyGpu.id, heavyGpu.id, weakPsu.id, oldStorage.id], 3);
+  s.hoursLeft = 8;
+  var optA = E.getJobNeeds(jobA.id)[0].options.filter(function (o) {
+    return o.partId === oldStorage.id;
+  })[0];
+  assert(optA && optA.overPsu === false,
+         'psudelta: like-for-like option must not carry overPsu on an over-drawn machine');
+  var rA = E.assignPart(jobA.id, 0, oldStorage.id);
+  assert(rA.ok, 'psudelta: like-for-like repair swap refused: ' + (rA.error || ''));
+  assert(jobA.decision == null,
+         'psudelta: no PSU decision may be armed by a zero-delta swap, got ' +
+         JSON.stringify(jobA.decision && jobA.decision.subkind));
+  // (b) a genuinely heavier swap on the same weak supply still gates:
+  // refusal names the wattage, psu decision armed (§17.1 behavior intact).
+  var jobB = craftRepair('gpu', [lightGpu.id, weakPsu.id, oldStorage.id], 0);
+  s.hoursLeft = 8;
+  var optB = E.getJobNeeds(jobB.id)[0].options.filter(function (o) {
+    return o.partId === heavyGpu.id;
+  })[0];
+  assert(optB && optB.overPsu === true && optB.psuWatts === (weakPsu.watts || 0),
+         'psudelta: heavier option must still flag overPsu + psuWatts');
+  var rB = E.assignPart(jobB.id, 0, heavyGpu.id);
+  assert(!rB.ok && new RegExp((weakPsu.watts || 0) + 'W').test(rB.error || ''),
+         'psudelta: heavier swap must still gate with the wattage named, got ' +
+         JSON.stringify(rB));
+  assert(jobB.decision && jobB.decision.subkind === 'psu',
+         'psudelta: heavier swap must arm the PSU-swap decision');
+  // The quoted post-swap draw must not double-count the displaced part
+  // (originalPartId is null — the fallback subtracts the machine's own part).
+  // machine total (light gpu + storage) − displaced light gpu + heavy candidate
+  var expDraw = (oldStorage.powerDraw || 0) + (heavyGpu.powerDraw || 0);
+  assert(Math.abs(jobB.decision.pendingDraw - expDraw) < 0.001,
+         'psudelta: pendingDraw double-counts the displaced part (' +
+         jobB.decision.pendingDraw + ' vs ' + expDraw + ')');
+  console.log('  0W-delta swap assigned clean on a ' + weakPsu.watts + 'W box under 2x' +
+              (heavyGpu.powerDraw || 0) + 'W GPUs; ' + (lightGpu.powerDraw || 0) +
+              'W -> ' + (heavyGpu.powerDraw || 0) + 'W still gates at ' +
+              jobB.decision.pendingDraw + 'W quoted (no double-count)');
+}
+
+// ------------------------------------------------------------------
 // Scenario (§17.1 fix): diagnoseJob vs armed decision plans. A plan armed at
 // generation only saw the intake+diagnose checklist, so its marked step could
 // land ON the diagnose step — the barrier starved diagnoseJob's hour budget
@@ -6533,6 +6659,7 @@ decisionApprovalScenario(DATA.ERAS[0]);
 decisionTuningScenario();
 decisionGatingScenario(DATA.ERAS[0]);
 psuGateScenario();
+psuDeltaScenario();           // §17.1 QA fix (v0.9.1)
 diagnoseSteamScenario();
 distributorOrderScenario();
 distributorDealScenario();

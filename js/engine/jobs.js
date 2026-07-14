@@ -2637,6 +2637,32 @@
     }
     return 0;
   }
+  /* What filling this need will actually DISPLACE in machine.partIds —
+   * mirrors performInstall (which swaps the unrepaired fault slot). The
+   * need's recorded original wins when present; plain repair needs created
+   * without one (faultPartIdx was null at diagnosis — and every pre-fix
+   * in-flight save) fall back to the machine's own part: the fault slot if
+   * it matches the need's category, else the first part of that category.
+   * A fill that genuinely ADDS a part (a second stick on a summable need
+   * whose first unit already displaced the original; a category the machine
+   * never had) displaces nothing. */
+  function displacedPartFor(job, need) {
+    if (need.filledPartIds.length > 0) return null;  // original already displaced
+    if (need.originalPartId) {
+      var orig = Engine.partById(need.originalPartId);
+      return (orig && orig.category !== 'psu') ? orig : null;
+    }
+    if (!job.machine) return null;
+    if (job.machine.faultPartIdx != null && !job.machine.faultRepaired) {
+      var fp = Engine.partById(job.machine.partIds[job.machine.faultPartIdx]);
+      if (fp && fp.category === need.category && fp.category !== 'psu') return fp;
+    }
+    for (var i = 0; i < job.machine.partIds.length; i++) {
+      var p = Engine.partById(job.machine.partIds[i]);
+      if (p && p.category === need.category && p.category !== 'psu') return p;
+    }
+    return null;
+  }
   function machineDrawAfterSwap(job, need, candidate) {
     var draw = 0;
     for (var i = 0; i < job.machine.partIds.length; i++) {
@@ -2644,18 +2670,27 @@
       if (!p || p.category === 'psu') continue;
       draw += p.powerDraw || 0;
     }
-    var orig = need.originalPartId ? Engine.partById(need.originalPartId) : null;
-    if (orig && orig.category !== 'psu') draw -= orig.powerDraw || 0;
+    var displaced = displacedPartFor(job, need);   // §20.4 QA fix: never double-count
+    if (displaced) draw -= displaced.powerDraw || 0;
     draw += candidate.powerDraw || 0;
     return Math.max(0, draw);
   }
   /* Over-PSU when the machine has a rated supply and the post-swap draw needs
-   * more than it provides (same §5.1 headroom rule the build path enforces). */
+   * more than it provides (same §5.1 headroom rule the build path enforces).
+   * §20.4 QA fix: the gate is on the DELTA the assignment introduces, not the
+   * machine's absolute total — a like-for-like or lighter swap on a machine
+   * that was already running (even one generated over-drawn) is never the
+   * moment to demand a PSU upsell. Only a part that genuinely adds draw AND
+   * pushes the post-swap total past the supply's headroom gates. */
   function overPsuFor(job, need, candidate) {
     if (!job.machine || !candidate || candidate.category === 'psu') return false;
     if (job.psuSwapApproved) return false;   // beefier supply already quoted
     var watts = machinePsuWatts(job);
     if (!watts) return false;
+    var displaced = displacedPartFor(job, need);
+    var addedDraw = (candidate.powerDraw || 0) -
+                    (displaced ? (displaced.powerDraw || 0) : 0);
+    if (addedDraw <= 0) return false;
     var draw = machineDrawAfterSwap(job, need, candidate);
     return Math.ceil(draw * CFG().PSU_HEADROOM) > watts;
   }

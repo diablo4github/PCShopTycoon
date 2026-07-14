@@ -95,11 +95,25 @@ function check(name, cond, extra) {
     const len = await page.evaluate((t) => (document.getElementById('tab-' + t).innerHTML || '').length, tab);
     check('tab ' + tab + ' renders', len > 40, 'innerHTML length ' + len);
   }
-  const sparks = await page.evaluate(() => {
-    document.querySelector('.tab-btn[data-tab="market"]').click();
-    return new Promise((r) => setTimeout(() => r(document.querySelectorAll('#tab-market svg').length), 150));
-  });
-  check('market sparklines present', sparks > 5, 'svg count ' + sparks);
+  // §20.3 — market is a source→category→list drilldown; sparklines moved
+  // into the ⓘ part-info popover on each row.
+  await page.click('.tab-btn[data-tab="market"]');
+  await page.waitForTimeout(150);
+  check('market source picker renders', (await page.locator('#tab-market [data-action="mkt-pick-source"]').count()) >= 1);
+  await page.click('#tab-market [data-action="mkt-pick-source"][data-source="retail"]');
+  await page.waitForTimeout(150);
+  check('category picker renders', (await page.locator('#tab-market [data-action="mkt-pick-cat"]').count()) >= 3);
+  await page.click('#tab-market [data-action="mkt-pick-cat"] >> nth=0');
+  await page.waitForTimeout(150);
+  check('part rows with Add to Cart render', (await page.locator('#tab-market [data-action="mkt-add"]').count()) > 0);
+  const sparks = await page.evaluate(() => new Promise((r) => {
+    const b = document.querySelector('#tab-market [data-action="partinfo"]');
+    if (!b) { r(-1); return; }
+    b.click();
+    setTimeout(() => r(document.querySelectorAll('#modal-root svg').length), 200);
+  }));
+  check('sparkline lives in the part-info popover', sparks > 0, 'svg count ' + sparks);
+  await page.keyboard.press('Escape');
   check('no build-type offers in 1983', await page.evaluate(() => Engine.getOffers().every((o) => o.type !== 'build')));
 
   // ---------- Accept an offer, diagnose/work ----------
@@ -244,6 +258,14 @@ function check(name, cond, extra) {
   // ---------- v2: part info popover ----------
   await page.click('.tab-btn[data-tab="market"]');
   await page.waitForTimeout(150);
+  // §20.3 — partinfo buttons live on Level-3 rows; drill down if we're at a
+  // higher level (marketNav persists, so usually we land back on the list).
+  if ((await page.locator('[data-action="partinfo"]').count()) === 0) {
+    const src = page.locator('#tab-market [data-action="mkt-pick-source"][data-source="retail"]');
+    if ((await src.count()) > 0) { await src.click(); await page.waitForTimeout(150); }
+    const cat = page.locator('#tab-market [data-action="mkt-pick-cat"]');
+    if ((await cat.count()) > 0) { await cat.first().click(); await page.waitForTimeout(150); }
+  }
   if ((await page.locator('[data-action="partinfo"]').count()) > 0) {
     await page.click('[data-action="partinfo"] >> nth=0');
     await page.waitForTimeout(150);
@@ -314,19 +336,15 @@ function check(name, cond, extra) {
   console.log('== v2: Overtime ==');
   const ot = await page.evaluate(() => {
     const st = Engine.getState();
-    st.hoursLeft = 0.5;
-    // find or create an hour-consuming action: buy a part (supply run 0.5h) then another action
+    // §20.1 — part purchases cost a flat 0.2h checkout (no more supply run)
+    st.hoursLeft = 0.1;
     const mkt = Engine.getMarket({});
     const cheap = mkt.filter((r) => r.price < st.cash / 10)[0];
     if (!cheap) return { fail: 'no cheap part' };
-    st.supplyRunDoneToday = false;
-    Engine.buyPart(cheap.partId, 1);           // -0.5h -> 0
-    st.supplyRunDoneToday = false;
-    Engine.buyPart(cheap.partId, 1);           // -0.5h -> -0.5 (overtime)
+    Engine.buyPart(cheap.partId, 1);           // -0.2h -> -0.1 (overtime borrow)
     const negOk = st.hoursLeft < 0;
     st.hoursLeft = -2.9;
-    st.supplyRunDoneToday = false;
-    const refused = Engine.buyPart(cheap.partId, 1); // would break -3 floor
+    const refused = Engine.buyPart(cheap.partId, 1); // would break the -3 floor
     UI.refresh();
     return { negOk, floorRefused: refused.ok === false, err: refused.error || '' };
   });
@@ -425,30 +443,37 @@ function check(name, cond, extra) {
         const all = [...document.querySelectorAll('#tab-workbench button')].map((x) => x.textContent.trim());
         return all.filter((t) => /assign|order/i.test(t)).join(' | ');
       });
-      check('assign button labels present', /Assign from Stock|Order & Assign|Order &amp; Assign/i.test(btnText), btnText);
+      check('assign button labels present', /Assign from Stock|Add to Cart & Assign|Add to Cart &amp; Assign/i.test(btnText), btnText);
       const assignRes = await page.evaluate((jobId) => {
         const needs = Engine.getJobNeeds(jobId);
         if (!needs.length || !needs[0].options.length) return { skip: true };
         // v0.9: un-stocked assigns go on order; this test targets the classic
         // stock path, so guarantee a stocked option first (cash + rush-buy any
         // option that today's market will actually sell us).
-        const st = Engine.getState(); st.cash += 20000;
-        let opt = needs[0].options.find((o) => o.inStock);
-        if (!opt) {
-          st.supplyRunDoneToday = true;
-          for (const o of needs[0].options) {
-            if (Engine.buyPart(o.partId, 1, { rush: true }).ok) { opt = o; break; }
+        const st = Engine.getState(); st.cash += 20000; st.hoursLeft = 8;
+        const stocked = needs[0].options.filter((o) => o.inStock);
+        const buyable = needs[0].options.filter((o) => !o.inStock &&
+          Engine.buyPart(o.partId, 1, { rush: true }).ok);
+        let opt = null, a = null;
+        for (const o of stocked.concat(buyable)) {
+          a = Engine.assignPart(jobId, needs[0].index, o.partId);
+          if (a.ok) { opt = o; break; }
+          // §17.1 PSU gate on a heavier option: decline the swap and move on
+          // to a lighter one ("skip" = pick a lighter part instead).
+          const j2 = Engine.getActiveJobs().find((x) => x.id == jobId);
+          if (j2 && j2.decision && j2.decision.chosen == null && j2.decision.subkind === 'psu') {
+            Engine.decideJob(jobId, 'skip');
           }
         }
         if (!opt) return { skip: true };
-        const a = Engine.assignPart(jobId, needs[0].index, opt.partId);
         const after = Engine.getJobNeeds(jobId)[0];
         const assigned = (after.assigned || []).length > 0;
         const u = Engine.unassignPart(jobId, after.index, opt.partId);
         const after2 = Engine.getJobNeeds(jobId)[0];
         const unassigned = (after2.assigned || []).length === 0;
         Engine.assignPart(jobId, after2.index, opt.partId); // leave assigned
-        return { aOk: a.ok, assigned, uOk: u.ok, unassigned };
+        return { aOk: a.ok, aErr: a.error || null, assigned, uOk: u.ok, uErr: u.error || null,
+                 unassigned, optStock: !!opt.inStock, hours: Engine.getState().hoursLeft };
       }, v03.jobId);
       if (!assignRes.skip) {
         check('assignPart works', assignRes.aOk && assignRes.assigned, JSON.stringify(assignRes));
@@ -1421,10 +1446,11 @@ function check(name, cond, extra) {
   });
   check('distributor quote is discounted vs retail', !dist.none && !dist.quoteErr && dist.cheaper, JSON.stringify(dist));
   check('bulk order delivers after lead days', dist.placed && dist.delivered && dist.daysWaited >= dist.lead, JSON.stringify(dist));
-  await page.evaluate(() => { UI.refresh(); UI.switchTab('market'); });
+  // §20.3 — distributors are Level-1 source cards now, not a sub-tab
+  await page.evaluate(() => { UI.state.marketNav = { source: null, category: null }; UI.refresh(); UI.switchTab('market'); });
   await page.waitForTimeout(200);
-  const supTab = await clickSubTab(page, 'market', 'suppliers');
-  check('Suppliers sub-tab renders distributor cards', supTab && (await page.evaluate(() => /lead|relationship|deal|wholesale|distributor/i.test(document.getElementById('tab-market').innerText))));
+  const srcCards = await page.locator('#tab-market [data-action="mkt-pick-source"]').count();
+  check('source picker shows retail + distributor cards', srcCards >= 2 && (await page.evaluate(() => /lead|relationship|deal|wholesale|distributor/i.test(document.getElementById('tab-market').innerText))), 'cards ' + srcCards);
 
   console.log('== v0.8: era music engine ==');
   const music = await page.evaluate(async () => {
@@ -1505,7 +1531,7 @@ function check(name, cond, extra) {
       cooling: /\bcooling\b|\bheatsink\b|\bcooler\b|\bfan\b/,
     };
     let checked = 0, leaks = [];
-    for (let d = 0; d < 10; d++) {
+    for (let d = 0; d < 25 && checked < 8; d++) {
       Engine.getOffers().filter((o) => o.type === 'repair' && o.needsDiagnosis !== false).forEach((o) => {
         checked++;
         const txt = (o.title + ' ' + (o.blurb || '')).toLowerCase();
@@ -1529,17 +1555,25 @@ function check(name, cond, extra) {
         const need = (Engine.getJobNeeds(j.id) || []).find((n) => n.qty > 1 && n.options && n.options.length);
         if (!need) return { skip: 'no multi need' };
         const opt = need.options.find((op) => op.meets !== false) || need.options[0];
-        st.supplyRunDoneToday = true;
+        st.hoursLeft = 8;
+        Engine.clearCart();
         Engine.buyPart(opt.partId, 1, { rush: true });   // exactly 1 in stock
-        const cashBefore = st.cash;
         const r = Engine.assignPart(j.id, need.index, opt.partId);
+        // §20.2: remainder goes to the CART uncharged; checkout creates the
+        // job-linked pending orders and charges then.
+        const needAfter = (Engine.getJobNeeds(j.id) || []).find((n) => n.index === need.index) || {};
+        const inCart = needAfter.inCart || 0;
+        const cashBefore = st.cash;
+        const co = Engine.checkoutCart({ retailShipping: 'next-day' });
         const charged = Engine.round2(cashBefore - st.cash);
+        const linkedOrders = (st.pendingOrders || []).filter((po) => po.jobId === j.id)
+          .reduce((a, po) => a + po.qty, 0);
         // inventory VIEW consistency: every rendered row must match state identity
         const view = Engine.getInventoryView();
         const stateMap = {}; st.inventory.forEach((x) => stateMap[x.partId] = (stateMap[x.partId] || 0) + x.qty);
         const viewOk = view.every((row) => (stateMap[row.partId] || 0) === row.qty || true) &&
                        view.length === Object.keys(stateMap).filter((k) => stateMap[k] > 0).length;
-        return { ok: r.ok, filledNow: r.filledNow, ordered: r.orderedQty, remaining: r.remaining,
+        return { ok: r.ok, filledNow: r.filledNow, inCart, coOk: co.ok, linkedOrders,
                  chargedForRemainder: charged > 0, viewOk, units: j.units };
       }
       Engine.endDay();
@@ -1547,8 +1581,9 @@ function check(name, cond, extra) {
     return { skip: 'no contract found' };
   });
   if (!multi.skip) {
-    check('multi-fill: 1 stocked consumed + remainder ordered & charged',
-      multi.ok && multi.filledNow >= 1 && (multi.ordered || 0) + (multi.remaining || 0) >= multi.units - multi.filledNow && multi.chargedForRemainder,
+    check('multi-fill: 1 stocked consumed + remainder carted, checkout orders & charges',
+      multi.ok && multi.filledNow >= 1 && multi.inCart >= multi.units - multi.filledNow &&
+      multi.coOk && multi.linkedOrders >= multi.units - multi.filledNow && multi.chargedForRemainder,
       JSON.stringify(multi));
     check('inventory view rows match state identities (no conversion display bug)', multi.viewOk, JSON.stringify(multi));
   }
@@ -1561,6 +1596,156 @@ function check(name, cond, extra) {
     return { ok: r.ok, err: r.error, job: !!Engine.getActiveJobs().find((j) => j.stock || j.stockBuild || (j.type === 'build' && !j.pay)) };
   });
   check('stock build starts a shop project', stock.ok && stock.job, JSON.stringify(stock));
+
+  // ---------- v0.9.1 (§20): cart, drilldown, cart-assign, abandon ----------
+  console.log('== v0.9.1: cart & counter ==');
+  // §20.4 #4 — abandoning the shop project just started must not touch rep
+  const aband = await page.evaluate(() => {
+    const st = Engine.getState();
+    const j = Engine.getActiveJobs().find((x) => x.stockBuild || (x.type === 'build' && !x.pay));
+    if (!j) return { skip: true };
+    const ratingBefore = st.reputation.rating;
+    const r = Engine.abandonJob(j.id);
+    const newsTop = (st.news && st.news[0] && (st.news[0].headline + ' ' + (st.news[0].body || ''))) || '';
+    return { ok: r.ok, ratingSame: st.reputation.rating === ratingBefore,
+             noBadNews: !/not be recommending|undefined/i.test(newsTop), newsTop: newsTop.slice(0, 80) };
+  });
+  if (!aband.skip) {
+    check('free build abandon: rep untouched, sane news line',
+      aband.ok && aband.ratingSame && aband.noBadNews, JSON.stringify(aband));
+  }
+
+  // §20.1 — engine cart lifecycle: fee math, 0.2h, both shipping modes
+  const cartE = await page.evaluate(() => {
+    const st = Engine.getState(); st.cash = 100000; st.hoursLeft = 8;
+    Engine.clearCart();
+    const cats = Engine.getSourceCatalog('retail', {}).categories;
+    if (!cats.length) return { skip: 'no categories' };
+    const rows = Engine.getSourceCatalog('retail', { category: cats[0].id }).rows;
+    const r0 = rows.find((r) => r.unitPrice > 5) || rows[0];
+    if (!r0) return { skip: 'no rows' };
+    const a1 = Engine.addToCart('retail', r0.partId, 2);
+    const view1 = Engine.getCart();
+    const invB = st.inventory.filter((x) => x.partId === r0.partId).reduce((a, x) => a + x.qty, 0);
+    const hoursB = st.hoursLeft;
+    const co = Engine.checkoutCart({ retailShipping: 'same-day' });
+    const hoursSpent = Engine.round1(hoursB - st.hoursLeft);
+    const feeExpected = Math.max(Engine.CONFIG.RUSH_SURCHARGE_MIN,
+                                 Engine.round2(view1.total * Engine.CONFIG.RUSH_SURCHARGE_PCT));
+    const invNow = st.inventory.filter((x) => x.partId === r0.partId).reduce((a, x) => a + x.qty, 0);
+    Engine.addToCart('retail', r0.partId, 1);
+    const co2 = Engine.checkoutCart({ retailShipping: 'next-day' });
+    const pend = Engine.getPendingOrders().length;
+    Engine.endDay();
+    const invAfter = st.inventory.filter((x) => x.partId === r0.partId).reduce((a, x) => a + x.qty, 0);
+    return { a1ok: a1.ok, count: view1.count, coOk: co.ok, fee: co.courierFee, feeExpected,
+             hoursSpent, invGain: invNow - invB, coOk2: co2.ok, pend, delivered: invAfter - invNow };
+  });
+  if (!cartE.skip) {
+    check('cart add + count', cartE.a1ok && cartE.count === 2, JSON.stringify(cartE));
+    check('same-day checkout: instant stock + courier fee formula',
+      cartE.coOk && cartE.invGain >= 2 && Math.abs(cartE.fee - cartE.feeExpected) < 0.011, JSON.stringify(cartE));
+    check('checkout costs 0.2h flat', Math.abs(cartE.hoursSpent - 0.2) < 0.001, 'spent ' + cartE.hoursSpent);
+    check('next-day checkout: pending order, morning delivery',
+      cartE.coOk2 && cartE.pend > 0 && cartE.delivered >= 1, JSON.stringify(cartE));
+  } else check('cart lifecycle setup', false, JSON.stringify(cartE));
+
+  // §20.3 — drilldown clicks + cart drawer through the real UI
+  await page.evaluate(() => { Engine.clearCart(); UI.state.marketNav = { source: null, category: null }; UI.switchTab('market'); UI.refresh(); });
+  await page.waitForTimeout(200);
+  await page.click('#tab-market [data-action="mkt-pick-source"][data-source="retail"]');
+  await page.waitForTimeout(150);
+  await page.click('#tab-market [data-action="mkt-pick-cat"] >> nth=0');
+  await page.waitForTimeout(150);
+  const sortPills = await page.locator('#tab-market [data-action="mkt-sort"]').count();
+  check('sort pills present on part list', sortPills >= 2, 'pills ' + sortPills);
+  if (sortPills >= 2) {
+    await page.click('#tab-market [data-action="mkt-sort"] >> nth=1');
+    await page.waitForTimeout(150);
+    check('sorting keeps rows rendered', (await page.locator('#tab-market [data-action="mkt-add"]').count()) > 0);
+  }
+  await page.click('#tab-market [data-action="mkt-add"] >> nth=0');
+  await page.waitForTimeout(150);
+  const cartCount = await page.evaluate(() => Engine.getCart().count);
+  check('Add to Cart from the list works', cartCount >= 1, 'cart count ' + cartCount);
+  const cartBtn = page.locator('#tab-market [data-action="mkt-cart-open"]');
+  check('cart button visible with count', (await cartBtn.count()) > 0 && /1|\$/.test(await cartBtn.first().innerText()));
+  await cartBtn.first().click();
+  await page.waitForTimeout(200);
+  const shipRadios = await page.locator('#modal-root [data-action="cart-ship"], #modal-root input[name*="ship"]').count();
+  check('checkout modal shows shipping choice', shipRadios >= 2, 'radios ' + shipRadios);
+  check('checkout modal mentions the 0.2h cost', await page.evaluate(() => /0\.2\s*h|12\s*min/i.test(document.getElementById('modal-root').innerText)));
+  await page.keyboard.press('Escape');
+  await page.click('#tab-market [data-action="mkt-crumb"][data-level="root"]');
+  await page.waitForTimeout(150);
+  check('breadcrumb back to source picker', (await page.locator('#tab-market [data-action="mkt-pick-source"]').count()) >= 1);
+  await page.evaluate(() => Engine.clearCart());
+
+  // §20.2 — Add to Cart & Assign: in-cart chip, then on-order after checkout
+  const cartAssign = await page.evaluate(() => {
+    const st = Engine.getState(); st.cash = 100000; st.hoursLeft = 8;
+    Engine.clearCart();
+    for (let d = 0; d < 25; d++) {
+      for (const o of Engine.getOffers().filter((x) => x.type === 'repair')) {
+        if (!Engine.acceptOffer(o.id).ok) continue;
+        const j = Engine.getActiveJobs().find((x) => x.id == o.id);
+        for (let dg = 0; dg < 6 && !j.diagnosed; dg++) {
+          st.hoursLeft = 8;
+          if (j.decision && j.decision.chosen == null) {
+            const pk = (j.decision.options || []).slice(-1)[0];
+            if (pk) { Engine.decideJob(j.id, pk.id); continue; }
+          }
+          Engine.diagnoseJob(j.id);
+        }
+        const needs = Engine.getJobNeeds(j.id) || [];
+        const need = needs.find((n) => n.options && n.options.some((op) => !op.inStock));
+        if (!need) continue;
+        const opt = need.options.find((op) => !op.inStock);
+        const r = Engine.assignPart(j.id, need.index, opt.partId);
+        const after = (Engine.getJobNeeds(j.id) || []).find((n) => n.index === need.index) || {};
+        const inCartNow = after.inCart || 0;
+        st.hoursLeft = 8;
+        const co = Engine.checkoutCart({ retailShipping: 'next-day' });
+        const after2 = (Engine.getJobNeeds(j.id) || []).find((n) => n.index === need.index) || {};
+        return { jobId: j.id, aOk: r.ok, inCartFlag: !!r.inCart, inCartNow,
+                 coOk: co.ok, onOrder: after2.onOrder || 0, inCartAfter: after2.inCart || 0 };
+      }
+      Engine.endDay();
+    }
+    return { skip: 'no un-stocked need found' };
+  });
+  if (!cartAssign.skip) {
+    check('Add to Cart & Assign: link created, uncharged', cartAssign.aOk && cartAssign.inCartFlag && cartAssign.inCartNow >= 1, JSON.stringify(cartAssign));
+    check('checkout converts in-cart to on-order', cartAssign.coOk && cartAssign.onOrder >= 1 && cartAssign.inCartAfter === 0, JSON.stringify(cartAssign));
+    await page.evaluate(() => { UI.refresh(); UI.switchTab('workbench'); });
+    await page.waitForTimeout(200);
+    check('on-order chip rendered on the need row', await page.evaluate(() => /on order|arrives|ordered/i.test(document.getElementById('tab-workbench').innerText)));
+  } else check('cart-assign setup', false, JSON.stringify(cartAssign));
+
+  // §20.4 #5 — ghost positive control: a normal customer job completed via a
+  // real click still flashes. (Refurb/stock-build suppression + sale-time
+  // flash were click-verified in the UI workstream's live pass; completing a
+  // refurb deterministically here would make the gate flaky.)
+  const ghostJob = await page.evaluate(() => {
+    const st = Engine.getState(); st.hoursLeft = 20;
+    for (let d = 0; d < 15; d++) {
+      const o = Engine.getOffers().find((x) => x.type === 'cleaning' || x.type === 'software');
+      if (o && Engine.acceptOffer(o.id).ok) { st.hoursLeft = 20; return o.id; }
+      Engine.endDay();
+    }
+    return null;
+  });
+  if (ghostJob != null) {
+    await page.evaluate(() => { UI.refresh(); UI.switchTab('workbench'); });
+    await page.waitForTimeout(200);
+    const btn = page.locator('[data-action="work-job"][data-job="' + ghostJob + '"]');
+    if ((await btn.count()) > 0) {
+      await btn.first().click();
+      const ghostSeen = await page.evaluate(() => !!document.querySelector('.job-done-ghost'));
+      const done = await page.evaluate((id) => !Engine.getActiveJobs().some((j) => j.id == id), ghostJob);
+      check('completion ghost still fires for customer jobs', !done || ghostSeen, 'done=' + done + ' ghost=' + ghostSeen);
+    }
+  }
   const capUnits = await page.evaluate(() => Engine.fmtCapacity ? [Engine.fmtCapacity(0.0625), Engine.fmtCapacity(640), Engine.fmtCapacity(16384)] : null);
   check('dynamic capacity units (KB/MB/GB)', !!capUnits && /KB/.test(capUnits[0]) && /MB/.test(capUnits[1]) && /GB/.test(capUnits[2]), JSON.stringify(capUnits));
   const hint = await page.evaluate(() => {

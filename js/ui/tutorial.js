@@ -78,8 +78,8 @@
       id: 'tabs', tab: null, target: function () { return byId('tab-bar'); },
       title: 'Getting around the shop',
       body: 'Offers for new jobs, Workbench for active repairs, Inventory and the Parts Market for stock, ' +
-        'the Wiki for hardware history, Shop for upgrades and staff, Ledger for the books, and News for ' +
-        'what is happening in the wider world.'
+        'the Wiki for hardware history, Shop for upgrades and staff, Clients for everyone you have served, ' +
+        'Ledger for the books, and News for what is happening in the wider world.'
     },
     {
       id: 'offers', tab: 'offers', target: offersTarget,
@@ -385,6 +385,8 @@
           'a cart and check out in one trip (retail ships next morning, or pay for same-day at checkout).</li>' +
         '<li><b>Wiki</b> — every part, the Chronicle of real computing history, and long-form Articles that unlock as the years pass.</li>' +
         '<li><b>Shop</b> — upgrades, insurance, staff, and Training &amp; Certifications.</li>' +
+        '<li><b>Clients</b> — every customer you\'ve served (People) and every business retainer you keep on ' +
+          'their feet (Businesses): loyalty, machine history, and who referred whom.</li>' +
         '<li><b>Ledger</b>, <b>News</b>, <b>System</b> — the books, the headlines, and saving.</li>' +
       '</ul>' +
       '<h3>Work speed &amp; callbacks</h3>' +
@@ -404,7 +406,7 @@
       'or pasted text.</p>' +
       '<h3>Keyboard shortcuts</h3>' +
       '<ul>' +
-        '<li><b>1–9</b> — switch tabs (in bar order)</li>' +
+        '<li><b>1–9, 0</b> — switch tabs (in bar order; 0 reaches the 10th)</li>' +
         '<li><b>E</b> — End Day (asks first when unfinished work is due today)</li>' +
         '<li><b>W</b> — Wait 1h, whenever that button is showing</li>' +
         '<li><b>?</b> — this help &nbsp;·&nbsp; <b>Esc</b> — close dialogs</li>' +

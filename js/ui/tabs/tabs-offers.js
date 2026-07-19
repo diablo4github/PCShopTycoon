@@ -12,9 +12,45 @@
   var S = T.shared;
 
   var esc = S.esc, fm = S.fm, tryCall = S.tryCall, arr = S.arr,
-      getState = S.getState, emptyBox = S.emptyBox,
+      getState = S.getState, emptyBox = S.emptyBox, has = S.has,
       typeChip = S.typeChip, tasteChip = S.tasteChip, customerLine = S.customerLine,
       dueText = S.dueText, osChip = S.osChip, regularChip = S.regularChip;
+
+  /* §21.4 — compact client chip for offers from known clients: name +
+   * loyalty tier, or a "referred by X" variant for a fresh referral offer.
+   * Feature-detected across the likely field homes (job.clientId + a
+   * pre-resolved job.client summary, or a lookup via Engine.getClient;
+   * job.referredBy for the referral variant) so this renders nothing at
+   * all — never a crash or a bogus chip — until the CRM engine fields
+   * land. Click opens the CRM detail (§21.4, T.openClientDetail). */
+  function clientChipOf(j) {
+    if (!j) return null;
+    if (j.referredBy) return { referred: true, label: String(j.referredBy) };
+    var cid = j.clientId !== undefined && j.clientId !== null ? j.clientId
+      : (j.client && j.client.id !== undefined ? j.client.id : null);
+    if (cid === null || cid === undefined) return null;
+    var name = (j.client && j.client.name) || null;
+    var tier = (j.client && (j.client.loyaltyTier || j.client.tier)) || null;
+    if ((!name || !tier) && has('getClient')) {
+      var cv = tryCall(function () { return Engine.getClient(cid); });
+      if (cv && cv.ok !== false) {
+        name = name || cv.name;
+        if (!tier) tier = (cv.loyaltyTier && typeof cv.loyaltyTier === 'object') ? cv.loyaltyTier.label : cv.loyaltyTier;
+      }
+    }
+    if (!name) return null;
+    return { referred: false, id: cid, label: name, tier: (tier && typeof tier === 'object') ? (tier.label || tier.name) : tier };
+  }
+  function clientChipHTML(info) {
+    if (!info) return '';
+    if (info.referred) {
+      return '<span class="chip chip-client" title="This offer arrived because an existing client referred them to your shop">' +
+        '🤝 referred by ' + esc(info.label) + '</span>';
+    }
+    return '<button type="button" class="chip chip-client" data-action="client-chip" data-client="' + esc(info.id) +
+      '" title="Open ' + esc(info.label) + '’s client record">' + esc(info.label) +
+      (info.tier ? ' · ' + esc(info.tier) : '') + '</button>';
+  }
 
   /* §16.1 — light type-filter buckets for the Offers pill row (a filter,
    * not real buckets — 'all' is the default view). */
@@ -141,7 +177,7 @@
           (j.rush ? ' <span class="badge b-rush">RUSH</span>' : '') + '</div>' +
         '<div class="meta-row">' + typeChip(j) + UI.wrenches(j.difficulty) + regularChip(j) + tasteChip(j) + osChip(j) + '</div>' +
         (j.blurb ? '<div class="blurb">&ldquo;' + esc(j.blurb) + '&rdquo;</div>' : '') +
-        '<div class="meta-row">' + customerLine(j) + '</div>' +
+        '<div class="meta-row">' + customerLine(j) + clientChipHTML(clientChipOf(j)) + '</div>' +   // §21.4
         '<div class="meta-row flex-between">' +
           '<span class="pay num">' + (j.pay !== null && j.pay !== undefined ? fm(j.pay) : 'Market-priced') + '</span>' +
           '<span class="' + (due.urgent ? 'due-soon' : 'muted') + '">' + esc(due.txt) + '</span>' +

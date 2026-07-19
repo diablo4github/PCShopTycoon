@@ -31,8 +31,11 @@
     chronicleTag: 'all',      // §13.1 Chronicle tag filter
     tutorialToggle: undefined,// §13.5 New Game screen tour checkbox (undefined = not yet decided this session)
     saveUrl: null,            // objectURL of the last exported save blob
+    clientsSearch: '',        // §21.4 Clients tab People search text
+    clientsSort: { key: 'name', dir: 'asc' },  // §21.4 People sortable list (UI-side, §20.3 pattern)
+    clientsOpen: {},          // clientId -> true for expanded People detail rows
     /* §16.1 — active sub-tab per main tab (session-level persistence). */
-    subTab: { workbench: 'active', ledger: 'finances', shop: 'upgrade', offers: 'all', news: 'all' } /* §17.6 — market's old Retail/Suppliers pills retired by the §20.3 drilldown */
+    subTab: { workbench: 'active', ledger: 'finances', shop: 'upgrade', offers: 'all', news: 'all', clients: 'people' } /* §17.6 — market's old Retail/Suppliers pills retired by the §20.3 drilldown */
   };
 
   /* ------------------------------------------------------------------ *
@@ -976,10 +979,12 @@
       if (UI.state.screen !== 'main') return;
 
       var k = e.key;
-      if (k >= '1' && k <= '9') {
+      /* §21.4 — a 10th tab (Clients) joined the bar; '0' reaches it (bar
+       * position 10) the same way '1'-'9' reach positions 1-9. */
+      if ((k >= '1' && k <= '9') || k === '0') {
         var bar2 = document.getElementById('tab-bar');
         var btns2 = bar2 ? bar2.querySelectorAll('.tab-btn') : [];
-        var idx = parseInt(k, 10) - 1;
+        var idx = k === '0' ? 9 : parseInt(k, 10) - 1;
         if (btns2[idx]) {
           e.preventDefault();
           if (UI.audio && UI.audio.sfx) UI.audio.sfx('click');

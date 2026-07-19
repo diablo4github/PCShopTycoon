@@ -25,6 +25,24 @@
       perfStr = S.perfStr, showPartInfo = S.showPartInfo,
       animatedBar = S.animatedBar;
 
+  /* §21.4 — a client-machine job (job.clientMachineId set) is a returning
+   * client's own box, not a fresh random machine: note it plainly. The
+   * "serviced it N times" count is feature-detected across the likely field
+   * names the job view might carry it under; absent any of them, the note
+   * still renders (just without the count) rather than disappearing. */
+  function clientMachineNoteHTML(j) {
+    if (!j || j.clientMachineId === undefined || j.clientMachineId === null) return '';
+    var n = j.clientMachineServiceCount !== undefined ? j.clientMachineServiceCount
+      : (j.machineServiceCount !== undefined ? j.machineServiceCount
+        : (j.timesServiced !== undefined ? j.timesServiced : null));
+    var nNum = Number(n);
+    var nTxt = (n !== null && isFinite(nNum) && nNum > 0)
+      ? ' — you’ve serviced it ' + nNum + ' time' + (nNum === 1 ? '' : 's')
+      : '';
+    return '<div class="meta-row"><span class="chip chip-client" title="This is a returning client’s own machine — the shop remembers its parts across visits">' +
+      '🔧 Their usual machine' + esc(nTxt) + '</span></div>';
+  }
+
   /* ------------------------------------------------------------------ *
    * Work-control helpers (§14.8)
    * ------------------------------------------------------------------ */
@@ -354,6 +372,8 @@
       '</div>';
 
     if (j.blurb) h += '<div class="blurb">&ldquo;' + esc(j.blurb) + '&rdquo;</div>';
+
+    h += clientMachineNoteHTML(j);   // §21.4
 
     /* §17.1 — pending decision: the amber card that pauses the job */
     var decPending = decisionPendingUI(j);

@@ -439,6 +439,7 @@ button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-
 .chip-taste,
 .chip-overspend,
 .chip-joblink,
+.chip-client,
 .badge.b-unlock {
   white-space: normal;
   overflow-wrap: break-word;
@@ -2174,6 +2175,50 @@ body.era-early .account-card { border-left-color: var(--accent); }
   font-size: 15px;
   font-weight: 700;
 }
+
+/* ==========================================================================
+   §21.4 — Clients tab (People / Businesses) + client chips on offers &
+   workbench cards. Reuses .cards/.card, .table-wrap/table.data, .wiki-row/
+   .wiki-detail, .how-works, .chip, .bar (animatedBar), .stars (UI.starsHTML)
+   and the §16 long-chip wrap rule — only the client-specific bits are new.
+   ========================================================================== */
+.chip-client {
+  background: rgba(47, 109, 184, 0.1);
+  border: 1px solid rgba(47, 109, 184, 0.35);
+  color: var(--ink);
+  /* wraps per the §14.10/§16 long-chip rule above (added to that selector
+   * list) — a referral chip's name, or a name + loyalty tier, can run long. */
+}
+button.chip-client { cursor: pointer; }
+button.chip-client:hover { border-color: var(--accent); }
+.chip-built { background: rgba(138, 99, 210, 0.14); border-color: transparent; color: var(--ink); }
+.chip-outcome.done { background: rgba(28, 124, 60, 0.1); border-color: rgba(28, 124, 60, 0.4); color: var(--good); }
+.chip-outcome.late { background: rgba(201, 118, 43, 0.15); border-color: rgba(201, 118, 43, 0.4); color: #8a4c12; }
+.chip-outcome.failed { background: rgba(179, 53, 44, 0.1); border-color: rgba(179, 53, 44, 0.4); color: var(--bad); }
+.chip-outcome.callback { background: rgba(163, 36, 95, 0.1); border-color: rgba(163, 36, 95, 0.35); color: #a3245f; }
+.chip-outcome.abandoned { background: var(--panel-bg-alt); border-color: var(--border); color: var(--muted); }
+.bar.warn i { background: #c9762b; }
+.loyalty-stars { display: inline-flex; vertical-align: middle; }
+.worklog-list { list-style: none; margin: 4px 0; padding: 0; }
+.worklog-list li { padding: 3px 0; border-bottom: 1px dashed var(--border); overflow-wrap: break-word; }
+.worklog-list li:last-child { border-bottom: none; }
+.client-machines { margin: 6px 0; }
+.fleet-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  gap: 8px;
+  margin: 6px 0;
+}
+.fleet-item {
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-bg-alt);
+  min-width: 0;
+}
+.fleet-name { font-weight: 600; font-size: 12.5px; overflow-wrap: break-word; }
+.account-card-full .sub-title { margin-top: 8px; }
+.clients-empty-note { margin-top: 6px; }
 
 /* ==========================================================================
    §19.9 #8 — the motion pass.

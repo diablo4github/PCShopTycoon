@@ -2324,3 +2324,85 @@ Extends §15.4 accounts (retainers) — accounts gain
   loyalty meter renders; business card shows kind/seats/health; client chip
   on a return offer; persistent-machine identity via engine calls; zero
   console errors.
+
+---
+
+# §22 — v0.10.1 "Counter Polish" (13-item rough-edge round from the overseer UI tour)
+
+Later sections win. Numbered items reference the overseer's tour findings.
+No save-format change (stays v12). Engine.VERSION '0.10.1'.
+
+## 22.1 ENGINE items
+
+- (#2) **Kind-aware business names**: BUSINESS_KINDS entries gain a `names`
+  pool (DATA ships it). `businessNameFor` picks an untaken name from the
+  ACCOUNT'S KIND pool; falls back to the legacy FLAVOR.businessNames pool
+  only when the kind has no pool or all its names are taken. Existing saved
+  accounts keep their names (never rewrite player history). sim-test asserts
+  a signed account's name comes from its kind's pool when one exists.
+- (#5) **Morning-summary account bucket**: account cancellations/churn stop
+  being pushed into `summary.expired` ("Offers expired" is the wrong story).
+  New `summary.accounts: [string]` carries account lifecycle lines (cancelled,
+  churned, grown, shrunk — whatever already surfaces day-of). News items
+  unchanged. UI renders the new section (§22.2).
+- (#7) **Fleet condition chips re-anchored**: current bands read a same-year
+  machine as "aging". New contract: a machine whose year is within 1 of the
+  current year NEVER reads below 'solid'; bands widen/soften to
+  cutting-edge / solid / dated / due for replacement (rename 'aging'→'dated');
+  only genuinely old boxes (ratio < ~0.45 or age ≥ ~5y) read 'due for
+  replacement'. Health FORMULA unchanged — chips are view-side flavor
+  (Engine.getAccounts fleet[].condition).
+- (#10) **Human spec strings in the market**: getSourceCatalog rows gain
+  `spec` — a short category-aware string the UI renders verbatim: cpu
+  "<year> · perf <n>"; ram fmtCapacity (+speed hint when tags carry one);
+  storage fmtCapacity; psu "<watts>W"; gpu "perf <n>"; case/cooling/other
+  "<year>" + tier where useful. Reuse fmtCapacity/perf conventions — perf
+  numbers are established in-game currency.
+
+## 22.2 UI items
+
+- (#1) **Card titles stop repeating the complaint**: on offer AND workbench
+  job cards, render the title segment before the first " — " (the quote
+  block/fault line already carry the rest). Full job.title stays untouched
+  everywhere compact context needs it (morning modal lists, news, tooltips).
+- (#3) Category cards: visible gap between label and count ("CPU · 28 parts"
+  or CSS margin — no glued "CPU28 parts").
+- (#4) **Toasts move to bottom-right** (CSS on #toast-root): they must never
+  cover the market cart button or header controls. Keep aria-live behavior.
+- (#6) Business seats trend: flat trend with no reason renders NOTHING (no
+  orphaned "→"); flat WITH a reason renders "steady — <reason>".
+- (#8) **Compact fleet grid**: account-card fleet renders as a dense
+  multi-column grid of small tiles (name + year + condition chip); fleets
+  over ~8 machines collapse behind "+N more" (expandable, no scroll-forever
+  cards).
+- (#9) Client chip next to a printed customer name shows TIER ONLY
+  ("New face", "Regular"...) — never repeats the name. The "referred by X"
+  variant keeps X (it's a different person). Chip still opens CRM detail.
+- (#11) Zero-visit clients: list row shows "first visit" instead of visits 0,
+  and the expanded detail says their first job is on the bench now (machines/
+  history empty states stay).
+- (#12) Era-select card art: object-fit cover + consistent frame height (no
+  letterboxing on the 1991 card).
+- (#13) Businesses empty state: when the prestige gate is already met, say
+  "No active retainers — accounts you sign show up here" (optionally noting a
+  recently lost account); only show the "appear once your shop is
+  Well-Reviewed" line when the gate is genuinely unmet (read the same source
+  the header prestige chip uses).
+- (#5 render) Morning modal: new "Accounts" section rendering
+  summary.accounts; cancellations no longer appear under "Offers expired".
+- (#10 render) Market list SPEC column renders the engine's `spec` string.
+
+## 22.3 DATA items
+
+- (#2) Each BUSINESS_KINDS entry gains `names`: ≥4 era-plausible business
+  names IN THE KIND'S TRADE (law offices sound like law firms, LAN cafés like
+  LAN cafés; period-honest for the kind's window; no real-company collisions).
+  Validator: every kind has ≥4 unique non-empty names; no name duplicated
+  across kinds; names stay era-plausible strings (non-empty, len ≥ 6).
+
+## 22.4 Gate
+
+validate-data PASS; sim-test PASS (name-pool assertion added; guards
+untouched — nothing here moves economics); overseer E2E 3× green with zero
+console errors (existing checks; card-title change must not break fog scan —
+it reads o.title from the engine, which is unchanged).

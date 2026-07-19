@@ -63,6 +63,21 @@ var REAL = function () { return DATA_SOURCE.indexOf('real') === 0; };
 // min/max reported for visibility.
 var GUARD_SEEDS = [101, 202, 303, 404, 505];
 var SEED_BASE = Number(process.env.SIM_SEED_BASE || GUARD_SEEDS[0]);
+// §22.1 (v0.10.1 guard-drift fix): the dedicated jobs-vs-flips guard (the
+// maximal-strategy stress test in jobsVsFlipsDedicatedScenario, distinct
+// from the standard per-era guards above) proved unusually noisy across
+// three landings that changed no economics at all — median read 2.86x at
+// v0.10 final, 2.80-3.15x once DATA's per-kind name pools shipped, then
+// 3.72x once ENGINE started rolling kind before name (all three on the SAME
+// 3.5x-cap, 5-seed setup). Root cause: business-account fleet seeding used
+// to share the 'offers' stream (fixed separately — see fleetMachineFor), so
+// a single seed's account roll could cascade into every later offer/job
+// roll for the rest of that seed's 60-day run. Widening to a median-of-9
+// damps that single-seed sensitivity WITHOUT touching the 3.5x design cap
+// (dedicated jobs genuinely shouldn't out-earn dedicated flips 3.5x) — this
+// guard ONLY; the standard 5-seed guards above are unaffected and stay at 5
+// so full-suite runtime stays sane.
+var DEDICATED_GUARD_SEED_COUNT = GUARD_SEEDS.length + 4;   // 9, this guard only
 function median(arr) {
   var a = arr.slice().sort(function (x, y) { return x - y; });
   return a.length ? a[Math.floor(a.length / 2)] : 0;
@@ -942,9 +957,10 @@ function mem_dedicatedDayGuard(E) {
 }
 
 function jobsVsFlipsDedicatedScenario(era, seedBase) {
-  console.log('--- Dedicated job-bot vs flip-bot, 60 days x ' + GUARD_SEEDS.length +
+  console.log('--- Dedicated job-bot vs flip-bot, 60 days x ' + DEDICATED_GUARD_SEED_COUNT +
               ' seeds (' + era.id + ', §14.3/§17.5) ---');
-  // §17.5: median across five fixed seed-pairs; min/max reported. The cap
+  // §17.5: median across (now nine, see DEDICATED_GUARD_SEED_COUNT above)
+  // fixed seed-pairs; min/max reported. The cap
   // is the v0.5.1 empirical bound (a maximally-dedicated jobs bot
   // legitimately snowballs prestige/volume in ways a flip-only strategy
   // structurally cannot), recalibrated 3.0 -> 3.5 in v0.7: the §17.1
@@ -966,7 +982,7 @@ function jobsVsFlipsDedicatedScenario(era, seedBase) {
   // collapse (wedged lane, tiny margin sum) still explodes the ratio.
   var ratios = [], allFlipEvents = [], okPairs = 0;
   var lastJob = null, lastFlip = null;
-  for (var si = 0; si < GUARD_SEEDS.length; si++) {
+  for (var si = 0; si < DEDICATED_GUARD_SEED_COUNT; si++) {
     var seed = seedBase + si * 10;
     var jobRun = runDedicatedBot(era, 'jobs', seed);
     var flipRun = runDedicatedBot(era, 'flips', seed + 1);
@@ -991,8 +1007,9 @@ function jobsVsFlipsDedicatedScenario(era, seedBase) {
     console.log('    (bands asserted against the real catalog only — mock verifies mechanics)');
     return;
   }
-  assert(okPairs >= 3,
-         era.id + ': too few measurable dedicated seed-pairs (' + okPairs + '/5)');
+  assert(okPairs >= Math.ceil(DEDICATED_GUARD_SEED_COUNT * 0.6),
+         era.id + ': too few measurable dedicated seed-pairs (' + okPairs + '/' +
+         DEDICATED_GUARD_SEED_COUNT + ')');
   if (!okPairs) return;
   var med = median(ratios);
   console.log('  == dedicated median ratio ' + med.toFixed(2) + 'x (' +
@@ -3819,6 +3836,12 @@ function accountsScenario(era) {
   assert(s.accounts.length === 0, 'accounts: rating breach must cancel the account');
   console.log('  signed "' + offer.account.name + '" (fee ' + Engine.fmtMoney(feeSeen || 0) +
               '/mo), auto-job ok, both cancel paths ok');
+  // The 40-day auto-job loop above never WORKS its retainer jobs (it's only
+  // checking that they land), so they pile up on the bench uncompleted —
+  // harmless for that section, but they'd starve the workstation-cap-checked
+  // commissioned-build accept below on an unrelated account. Clear them;
+  // nothing past this point reads state.jobs.active from the prior account.
+  s.jobs.active = [];
 
   // §21.3: monthly health tick — GROW path. A well-served account (full
   // fresh fleet, every job this month completed on time) should visibly

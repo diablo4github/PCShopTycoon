@@ -715,9 +715,17 @@
 
   /* §21.3: a fleet machine — generated the same way as-is machines are
    * (assembleMachineParts), "slightly dated" at signing (fresh === false) or
-   * brand-new when delivered by a commissioned build (fresh === true). */
+   * brand-new when delivered by a commissioned build (fresh === true).
+   * §22.1 guard-drift fix: fleet-machine generation is a SIMULATION-INTERNAL
+   * detail of the business-ecosystem, not a customer-facing offer, so its
+   * draws live on the 'misc' stream — NOT 'offers'. Sharing 'offers' here
+   * used to mean any account signing/growth perturbed every subsequent
+   * offer/job roll for the rest of the run (same class of bug as the v0.7
+   * press-coverage/market-stream isolation fix). Kind/name picks for the
+   * account itself ARE offer-domain and correctly stay on 'offers' (see
+   * businessKindFor/businessNameFor above). */
   function fleetMachineFor(state, fresh) {
-    var built = assembleMachineParts(state, 'offers');
+    var built = assembleMachineParts(state, 'misc');
     if (!built) return null;
     var partIds = built.partIds, mobo = built.mobo;
     var year = Engine.currentYear(state);
@@ -731,7 +739,7 @@
       machineYear = year;
     } else {
       var datedBack = Engine.randInt(CFG().ACCOUNT_FLEET_DATED_MIN_YEARS,
-        CFG().ACCOUNT_FLEET_DATED_MAX_YEARS, 'offers');
+        CFG().ACCOUNT_FLEET_DATED_MAX_YEARS, 'misc');
       machineYear = Engine.clamp(year - datedBack, mobo.introYear, year);
     }
     return {

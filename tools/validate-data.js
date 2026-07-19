@@ -1053,6 +1053,57 @@ var bizSeen = {};
   else bizSeen[n] = true;
 });
 
+// ---------------------------------------------------------------- v0.10 §21.5 FLAVOR: referrals,
+// business ecosystem news, loyalty tiers. Placeholder convention matches the existing
+// {SW}/{GAME}/{OFFICE}/{CREATIVE} curly-brace tokens (§13.3) — new tokens are {name}/{seats}.
+needLen(FL.referralBlurbs, 6, 'referralBlurbs (§21.5)');
+var CURLY_TOKEN_RE = /\{[a-zA-Z]+\}/g;
+(FL.referralBlurbs || []).forEach(function (b, i) {
+  var l = 'FLAVOR.referralBlurbs[' + i + ']';
+  if (!isStr(b)) { err(l + ': must be a non-empty string (§21.5)'); return; }
+  if (b.indexOf('{name}') === -1) err(l + ': must include the {name} placeholder for the referring client (§21.5)');
+  (b.match(CURLY_TOKEN_RE) || []).forEach(function (t) {
+    if (t !== '{name}') err(l + ': unknown placeholder ' + t + ' — only {name} is valid in referralBlurbs (§21.5)');
+  });
+});
+
+var BIZ_NEWS_KEYS = ['growth', 'shrink', 'churn'];
+var BN = FL.businessNews || {};
+BIZ_NEWS_KEYS.forEach(function (k) {
+  var arr = BN[k];
+  needLen(arr, 4, 'businessNews.' + k + ' (§21.5)');
+  (arr || []).forEach(function (t, i) {
+    var l = 'FLAVOR.businessNews.' + k + '[' + i + ']';
+    if (!isStr(t)) { err(l + ': must be a non-empty string (§21.5)'); return; }
+    if (t.indexOf('{name}') === -1) err(l + ': must include the {name} placeholder (§21.5)');
+    if (t.indexOf('{seats}') === -1) err(l + ': must include the {seats} placeholder (§21.5)');
+    (t.match(CURLY_TOKEN_RE) || []).forEach(function (tok) {
+      if (tok !== '{name}' && tok !== '{seats}') {
+        err(l + ': unknown placeholder ' + tok + ' — only {name}/{seats} are valid in businessNews (§21.5)');
+      }
+    });
+  });
+});
+
+var LT = FL.loyaltyTiers || [];
+if (!Array.isArray(LT) || LT.length < 4 || LT.length > 5) {
+  err('FLAVOR.loyaltyTiers: need 4-5 era-neutral tiers (§21.5), have ' + (Array.isArray(LT) ? LT.length : 'none'));
+}
+var ltLabelsSeen = {};
+LT.forEach(function (t, i) {
+  var l = 'FLAVOR.loyaltyTiers[' + i + ']';
+  if (!isInt(t.minLoyalty) || t.minLoyalty < 0 || t.minLoyalty > 100) err(l + ': minLoyalty must be an int 0-100 (§21.5)');
+  if (!isStr(t.label)) err(l + ': label required (§21.5)');
+  else {
+    if (ltLabelsSeen[t.label]) err(l + ': duplicate label "' + t.label + '"');
+    ltLabelsSeen[t.label] = true;
+  }
+  if (i > 0 && isInt(t.minLoyalty) && isInt(LT[i - 1].minLoyalty) && t.minLoyalty <= LT[i - 1].minLoyalty) {
+    err(l + ': minLoyalty must strictly increase tier to tier (§21.5)');
+  }
+});
+if (LT.length && LT[0].minLoyalty !== 0) err('FLAVOR.loyaltyTiers: first tier must start at minLoyalty 0 (§21.5)');
+
 // ---------------------------------------------------------------- v0.7 §17.1 craft text tables
 // Binding field names — the engine consumes these shapes with fallbacks.
 function onTenthGrid(x) { return isNum(x) && Math.abs(x * 10 - Math.round(x * 10)) < 1e-9; }
@@ -1155,6 +1206,36 @@ for (var dy = 1983; dy <= 2025; dy++) {
   if (openLegit < 1) err('DISTRIBUTORS: year ' + dy + ' has no legitimate channel');
 }
 
+// ---------------------------------------------------------------- v0.10 §21.5 BUSINESS_KINDS
+var BK = DATA.BUSINESS_KINDS || [];
+if (!Array.isArray(BK) || BK.length < 12) {
+  err('BUSINESS_KINDS: need >= 12 era-windowed kinds (§21.5), have ' + (Array.isArray(BK) ? BK.length : 'none'));
+}
+var bkIds = {};
+BK.forEach(function (k, i) {
+  var l = 'BUSINESS_KINDS[' + i + '] (' + (k && k.id ? k.id : '?') + ')';
+  if (!isStr(k.id) || !/^[a-z0-9-]+$/.test(k.id)) err(l + ': id must be a non-empty kebab-case string (§21.5)');
+  else { if (bkIds[k.id]) err(l + ': duplicate id'); bkIds[k.id] = true; }
+  if (!isStr(k.label)) err(l + ': label must be a non-empty string (§21.5)');
+  if (!isStr(k.blurb) || k.blurb.length < 30) err(l + ': blurb must be a non-empty, real one-liner (>= 30 chars, §21.5)');
+  if (!isInt(k.minYear) || k.minYear < 1979 || k.minYear > 2026) err(l + ': minYear must be an int in 1979-2026 (§21.5)');
+  if (!isInt(k.maxYear) || k.maxYear > 2026) err(l + ': maxYear must be an int <= 2026 (§21.5)');
+  else if (isInt(k.minYear) && k.maxYear < k.minYear) err(l + ': maxYear must be >= minYear (§21.5)');
+  if (!Array.isArray(k.seats) || k.seats.length !== 2 || !isInt(k.seats[0]) || !isInt(k.seats[1])) {
+    err(l + ': seats must be [lo,hi] integers (§21.5)');
+  } else {
+    if (k.seats[0] <= 0) err(l + ': seats lo must be > 0 (§21.5)');
+    if (k.seats[1] < k.seats[0]) err(l + ': seats hi must be >= lo (§21.5)');
+    if (k.seats[1] > 40) err(l + ': seats hi is unreasonably large (> 40) for a single business account (§21.5)');
+  }
+});
+// §21.5: every start-era preset year (§2.4 — the six DATA.ERAS startYear values) needs
+// >= 3 live business kinds so account offers always have real variety to draw from.
+[1983, 1991, 1996, 2004, 2013, 2021].forEach(function (sy) {
+  var live = BK.filter(function (k) { return isInt(k.minYear) && isInt(k.maxYear) && k.minYear <= sy && sy <= k.maxYear; }).length;
+  if (live < 3) err('BUSINESS_KINDS: only ' + live + ' kind(s) live in start-era year ' + sy + ', need >= 3 (§21.5)');
+});
+
 // ---------------------------------------------------------------- v0.8 §18.2 audio article
 var audioArt = ARTS.filter(function (a) { return a && a.id === 'article-pc-audio'; })[0];
 if (!audioArt) err('ARTICLES: missing "article-pc-audio" (Beeps to Bitstreams, §18.2)');
@@ -1230,6 +1311,10 @@ console.log('v0.9 Logistics & Fog: Removable storage ' + PARTS.filter(function (
   ' | wait-flagged steps ' + TS.reduce(function (n, t) { return n + t.steps.filter(function (s) { return s.wait === true; }).length; }, 0) +
   ' | easter eggs: staff ' + (FL.staffNames || []).filter(function (n) { return ['Ada Lovejoy', 'Gary Kildare', 'Linus Thorwald', 'Steve Wozniacki', 'Doug Engelbert', 'Laura Kroft'].indexOf(n) !== -1; }).length +
   ' + names 6');
+console.log('v0.10 Clientele: Business kinds ' + BK.length + ' (' + BK.map(function (k) { return k.id; }).join(', ') +
+  ') | Referral blurbs ' + (FL.referralBlurbs || []).length + ' | Business news growth/shrink/churn ' +
+  (BN.growth || []).length + '/' + (BN.shrink || []).length + '/' + (BN.churn || []).length +
+  ' | Loyalty tiers ' + LT.length + ' (' + LT.map(function (t) { return t.label; }).join(' -> ') + ')');
 
 if (warnings.length) {
   console.log('\nWARNINGS (' + warnings.length + '):');

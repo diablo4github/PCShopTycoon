@@ -302,6 +302,58 @@
       "Fairway Motors", "The Daily Courier", "Redwood Architecture Studio",
       "Pinnacle Staffing Services", "Custom House Travel", "Northgate Public Library",
       "Delgado Bros. Construction"
+    ],
+    // §21.5 — client referral flavor: a high-loyalty client's referral (§21.1)
+    // rebrands a fresh offer as "referred by <client>"; these lines carry that
+    // credit in the client's own voice. Placeholder convention: curly-brace
+    // tokens as elsewhere in this file ({SW}/{GAME}/...), here {name} resolved
+    // by the engine to the referring client's name.
+    referralBlurbs: [
+      "{name} told everyone at the office you're the only shop worth calling.",
+      "{name} says you fixed it right the first time, and that's rare enough to talk about.",
+      "{name} wouldn't stop talking about the turnaround time and sent a friend your way.",
+      "{name} swears by you now and figured somebody else deserved the same treatment.",
+      "{name} passed your number along before the ink on the receipt was even dry.",
+      "{name} has been telling anyone who'll listen that you're worth the drive.",
+      "{name} vouched for you personally, which — knowing {name} — is not given lightly.",
+      "{name} said you were the first shop that didn't talk down to them, and sent someone your way."
+    ],
+    // §21.5/§21.3 — business ecosystem news: monthly health-tick outcomes
+    // (growth/shrink/churn) narrated with {name} (the account) and {seats}
+    // (the seat count involved), same curly-brace placeholder style as the
+    // {SW}/{GAME}/{OFFICE}/{CREATIVE} tokens above.
+    businessNews: {
+      growth: [
+        "{name} just signed on {seats} more seats — seems your work made the rounds internally.",
+        "Business is good at {name}: they're expanding by {seats} seats and crediting the shop that keeps their machines running.",
+        "{name} added {seats} new positions this quarter, and every one of them needs a machine from you.",
+        "Word around {name} is that reliable equipment finally let them grow — {seats} more seats, all yours to outfit.",
+        "{name} is hiring again: {seats} more desks, {seats} more machines, and your name came up first."
+      ],
+      shrink: [
+        "{name} is trimming down — {seats} seats gone quiet, and the machines that went with them.",
+        "Belt-tightening at {name}: {seats} fewer seats this month, and fewer service calls to match.",
+        "{name} let {seats} positions go. The remaining machines are still yours to keep running.",
+        "{name} is downsizing by {seats} seats — a rough stretch, by the sound of it.",
+        "Quiet at {name} lately: {seats} seats sit empty and the machines behind them are gathering dust."
+      ],
+      churn: [
+        "{name} has closed the account. After {seats} seats' worth of neglected machines, they finally called someone else.",
+        "{name} is gone — the account's canceled, all {seats} seats and all, and the last few service calls apparently weren't enough to save it.",
+        "{name} pulled the account after one too many late repairs. {seats} seats, gone to a competitor.",
+        "The retainer with {name} just ended. Hard to blame them, given how those {seats} seats had been running.",
+        "{name} canceled outright. Whatever goodwill was left across {seats} unhappy seats finally ran out."
+      ]
+    },
+    // §21.5/§21.1 — client loyalty tier labels (0..100 scale, era-neutral warm
+    // wording, not gamey). CONFIG.LOYALTY_REGULAR (~40) is the engine's
+    // "regular" threshold; the "Regular" tier below starts there by design.
+    loyaltyTiers: [
+      { minLoyalty: 0, label: "New face" },
+      { minLoyalty: 20, label: "Repeat customer" },
+      { minLoyalty: 40, label: "Regular" },
+      { minLoyalty: 60, label: "Trusted regular" },
+      { minLoyalty: 80, label: "Old friend" }
     ]
   };
 

@@ -185,6 +185,87 @@
     }
   ];
 
+  // §21.5/§21.3 — DATA.BUSINESS_KINDS: era-windowed business-account archetypes.
+  // Housed here (not flavor.js) because it's a structural, era-banded reference
+  // table shaped exactly like DISTRIBUTORS above (id/minYear/maxYear/blurb) rather
+  // than a narrative name/blurb pool — same organizing logic as DISTRIBUTORS,
+  // EQUIPMENT, and CERTIFICATIONS living in this file. §21.3 accounts read
+  // {kind, seats, ...} from here; the account's own name still comes from
+  // FLAVOR.businessNames (a kind is a category — "law office" — a name is the
+  // specific instance — "Whitfield & Moss, Attorneys at Law").
+  DATA.BUSINESS_KINDS = [
+    {
+      id: "typing-pool", label: "Typing Pool", minYear: 1983, maxYear: 1994,
+      seats: [6, 16],
+      blurb: "Rows of word-processing terminals turn out correspondence and legal boilerplate all day; ribbons wear out, daisy wheels crack, and someone's always jammed the platen."
+    },
+    {
+      id: "print-shop", label: "Print Shop", minYear: 1983, maxYear: 2025,
+      seats: [4, 10],
+      blurb: "Prepress and quick-print jobs run nonstop from a handful of desktop-publishing machines; toner dust and round-the-clock duty cycles cook power supplies and printers alike."
+    },
+    {
+      id: "law-office", label: "Law Office", minYear: 1983, maxYear: 2025,
+      seats: [3, 8],
+      blurb: "Billing software and case files live on a few workhorse desktops the partners refuse to replace; drives fill up, backups get forgotten, and everything is somehow due Friday."
+    },
+    {
+      id: "mail-order-warehouse", label: "Mail-Order Warehouse", minYear: 1983, maxYear: 2025,
+      seats: [6, 18],
+      blurb: "Order desks and a warehouse floor run on inventory and shipping terminals that never get to power down; dust, forklift vibration, and nonstop uptime take their toll."
+    },
+    {
+      id: "tax-office", label: "Tax Preparation Office", minYear: 1984, maxYear: 2025,
+      seats: [4, 10],
+      blurb: "Every January the machines wake from a year of neglect to crunch returns nonstop until April; overworked drives and abused printers pick the worst possible week to fail."
+    },
+    {
+      id: "video-store", label: "Video Rental Store", minYear: 1985, maxYear: 2005,
+      seats: [3, 8],
+      blurb: "Rental terminals track every tape and late fee across a scuffed front counter; a jammed demo unit in the window is a bigger crisis to them than the register."
+    },
+    {
+      id: "medical-clinic", label: "Medical Clinic", minYear: 1985, maxYear: 2025,
+      seats: [5, 14],
+      blurb: "Patient scheduling and billing can't afford downtime; front-desk PCs take a beating from constant use, waiting-room fingers, and reception-area coffee."
+    },
+    {
+      id: "design-studio", label: "Design Studio", minYear: 1988, maxYear: 2025,
+      seats: [3, 8],
+      blurb: "A handful of overpowered workstations chew through layouts and renders at all hours; heat, dust, and a designer's refusal to reboot mid-project are the usual killers."
+    },
+    {
+      id: "architecture-firm", label: "Architecture Firm", minYear: 1990, maxYear: 2025,
+      seats: [4, 10],
+      blurb: "CAD workstations and a plotter run drafting jobs against tight deadlines; oversized files and bigger renders push storage and cooling past their limits."
+    },
+    {
+      id: "isp", label: "Local Internet Service Provider", minYear: 1993, maxYear: 2008,
+      seats: [6, 16],
+      blurb: "A rack of modems and a handful of support-desk PCs keep dial-up subscribers connected; overheating modem banks and cranky terminal software are a daily fire drill."
+    },
+    {
+      id: "dotcom-startup", label: "Dot-Com Startup", minYear: 1996, maxYear: 2001,
+      seats: [8, 18],
+      blurb: "A loft full of mismatched desktops runs the website, the demo, and the investor pitch deck on borrowed time and borrowed money; nobody budgeted for maintenance."
+    },
+    {
+      id: "lan-cafe", label: "LAN Cafe", minYear: 1998, maxYear: 2012,
+      seats: [10, 24],
+      blurb: "Rows of identical gaming rigs run flat-out for paying customers by the hour; clogged fans, abused controllers, and one dead machine means a line out the door."
+    },
+    {
+      id: "crypto-outfit", label: "Crypto Mining Outfit", minYear: 2013, maxYear: 2025,
+      seats: [4, 12],
+      blurb: "Racks of GPUs grind away around the clock chasing coins in a garage or spare unit; relentless heat and dust wear through fans and cards faster than anywhere else on the route."
+    },
+    {
+      id: "esports-den", label: "E-Sports Den", minYear: 2015, maxYear: 2025,
+      seats: [10, 24],
+      blurb: "High-refresh gaming rigs and a streaming rack run tournament practice and broadcasts back to back; spilled energy drinks and marathon sessions are hard on every peripheral."
+    }
+  ];
+
   // §2.5 — shop tiers
   DATA.SHOP_TIERS = [
     {

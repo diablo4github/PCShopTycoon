@@ -16,7 +16,7 @@
       getState = S.getState, emptyBox = S.emptyBox, fmtHours = S.fmtHours,
       catLabel = S.catLabel, prettySubtype = S.prettySubtype,
       SUBTYPE_LABELS = S.SUBTYPE_LABELS, SPEED_TIP = S.SPEED_TIP,
-      has = S.has, engineV = S.engineV, otCapValue = S.otCapValue,
+      has = S.has, engineAtLeast = S.engineAtLeast, otCapValue = S.otCapValue,
       overspendKind = S.overspendKind, overspendPrefix = S.overspendPrefix,
       overspendChipHTML = S.overspendChipHTML, vsOriginalOf = S.vsOriginalOf,
       vsOriginalText = S.vsOriginalText, vsOriginalHTML = S.vsOriginalHTML,
@@ -330,7 +330,7 @@
      * button survives as a fallback for jobs without steps AND for pre-0.4
      * engines whose workJob still demands the old diagnoseJob call. */
     var hasSteps = !!(j.steps && j.steps.length);
-    var diagFallback = undiagnosed && (!hasSteps || engineV() < 0.4);
+    var diagFallback = undiagnosed && (!hasSteps || !engineAtLeast('0.4'));
     var isDevice = j.type === 'device_repair'; /* §12.4 */
 
     var h = '<div class="card job-card-full" id="jobcard-' + j.id + '">';
@@ -625,7 +625,7 @@
     });
     /* §11.3 — pre-diagnosis (new flow only): the checklist knows just the
      * diagnose phase so far. Pre-0.4 engines list every step up front. */
-    if (j.needsDiagnosis && !j.diagnosed && engineV() >= 0.4) {
+    if (j.needsDiagnosis && !j.diagnosed && engineAtLeast('0.4')) {
       h += '<div class="step st-placeholder"><span class="st-ico">○</span>' +
         '<span class="st-label">…further steps revealed after diagnosis</span></div>';
     }

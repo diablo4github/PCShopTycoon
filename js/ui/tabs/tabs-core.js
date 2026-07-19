@@ -109,10 +109,16 @@
     return !!(window.Engine && typeof Engine[fnName] === 'function');
   }
 
-  /** Numeric Engine.VERSION (0 when absent) — gates flows that need engine
-   * behavior changes, e.g. §11.3 diagnosis-in-checklist. */
-  function engineV() {
-    try { return parseFloat(window.Engine && Engine.VERSION) || 0; } catch (e) { return 0; }
+  /** §21.6 version-gate hazard fix — Engine.VERSION '0.10' reads as 0.1 under
+   * parseFloat (a plain float can never tell a two-digit minor from a
+   * one-digit one), which would silently regress every "engine ≥ X" gate.
+   * The old numeric `engineV()` compared engine version as a JS Number and
+   * is REMOVED; every gate now goes through UI.engineVerAtLeast(want), which
+   * splits both sides on '.' and compares segment-by-segment as integers
+   * ('0.10' > '0.9.1' > '0.9'). Exposed here as engineAtLeast so tab modules
+   * can destructure it like the rest of the shared surface. */
+  function engineAtLeast(want) {
+    return !!(UI.engineVerAtLeast && UI.engineVerAtLeast(want));
   }
 
   /** §9.4 overtime floor (Engine.CONFIG.overtimeCap, default 3) — shared by
@@ -511,7 +517,7 @@
   S.TYPE_LABELS = TYPE_LABELS; S.SUBTYPE_LABELS = SUBTYPE_LABELS;
   S.prettySubtype = prettySubtype;
   S.SPEED_TIP = SPEED_TIP; S.OVERSPEND_TIP = OVERSPEND_TIP;
-  S.has = has; S.engineV = engineV; S.otCapValue = otCapValue;
+  S.has = has; S.engineAtLeast = engineAtLeast; S.otCapValue = otCapValue;
   S.overspendKind = overspendKind; S.overspendPrefix = overspendPrefix;
   S.overspendChipHTML = overspendChipHTML;
   S.vsOriginalOf = vsOriginalOf; S.vsArrow = vsArrow;

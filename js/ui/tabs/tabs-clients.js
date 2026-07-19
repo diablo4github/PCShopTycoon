@@ -22,7 +22,8 @@
   var esc = S.esc, fm = S.fm, tryCall = S.tryCall, arr = S.arr,
       getState = S.getState, emptyBox = S.emptyBox, has = S.has,
       perfStr = S.perfStr, prettySubtype = S.prettySubtype,
-      custTypeLabel = S.custTypeLabel, animatedBar = S.animatedBar;
+      custTypeLabel = S.custTypeLabel, animatedBar = S.animatedBar,
+      prestigeTierAtLeast = S.prestigeTierAtLeast;
 
   var clientsSearchTimer = null;
   var refocusClientsSearch = false;
@@ -172,6 +173,16 @@
     return h + '</ul>';
   }
 
+  /** §22.2 #11 — a client record can exist with zero completed visits (the
+   * record is created off an accepted offer/job that hasn't finished yet):
+   * "0 visits" reads like a data glitch, so the row shows "first visit" and
+   * the detail notes plainly that the first job is on the bench right now.
+   * The machines/history sections keep their own existing empty states —
+   * this only ADDS the bench note, never replaces them. */
+  function isZeroVisit(c) {
+    return c && c.visits !== undefined && c.visits !== null && Number(c.visits) === 0;
+  }
+
   /** Shared by the People expandable row and the offer/workbench chip's
    * modal popup (§21.4 — "modal reusing the People detail markup"). */
   function clientDetailHTML(c) {
@@ -183,6 +194,9 @@
       h += '<p class="small"><span class="chip chip-client" title="This client came to your shop through a referral">' +
         '🤝 Referred by ' + esc(c.referredBy) + '</span></p>';
     }
+    if (isZeroVisit(c)) {
+      h += '<p class="small muted">Their first job is on the bench right now — check back once it is finished.</p>';
+    }
     h += '<h4 class="sub-title">Machines</h4>' + machineListHTML(c.machines);
     h += '<h4 class="sub-title">Work history</h4>' + workLogHTML(c.workLog);
     return h;
@@ -192,6 +206,8 @@
     var open = !!UI.state.clientsOpen[String(c.id)];
     var loy = loyaltyOf(c);
     var typeLbl = custTypeLabel(c.type);
+    var visitsTxt = isZeroVisit(c) ? 'first visit'
+      : (c.visits !== undefined && c.visits !== null ? esc(c.visits) : '—');
     var h = '<tr class="wiki-row" data-action="client-toggle" data-client="' + esc(c.id) + '" title="Click for details">' +
       '<td class="muted">' + (open ? '▾' : '▸') + '</td>' +
       '<td>' + esc(c.name || 'Client') +
@@ -199,7 +215,7 @@
         (typeLbl ? ' <span class="chip">' + esc(typeLbl) + '</span>' : '') + '</td>' +
       '<td>' + esc(loy.label) + ' <span class="muted small">(' + Math.round(loy.value) + '/100)</span> ' +
         loyaltyStarsHTML(loy.value) + '</td>' +
-      '<td class="num">' + (c.visits !== undefined && c.visits !== null ? esc(c.visits) : '—') + '</td>' +
+      '<td class="num">' + visitsTxt + '</td>' +
       '<td class="muted small">' + esc(S.fmtDay(c.lastSeenDay)) + '</td>' +
       '</tr>';
     if (open) {
@@ -293,30 +309,53 @@
     return prettySubtype(String(kind));
   }
 
+  /* §22.2 #6 — up/down keep their arrow (title'd with the reason when one
+   * is given). Flat is different: with no reason it renders NOTHING (no
+   * orphaned "→" — a flat trend with nothing to say isn't worth a glyph);
+   * with a reason it reads as plain text, "steady — <reason>". */
   function seatTrendHTML(a) {
     var trend = a.seatsTrend || a.trend || null;
     if (!trend) return '';
     var reason = a.seatsTrendReason || a.trendReason || a.lastChangeReason || '';
-    var arrow = trend === 'up' ? '▲' : (trend === 'down' ? '▼' : '→');
-    var cls = trend === 'up' ? 'up' : (trend === 'down' ? 'down' : 'muted');
-    return ' <span class="' + cls + '"' + (reason ? ' title="' + esc(reason) + '"' : '') + '>' + arrow + '</span>';
+    if (trend === 'up' || trend === 'down') {
+      var arrow = trend === 'up' ? '▲' : '▼';
+      var cls = trend === 'up' ? 'up' : 'down';
+      return ' <span class="' + cls + '"' + (reason ? ' title="' + esc(reason) + '"' : '') + '>' + arrow + '</span>';
+    }
+    if (!reason) return '';
+    return ' <span class="muted small">steady — ' + esc(reason) + '</span>';
   }
 
-  function fleetGridHTML(fleet) {
+  /* §22.2 #8 — dense multi-column grid of small tiles (name + year +
+   * condition chip), not one-row-per-machine mile-long cards. Fleets over
+   * FLEET_COLLAPSE_AT collapse behind an expandable "+N more" (state keyed
+   * by account id so each account's card remembers its own expand state). */
+  var FLEET_COLLAPSE_AT = 8;
+  function fleetGridHTML(fleet, acctId) {
     fleet = arr(fleet);
     if (!fleet.length) return '<p class="muted small">No fleet machines on file yet.</p>';
+    var key = String(acctId);
+    var expanded = !!(UI.state.fleetOpen && UI.state.fleetOpen[key]);
+    var over = fleet.length > FLEET_COLLAPSE_AT;
+    var shown = (over && !expanded) ? fleet.slice(0, FLEET_COLLAPSE_AT) : fleet;
     var h = '<div class="fleet-grid">';
-    fleet.forEach(function (m) {
+    shown.forEach(function (m) {
       if (!m) return;
       var yc = m.yearClass || m.year || '';
-      h += '<div class="fleet-item"><div class="fleet-name">' + esc(m.name || 'Machine') + '</div>' +
+      h += '<div class="fleet-item">' +
+        '<div class="fleet-name">' + esc(m.name || 'Machine') + '</div>' +
         '<div class="meta-row small">' +
-          (yc ? '<span class="chip">' + esc(String(yc)) + '</span>' : '') +
-          (m.builtByShop ? '<span class="chip chip-built">🛠 Built by you</span>' : '') +
-          (m.condition ? '<span class="chip">' + esc(m.condition) + '</span>' : '') +
+          (yc ? '<span class="muted">' + esc(String(yc)) + '</span>' : '') +
+          (m.condition ? '<span class="chip fleet-cond">' + esc(m.condition) + '</span>' : '') +
+          (m.builtByShop ? '<span class="chip chip-built" title="Built by you">🛠</span>' : '') +
         '</div></div>';
     });
-    return h + '</div>';
+    h += '</div>';
+    if (over) {
+      h += '<button type="button" class="btn btn-sm fleet-more" data-action="fleet-toggle" data-acct="' + esc(key) + '">' +
+        (expanded ? 'Show fewer' : '+' + (fleet.length - FLEET_COLLAPSE_AT) + ' more') + '</button>';
+    }
+    return h;
   }
 
   function seatHistoryHTML(history) {
@@ -375,11 +414,24 @@
         : '') +
       '</div>';
     if (a.fleet !== undefined) {
-      h += '<h4 class="sub-title">Fleet</h4>' + fleetGridHTML(a.fleet);
+      h += '<h4 class="sub-title">Fleet</h4>' + fleetGridHTML(a.fleet, a.id);
     }
     h += seatHistoryHTML(a.history);
     h += '</div>';
     return h;
+  }
+
+  /** §22.2 #13 — the empty state must not scare a shop that has ALREADY
+   * cleared the prestige gate into thinking accounts are still locked (e.g.
+   * a churned/cancelled account leaving zero live ones): read the SAME
+   * source the header prestige chip (#hdr-prestige, ui.js) uses —
+   * Engine.getPrestigeInfo().tier — via the shared prestigeTierAtLeast(2)
+   * helper, never a re-derivation of the gate's own rule. Tier 2 is
+   * "Well-Reviewed" (Engine.CONFIG.PRESTIGE_TIERS[2].label). */
+  function businessesEmptyMsg() {
+    return prestigeTierAtLeast(2)
+      ? 'No active retainers — accounts you sign show up here.'
+      : 'No business accounts yet — retainer offers appear once your shop is Well-Reviewed (prestige tier 2).';
   }
 
   /** Returns the Businesses sub-tab body as an HTML string (same contract
@@ -392,7 +444,7 @@
       return html + emptyBox('Business account records are still coming online — check back after the next update.');
     }
     if (!accounts.length) {
-      return html + emptyBox('No business accounts yet — retainer offers appear once your shop is Well-Reviewed (prestige tier 2).');
+      return html + emptyBox(businessesEmptyMsg());
     }
     html += '<div class="cards accounts-grid">';
     accounts.forEach(function (a) { html += accountCardHTML(a); });
@@ -428,7 +480,8 @@
       (c.regular ? '<span class="chip chip-regular">Regular</span>' : '') +
       '<span class="chip">' + esc(loy.label) + ' (' + Math.round(loy.value) + '/100)</span>' +
       loyaltyStarsHTML(loy.value) +
-      (c.visits !== undefined && c.visits !== null ? '<span class="muted small">' + esc(c.visits) + ' visit' + (Number(c.visits) === 1 ? '' : 's') + '</span>' : '') +
+      (isZeroVisit(c) ? '<span class="muted small">first visit</span>'
+        : (c.visits !== undefined && c.visits !== null ? '<span class="muted small">' + esc(c.visits) + ' visit' + (Number(c.visits) === 1 ? '' : 's') + '</span>' : '')) +
       '</div>';
     UI.modal({
       title: c.name || 'Client',
@@ -461,6 +514,16 @@
       if (cid === null || cid === undefined) return;
       if (UI.state.clientsOpen[cid]) delete UI.state.clientsOpen[cid];
       else UI.state.clientsOpen[cid] = true;
+      T.render('clients');
+    },
+    /* §22.2 #8 — expand/collapse a business account's fleet grid past the
+     * "+N more" threshold. */
+    'fleet-toggle': function (el) {
+      var aid = el.getAttribute('data-acct');
+      if (aid === null || aid === undefined) return;
+      if (!UI.state.fleetOpen) UI.state.fleetOpen = {};
+      if (UI.state.fleetOpen[aid]) delete UI.state.fleetOpen[aid];
+      else UI.state.fleetOpen[aid] = true;
       T.render('clients');
     },
     /* §21.4 — client chip on offers (and anywhere else that adopts it):

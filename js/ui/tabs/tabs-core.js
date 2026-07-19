@@ -132,6 +132,16 @@
     return otCap;
   }
 
+  /** §22.2 #13 — the SAME source the header prestige chip (#hdr-prestige,
+   * ui.js) reads: Engine.getPrestigeInfo().tier. Used to gate the
+   * "Well-Reviewed" copy in empty states without re-deriving the rule —
+   * false (gate NOT proven met) on any engine hiccup, never a crash. */
+  function prestigeTierAtLeast(n) {
+    if (!has('getPrestigeInfo')) return false;
+    var pi = tryCall(function () { return Engine.getPrestigeInfo(); });
+    return !!(pi && isFinite(Number(pi.tier)) && Number(pi.tier) >= n);
+  }
+
   /* ------------------------------------------------------------------ *
    * §19.9 (#2) — real dates everywhere: "Apr 6, 1983", never "day N".
    * §19.9 (#16) — capacity units via Engine.fmtCapacity where shipped.
@@ -263,6 +273,28 @@
     var tl = custTypeLabel(j.customer.type);
     if (tl) s += ' <span class="chip">' + esc(tl) + '</span>';
     return s;
+  }
+
+  /* §22.2 #1 — job-card titles carry the engine's title as-is, which is
+   * often "<title> — <quote/fault line>"; the quote block and (once
+   * diagnosed) the fault line already show that second half elsewhere on
+   * the card, so the card TITLE itself only needs everything before that
+   * trailing clause. Every other use of job.title (morning modal lists,
+   * news, tooltips) stays untouched — this helper is card-title-only.
+   * Never touches the engine's actual title string.
+   *
+   * Cuts at the LAST " — ", not the first: job.title can carry more than
+   * one em-dash (e.g. jobs.js prepends "RUSH — " ahead of an already-
+   * suffixed "Repair: <machine> — <symptom>", and a diagnosis reveal can
+   * append its own " — found: <fault>" afterward). The engine's OWN
+   * symptom-carry-over regex (jobs.js: /—\s*(.+)$/) reads the trailing
+   * clause the same way, so splitting on the last delimiter is what keeps
+   * "RUSH — Repair: <machine>" intact instead of collapsing rush titles
+   * down to just "RUSH". */
+  function shortTitle(title) {
+    var s = String(title || '');
+    var i = s.lastIndexOf(' — ');
+    return i === -1 ? s : s.slice(0, i);
   }
 
   function dueText(j, st) {
@@ -518,12 +550,14 @@
   S.prettySubtype = prettySubtype;
   S.SPEED_TIP = SPEED_TIP; S.OVERSPEND_TIP = OVERSPEND_TIP;
   S.has = has; S.engineAtLeast = engineAtLeast; S.otCapValue = otCapValue;
+  S.prestigeTierAtLeast = prestigeTierAtLeast;                /* §22.2 #13 */
   S.overspendKind = overspendKind; S.overspendPrefix = overspendPrefix;
   S.overspendChipHTML = overspendChipHTML;
   S.vsOriginalOf = vsOriginalOf; S.vsArrow = vsArrow;
   S.vsOriginalText = vsOriginalText; S.vsOriginalHTML = vsOriginalHTML;
   S.typeChip = typeChip; S.tasteChip = tasteChip;
   S.custTypeLabel = custTypeLabel; S.customerLine = customerLine;
+  S.shortTitle = shortTitle;                                  /* §22.2 #1 */
   S.dueText = dueText; S.osChip = osChip;
   S.ordinal = ordinal; S.regularChip = regularChip;
   S.perfStr = perfStr; S.statusChip = statusChip;

@@ -23,7 +23,7 @@
       typeChip = S.typeChip, tasteChip = S.tasteChip, customerLine = S.customerLine,
       dueText = S.dueText, osChip = S.osChip, regularChip = S.regularChip,
       perfStr = S.perfStr, showPartInfo = S.showPartInfo,
-      animatedBar = S.animatedBar;
+      animatedBar = S.animatedBar, shortTitle = S.shortTitle;
 
   /* §21.4 — a client-machine job (job.clientMachineId set) is a returning
    * client's own box, not a fresh random machine: note it plainly. The
@@ -354,7 +354,7 @@
     var h = '<div class="card job-card-full" id="jobcard-' + j.id + '">';
 
     /* title row */
-    h += '<div class="card-title">' + esc(j.title) +
+    h += '<div class="card-title">' + esc(shortTitle(j.title)) +          // §22.2 #1
       (j.rush ? ' <span class="badge b-rush">RUSH</span>' : '') +
       (ready ? ' <span class="chip chip-status done">' + (isRefurb ? 'Repaired — ready to sell' : 'Done') + '</span>' : '') +
       (j.crt ? ' <span class="badge b-warn" title="CRT work without a discharge kit risks injury">CRT — HIGH VOLTAGE</span>' : '') +

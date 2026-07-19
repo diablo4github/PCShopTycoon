@@ -13,7 +13,8 @@
   var S = T.shared;
 
   var esc = S.esc, fm = S.fm, tryCall = S.tryCall, arr = S.arr,
-      getState = S.getState, emptyBox = S.emptyBox, has = S.has;
+      getState = S.getState, emptyBox = S.emptyBox, has = S.has,
+      prestigeTierAtLeast = S.prestigeTierAtLeast;
 
   function renderLedger(panel) {
     var st = getState();
@@ -248,7 +249,12 @@
 
     var h = '<div class="card accounts-card"><div class="card-title">Business accounts</div>';
     if (!accounts.length) {
-      h += '<p class="muted small">No retainers yet — business accounts appear as offers once your shop is Well-Reviewed (prestige tier 2).</p></div>';
+      /* §22.2 #13 — same prestige source as the header chip; don't tell an
+       * already-Well-Reviewed shop that accounts are still locked. */
+      var msg = prestigeTierAtLeast(2)
+        ? 'No active retainers — accounts you sign show up here.'
+        : 'No retainers yet — business accounts appear as offers once your shop is Well-Reviewed (prestige tier 2).';
+      h += '<p class="muted small">' + esc(msg) + '</p></div>';
       return h;
     }
     accounts.forEach(function (a) {

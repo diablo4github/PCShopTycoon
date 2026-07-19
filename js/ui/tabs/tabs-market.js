@@ -371,7 +371,12 @@
    * "PC100", "8GB"). This is display/sort convenience only — never a
    * rule, never billed — and degrades to 0 (stable, harmless) when a
    * name doesn't match. */
+  /* §22.2 #10 — getSourceCatalog rows may now carry a human-written `spec`
+   * string (§22.1 #10: "1991 · perf 12", "16 MB", "230W", …) — render it
+   * verbatim when present; the older heuristics stay as the fallback chain
+   * for rows/engines that don't have it yet. */
   function specLine(row) {
+    if (row.spec) return row.spec;
     if (row.specSummary) return row.specSummary;
     if (row.perfLabel) return row.perfLabel;
     if (row.perf) return S.perfStr(row.perf);

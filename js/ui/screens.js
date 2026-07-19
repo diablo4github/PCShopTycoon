@@ -381,7 +381,22 @@
     }
 
     h += listSection('New offers', summary.newOffers);
-    h += listSection('Offers expired', summary.expired);
+
+    /* §22.1 #5 / §22.2 (#5 render) — account lifecycle lines (cancelled,
+     * churned, grown, shrunk) move to their own "Accounts" section instead
+     * of "Offers expired". Feature-detected: renders nothing extra on an
+     * engine that hasn't shipped summary.accounts yet. During the overlap
+     * (an engine build that still ALSO pushes the same cancellation string
+     * into summary.expired) any line appearing in both is dropped from
+     * "Offers expired" so it never renders twice. */
+    var acctLines = Array.isArray(summary.accounts) ? summary.accounts : null;
+    var expiredLines = summary.expired;
+    if (acctLines && Array.isArray(expiredLines)) {
+      expiredLines = expiredLines.filter(function (s) { return acctLines.indexOf(s) === -1; });
+    }
+    h += listSection('Offers expired', expiredLines);
+    h += listSection('Accounts', acctLines);
+
     h += listSection('Warranty callbacks', summary.callbacks);
 
     if (summary.priceMovers && summary.priceMovers.length) {

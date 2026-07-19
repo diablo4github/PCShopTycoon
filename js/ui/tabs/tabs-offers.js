@@ -14,7 +14,8 @@
   var esc = S.esc, fm = S.fm, tryCall = S.tryCall, arr = S.arr,
       getState = S.getState, emptyBox = S.emptyBox, has = S.has,
       typeChip = S.typeChip, tasteChip = S.tasteChip, customerLine = S.customerLine,
-      dueText = S.dueText, osChip = S.osChip, regularChip = S.regularChip;
+      dueText = S.dueText, osChip = S.osChip, regularChip = S.regularChip,
+      shortTitle = S.shortTitle;
 
   /* §21.4 — compact client chip for offers from known clients: name +
    * loyalty tier, or a "referred by X" variant for a fresh referral offer.
@@ -41,15 +42,19 @@
     if (!name) return null;
     return { referred: false, id: cid, label: name, tier: (tier && typeof tier === 'object') ? (tier.label || tier.name) : tier };
   }
+  /* §22.2 #9 — this chip sits right next to customerLine(j), which already
+   * printed the customer's name (+ type chip): the chip itself shows TIER
+   * ONLY, never the name again. The "referred by X" variant is unchanged —
+   * X is a different person (the referrer), not the customer being repeated. */
   function clientChipHTML(info) {
     if (!info) return '';
     if (info.referred) {
       return '<span class="chip chip-client" title="This offer arrived because an existing client referred them to your shop">' +
         '🤝 referred by ' + esc(info.label) + '</span>';
     }
+    var tierTxt = info.tier || 'Known client';
     return '<button type="button" class="chip chip-client" data-action="client-chip" data-client="' + esc(info.id) +
-      '" title="Open ' + esc(info.label) + '’s client record">' + esc(info.label) +
-      (info.tier ? ' · ' + esc(info.tier) : '') + '</button>';
+      '" title="Open ' + esc(info.label) + '’s client record">' + esc(tierTxt) + '</button>';
   }
 
   /* §16.1 — light type-filter buckets for the Offers pill row (a filter,
@@ -173,7 +178,7 @@
       var partsEst = partsEstHTML(j);
       var lock = certLockOf(j);   // §19.9 #15
       html += '<div class="card job-card" id="offercard-' + j.id + '">' +
-        '<div class="card-title">' + esc(j.title) +
+        '<div class="card-title">' + esc(shortTitle(j.title)) +           // §22.2 #1
           (j.rush ? ' <span class="badge b-rush">RUSH</span>' : '') + '</div>' +
         '<div class="meta-row">' + typeChip(j) + UI.wrenches(j.difficulty) + regularChip(j) + tasteChip(j) + osChip(j) + '</div>' +
         (j.blurb ? '<div class="blurb">&ldquo;' + esc(j.blurb) + '&rdquo;</div>' : '') +
@@ -211,7 +216,7 @@
     var due = dueText(j, st);
     var fee = acct.monthlyFee !== undefined && acct.monthlyFee !== null ? acct.monthlyFee : j.pay;
     return '<div class="card job-card account-card" id="offercard-' + j.id + '">' +
-      '<div class="card-title">' + esc(j.title || ((acct.name || 'Local business') + ' — service retainer')) +
+      '<div class="card-title">' + esc(shortTitle(j.title) || (acct.name || 'Local business')) +   // §22.2 #1
         ' <span class="badge b-account">BUSINESS ACCOUNT</span></div>' +
       (j.blurb ? '<div class="blurb">&ldquo;' + esc(j.blurb) + '&rdquo;</div>' : '') +
       '<div class="meta-row small">' +

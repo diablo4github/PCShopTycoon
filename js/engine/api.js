@@ -1053,9 +1053,13 @@
       case 'gpu':
         return 'perf ' + (p.gpu != null ? p.gpu : 0);
       case 'ram': {
+        // Only DDR-generation/SDRAM/RDRAM tags read as a genuine "speed"
+        // hint (they gate real clock-speed families); the pre-clocked
+        // DIP/SIMM form-factor tags don't, and their tagLabel text ("DIP
+        // memory chips", "30-pin SIMM") is too long for a table cell anyway.
         var s = Engine.fmtCapacity(p.ramMB || 0);
         var memTag = (part.platformTags || []).filter(function (t) {
-          return /^MEM-/.test(t);
+          return /^MEM-(SDR|RDRAM|DDR\d*)$/.test(t);
         })[0];
         if (memTag) s += ' ' + Engine.tagLabel(memTag);
         return s;

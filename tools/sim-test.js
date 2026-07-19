@@ -3740,6 +3740,19 @@ function accountsScenario(era) {
   var signedAcct = s.accounts[0];
   assert(typeof signedAcct.kind === 'string' && signedAcct.kind.length,
          'accounts: signed account missing a kind');
+  // §22.1 #2: kind rolled BEFORE the name — the signed account's name must
+  // come from ITS OWN kind's `names` pool when DATA ships one for that kind
+  // (feature-detected; falls back to the legacy FLAVOR.businessNames pool
+  // when the kind has none).
+  var kindRow = (Engine.getData().BUSINESS_KINDS || []).filter(function (k) {
+    return k.id === signedAcct.kind;
+  })[0];
+  if (kindRow && Array.isArray(kindRow.names) && kindRow.names.length) {
+    assert(kindRow.names.indexOf(signedAcct.name) !== -1,
+           'accounts: signed account name "' + signedAcct.name +
+           '" not found in its own kind (' + signedAcct.kind + ") names pool: " +
+           JSON.stringify(kindRow.names));
+  }
   assert(signedAcct.seats === offer.account.seats && signedAcct.seats > 0,
          'accounts: signed seats should match the offer terms');
   assert(signedAcct.health === E.getConfig().ACCOUNT_HEALTH_START,
@@ -6775,7 +6788,7 @@ function survivalScenario(era) {
 // Main
 // ------------------------------------------------------------------
 console.log('sim-test using: ' + DATA_SOURCE + ' | engine v' + Engine.VERSION);
-assert(Engine.VERSION === '0.10', 'Engine.VERSION must be "0.10"');
+assert(Engine.VERSION === '0.10.1', 'Engine.VERSION must be "0.10.1"');
 // §21 version-compare hazard: parseFloat('0.10') is 0.1, which would read as
 // a REGRESSION from 0.9.1 under naive parseFloat comparison — exactly the
 // bug the UI's segment-wise gate exists to avoid. Assert a real segment-wise

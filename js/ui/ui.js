@@ -34,6 +34,7 @@
     clientsSearch: '',        // §21.4 Clients tab People search text
     clientsSort: { key: 'name', dir: 'asc' },  // §21.4 People sortable list (UI-side, §20.3 pattern)
     clientsOpen: {},          // clientId -> true for expanded People detail rows
+    fleetOpen: {},            // §22.2 #8 — accountId -> true for expanded fleet grid ("+N more")
     /* §16.1 — active sub-tab per main tab (session-level persistence). */
     subTab: { workbench: 'active', ledger: 'finances', shop: 'upgrade', offers: 'all', news: 'all', clients: 'people' } /* §17.6 — market's old Retail/Suppliers pills retired by the §20.3 drilldown */
   };

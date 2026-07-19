@@ -789,9 +789,16 @@ body.debug [data-debug] { display: inline-block !important; }
 .money-rows td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 
 /* ---------- toasts ---------- */
+/* §22.2 #4 — bottom-right, not top-right: the old top:70px position could
+ * sit over the sticky header's own controls (#app-header, position:sticky
+ * top:0) and, on the Parts Market, over the cart button that lives at the
+ * top of that panel's scroll content. Anchoring the root by `bottom`
+ * keeps every toast clear of both. New toasts are appended (ui.js
+ * UI.toast) so the newest lands closest to the corner, oldest pushed up —
+ * the usual bottom-right toast stacking order. */
 #toast-root {
   position: fixed;
-  top: 70px;
+  bottom: 16px;
   right: 16px;
   z-index: 300;
   display: flex;
@@ -2137,6 +2144,13 @@ body.era-early .account-card { border-left-color: var(--accent); }
 .category-card {
   cursor: pointer;
   text-align: left;
+  /* §22.2 #3 — this was missing `display`, so the flex `align-items`/`gap`
+   * below never took effect: the label and count are two adjacent inline
+   * <span>s with no separating whitespace in the markup, so they rendered
+   * glued together ("CPU28 parts"). A flex column restores the intended
+   * gap between the two lines. */
+  display: flex;
+  flex-direction: column;
   align-items: flex-start;
   gap: 4px;
   font: inherit;
@@ -2203,20 +2217,27 @@ button.chip-client:hover { border-color: var(--accent); }
 .worklog-list li { padding: 3px 0; border-bottom: 1px dashed var(--border); overflow-wrap: break-word; }
 .worklog-list li:last-child { border-bottom: none; }
 .client-machines { margin: 6px 0; }
+/* §22.2 #8 — a dense multi-column grid of small tiles, not one-row-per-
+ * machine mile-long cards. minmax(96px,...) fits several tiles across even
+ * a single ~300-360px account card; anything over ~8 machines collapses
+ * behind the "+N more" button rendered after this grid. */
 .fleet-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
-  gap: 8px;
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  gap: 6px;
   margin: 6px 0;
 }
 .fleet-item {
-  padding: 7px 9px;
+  padding: 5px 7px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--panel-bg-alt);
   min-width: 0;
 }
-.fleet-name { font-weight: 600; font-size: 12.5px; overflow-wrap: break-word; }
+.fleet-item .meta-row { gap: 4px; margin: 2px 0 0; }
+.fleet-name { font-weight: 600; font-size: 11.5px; line-height: 1.25; overflow-wrap: break-word; }
+.fleet-cond { font-size: 10.5px; padding: 1px 6px; }
+.fleet-more { margin-top: 4px; }
 .account-card-full .sub-title { margin-top: 8px; }
 .clients-empty-note { margin-top: 6px; }
 

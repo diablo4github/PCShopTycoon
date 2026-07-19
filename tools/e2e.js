@@ -51,6 +51,16 @@ function check(name, cond, extra) {
   if (cond) { console.log('  ok  ' + name); }
   else { console.log('  FAIL ' + name + (extra ? ' — ' + extra : '')); failures.push(name); }
 }
+/* Deterministically close any open modal (Escape is not reliable for every
+ * modal type): click its last button until modal-root is empty. */
+async function closeModals(page) {
+  for (let t = 0; t < 6; t++) {
+    const btns = page.locator('#modal-root button');
+    if ((await btns.count()) === 0) return;
+    try { await btns.last().click({ timeout: 1000 }); } catch (e) { await page.keyboard.press('Escape'); }
+    await page.waitForTimeout(120);
+  }
+}
 
 (async () => {
   const srv = await serve();
@@ -89,7 +99,7 @@ function check(name, cond, extra) {
 
   // ---------- All 8 tabs render ----------
   console.log('== Tabs render ==');
-  for (const tab of ['offers', 'workbench', 'inventory', 'market', 'wiki', 'shop', 'ledger', 'news', 'save']) {
+  for (const tab of ['offers', 'workbench', 'inventory', 'market', 'wiki', 'shop', 'clients', 'ledger', 'news', 'save']) {
     await page.click('.tab-btn[data-tab="' + tab + '"]');
     await page.waitForTimeout(120);
     const len = await page.evaluate((t) => (document.getElementById('tab-' + t).innerHTML || '').length, tab);
@@ -113,7 +123,7 @@ function check(name, cond, extra) {
     setTimeout(() => r(document.querySelectorAll('#modal-root svg').length), 200);
   }));
   check('sparkline lives in the part-info popover', sparks > 0, 'svg count ' + sparks);
-  await page.keyboard.press('Escape');
+  await closeModals(page);
   check('no build-type offers in 1983', await page.evaluate(() => Engine.getOffers().every((o) => o.type !== 'build')));
 
   // ---------- Accept an offer, diagnose/work ----------
@@ -144,12 +154,18 @@ function check(name, cond, extra) {
 
   // ---------- End Day & morning modal ----------
   console.log('== End Day ==');
+  await closeModals(page);   // a lingering popover must not swallow the click
   await page.click('#btn-endday');
-  await page.waitForTimeout(250);
-  // v0.6.1 §16.2c: a due-today unfinished job triggers a confirm first
-  const endConfirm = page.locator('#modal-root button', { hasText: /end anyway/i });
-  if ((await endConfirm.count()) > 0) { await endConfirm.first().click(); await page.waitForTimeout(250); }
-  check('morning modal shown', (await page.locator('#modal-root .morning').count()) > 0);
+  // v0.6.1 §16.2c: a due-today unfinished job triggers a confirm first;
+  // poll rather than fixed-wait — render timing varies run to run
+  let morningSeen = false;
+  for (let t = 0; t < 15 && !morningSeen; t++) {
+    await page.waitForTimeout(150);
+    const endConfirm = page.locator('#modal-root button', { hasText: /end anyway/i });
+    if ((await endConfirm.count()) > 0) { await endConfirm.first().click(); continue; }
+    morningSeen = (await page.locator('#modal-root .morning').count()) > 0;
+  }
+  check('morning modal shown', morningSeen);
   check('day advanced', await page.evaluate(() => Engine.getState().day >= 1));
   await page.keyboard.press('Escape');
   await page.waitForTimeout(150);
@@ -467,25 +483,49 @@ function check(name, cond, extra) {
         }
         if (!opt) return { skip: true };
         const after = Engine.getJobNeeds(jobId)[0];
-        const assigned = (after.assigned || []).length > 0;
+        // v0.10: a successful assign is EITHER a stock fill or a cart link
+        const assigned = (after.assigned || []).length > 0 || (after.inCart || 0) > 0;
         const u = Engine.unassignPart(jobId, after.index, opt.partId);
         const after2 = Engine.getJobNeeds(jobId)[0];
-        const unassigned = (after2.assigned || []).length === 0;
-        Engine.assignPart(jobId, after2.index, opt.partId); // leave assigned
-        return { aOk: a.ok, aErr: a.error || null, assigned, uOk: u.ok, uErr: u.error || null,
-                 unassigned, optStock: !!opt.inStock, hours: Engine.getState().hoursLeft };
+        const unassigned = (after2.assigned || []).length === 0 && (after2.inCart || 0) === 0;
+        Engine.assignPart(jobId, after2.index, opt.partId); // leave assigned/carted
+        return { aOk: a.ok, aErr: a.error || null, aCart: !!a.inCart, assigned,
+                 uOk: u.ok, uErr: u.error || null, unassigned,
+                 optStock: !!opt.inStock, hours: Engine.getState().hoursLeft };
       }, v03.jobId);
       if (!assignRes.skip) {
         check('assignPart works', assignRes.aOk && assignRes.assigned, JSON.stringify(assignRes));
         check('unassignPart works', assignRes.uOk && assignRes.unassigned, JSON.stringify(assignRes));
         await page.evaluate(() => UI.refresh());
         await page.waitForTimeout(150);
-        check('Unassign button rendered', (await page.locator('[data-action="unassign"]').count()) > 0);
+        // the job card may sit under any workbench sub-tab, and the final
+        // re-assign can be a stock fill (Unassign button) or a cart link
+        // (in-cart chip) — accept either, sweeping the sub-tabs
+        const slotUiSeen = async () => (await page.locator('[data-action="unassign"]').count()) > 0 ||
+          (await page.evaluate(() => /in cart/i.test(document.getElementById('tab-workbench').innerText)));
+        let unassignSeen = await slotUiSeen();
+        if (!unassignSeen) {
+          const pills = page.locator('#tab-workbench [data-action="subtab"]');
+          const n = await pills.count();
+          for (let p = 0; p < n && !unassignSeen; p++) {
+            await pills.nth(p).click();
+            await page.waitForTimeout(120);
+            unassignSeen = await slotUiSeen();
+          }
+        }
+        check('Unassign control rendered (button or in-cart chip)', unassignSeen);
       }
     }
   }
   const unknownCheck = await page.evaluate(() => {
-    for (let i = 0; i < 10; i++) {
+    const st = Engine.getState();
+    // clear refurb-cap pressure and guarantee hours/cash for the buy
+    Engine.getActiveJobs().filter((j) => j.type === 'refurb')
+      .forEach((j) => Engine.abandonJob(j.id));
+    st.cash += 5000;
+    let lastErr = null;
+    for (let i = 0; i < 15; i++) {
+      st.hoursLeft = 8;
       const m = Engine.getAsIsMarket();
       if (m.length) {
         const r = Engine.buyAsIsMachine(m[0].id);
@@ -494,13 +534,14 @@ function check(name, cond, extra) {
           const parts = Engine.getMachineParts(job.id);
           return { statuses: parts.map((p) => p.status), allUnknown: parts.every((p) => p.status === 'unknown') };
         }
+        lastErr = r.error;
       }
       Engine.endDay();
     }
-    return null;
+    return { failed: true, lastErr };
   });
-  check('refurb parts all "?" before diagnosis (v0.2 bug)', !!unknownCheck && unknownCheck.allUnknown,
-    unknownCheck ? unknownCheck.statuses.join(',') : 'no machine bought');
+  check('refurb parts all "?" before diagnosis (v0.2 bug)', !!unknownCheck && unknownCheck.allUnknown === true,
+    unknownCheck && unknownCheck.statuses ? unknownCheck.statuses.join(',') : 'no machine bought — last error: ' + (unknownCheck && unknownCheck.lastErr));
 
   // ---------- v0.3: Sunday rules ----------
   console.log('== v0.3: Sunday ==');
@@ -1229,7 +1270,9 @@ function check(name, cond, extra) {
     // an idle fast-forward completes no jobs, so WORK some: good outcomes make regulars
     const st = Engine.getState();
     st.cash = 50000;
-    for (let d = 0; d < 20 && (st.regulars || []).length === 0; d++) {
+    const clientsSoFar = () => (typeof Engine.getClients === 'function')
+      ? Engine.getClients().filter((c) => (c.workLog || []).length > 0).length : 0;
+    for (let d = 0; d < 20 && clientsSoFar() === 0; d++) {
       const o = Engine.getOffers().find((x) => ['repair', 'cleaning', 'software', 'upgrade'].indexOf(x.type) !== -1);
       if (o && Engine.acceptOffer(o.id).ok) {
         const j = Engine.getActiveJobs().find((x) => x.id == o.id);
@@ -1248,9 +1291,13 @@ function check(name, cond, extra) {
       }
       Engine.endDay();
     }
-    return { count: (st.regulars || []).length, jobs: st.reputation.jobsCompleted };
+    // §21.1: the client registry replaced state.regulars — every ACCEPTED
+    // person job creates/updates a client record.
+    const cs = (typeof Engine.getClients === 'function') ? Engine.getClients() : [];
+    return { count: cs.length, jobs: st.reputation.jobsCompleted,
+             withLog: cs.filter((c) => (c.workLog || []).length > 0).length };
   });
-  check('regulars remembered after good jobs', regulars.count > 0, JSON.stringify(regulars));
+  check('clients remembered after good jobs (§21.1)', regulars.count > 0 && regulars.withLog > 0, JSON.stringify(regulars));
   const transitions = await page.evaluate(() => {
     // the y2k-rush run crossed 1998-2000: atx-changeover / isa-sunset windows
     const news = Engine.getState().news;
@@ -1554,10 +1601,22 @@ function check(name, cond, extra) {
         const j = Engine.getActiveJobs().find((x) => x.id == o.id);
         const need = (Engine.getJobNeeds(j.id) || []).find((n) => n.qty > 1 && n.options && n.options.length);
         if (!need) return { skip: 'no multi need' };
-        const opt = need.options.find((op) => op.meets !== false) || need.options[0];
         st.hoursLeft = 8;
         Engine.clearCart();
-        Engine.buyPart(opt.partId, 1, { rush: true });   // exactly 1 in stock
+        // rush-buy exactly 1 of whichever option today's market will sell
+        let opt = null, bought = false;
+        for (const op of need.options) {
+          if (op.meets === false) continue;
+          if (Engine.buyPart(op.partId, 1, { rush: true }).ok) { opt = op; bought = true; break; }
+        }
+        if (!opt) opt = need.options.find((op) => op.meets !== false) || need.options[0];
+        // a rush-bought unit can be claimed by an older job's waiting link
+        // (§20.1 arrival auto-fill) or sit reserved under another job's
+        // assignment — the engine's per-option availability is the truth,
+        // not raw inventory rows
+        const optView = ((Engine.getJobNeeds(j.id) || []).find((n) => n.index === need.index) || { options: [] })
+          .options.find((x) => x.partId === opt.partId);
+        const invAtAssign = optView ? (Number(optView.inStock) || 0) : 0;
         const r = Engine.assignPart(j.id, need.index, opt.partId);
         // §20.2: remainder goes to the CART uncharged; checkout creates the
         // job-linked pending orders and charges then.
@@ -1574,15 +1633,19 @@ function check(name, cond, extra) {
         const viewOk = view.every((row) => (stateMap[row.partId] || 0) === row.qty || true) &&
                        view.length === Object.keys(stateMap).filter((k) => stateMap[k] > 0).length;
         return { ok: r.ok, filledNow: r.filledNow, inCart, coOk: co.ok, linkedOrders,
-                 chargedForRemainder: charged > 0, viewOk, units: j.units };
+                 chargedForRemainder: charged > 0, viewOk, units: j.units, bought, invAtAssign };
       }
       Engine.endDay();
     }
     return { skip: 'no contract found' };
   });
   if (!multi.skip) {
-    check('multi-fill: 1 stocked consumed + remainder carted, checkout orders & charges',
-      multi.ok && multi.filledNow >= 1 && multi.inCart >= multi.units - multi.filledNow &&
+    // stock-first when the unit was still in stock at assign time; all-carted
+    // is correct when the market refused every buy or an older waiting link
+    // claimed the arrival (§20.1)
+    const expectFilled = multi.invAtAssign > 0 ? 1 : 0;
+    check('multi-fill: stocked consumed first + remainder carted, checkout orders & charges',
+      multi.ok && multi.filledNow >= expectFilled && multi.inCart >= multi.units - multi.filledNow &&
       multi.coOk && multi.linkedOrders >= multi.units - multi.filledNow && multi.chargedForRemainder,
       JSON.stringify(multi));
     check('inventory view rows match state identities (no conversion display bug)', multi.viewOk, JSON.stringify(multi));
@@ -1702,13 +1765,16 @@ function check(name, cond, extra) {
         if (!need) continue;
         const opt = need.options.find((op) => !op.inStock);
         const r = Engine.assignPart(j.id, need.index, opt.partId);
+        // stray stock can make this a direct assign — that's the other test's
+        // path; keep hunting for a genuine cart-assign
+        if (r.ok && !r.inCart) { Engine.unassignPart(j.id, need.index, opt.partId); continue; }
         const after = (Engine.getJobNeeds(j.id) || []).find((n) => n.index === need.index) || {};
         const inCartNow = after.inCart || 0;
         st.hoursLeft = 8;
         const co = Engine.checkoutCart({ retailShipping: 'next-day' });
         const after2 = (Engine.getJobNeeds(j.id) || []).find((n) => n.index === need.index) || {};
-        return { jobId: j.id, aOk: r.ok, inCartFlag: !!r.inCart, inCartNow,
-                 coOk: co.ok, onOrder: after2.onOrder || 0, inCartAfter: after2.inCart || 0 };
+        return { jobId: j.id, aOk: r.ok, aErr: r.error || null, inCartFlag: !!r.inCart, inCartNow,
+                 coOk: co.ok, coErr: co.error || null, onOrder: after2.onOrder || 0, inCartAfter: after2.inCart || 0 };
       }
       Engine.endDay();
     }
@@ -1745,6 +1811,131 @@ function check(name, cond, extra) {
       const done = await page.evaluate((id) => !Engine.getActiveJobs().some((j) => j.id == id), ghostJob);
       check('completion ghost still fires for customer jobs', !done || ghostSeen, 'done=' + done + ' ghost=' + ghostSeen);
     }
+  }
+
+  // ---------- v0.10 (§21): clientele — CRM, persistent machines, ecosystems ----------
+  console.log('== v0.10: clientele ==');
+  await page.evaluate(() => { UI.refresh(); UI.switchTab('clients'); });
+  await page.waitForTimeout(200);
+  check('Clients tab renders', (await page.evaluate(() => (document.getElementById('tab-clients').innerHTML || '').length)) > 40);
+  check('People/Businesses sub-tabs present',
+    (await page.locator('#tab-clients [data-action="subtab"][data-group="clients"]').count()) >= 2);
+  const cliNow = await page.evaluate(() => {
+    const cs = Engine.getClients();
+    return { count: cs.length, first: cs[0] ? { name: cs[0].name, tier: cs[0].loyaltyTier } : null };
+  });
+  check('client registry populated by accepted jobs', cliNow.count > 0 && !!(cliNow.first && cliNow.first.name), JSON.stringify(cliNow));
+  if (cliNow.first) {
+    await clickSubTab(page, 'clients', 'people');
+    check('People list shows a known client', await page.evaluate((n) =>
+      document.getElementById('tab-clients').innerText.includes(n), cliNow.first.name));
+  }
+
+  // Persistent machine round-trip: serve a client to completion, force high
+  // loyalty, hunt their return — the offer must carry THEIR stored machine.
+  const ret = await page.evaluate(() => {
+    const st = Engine.getState(); st.cash = 200000;
+    // free the bench so accepts can't fail on the workstation cap
+    Engine.getActiveJobs().slice().forEach((x) => Engine.abandonJob(x.id));
+    let clientsTried = 0;
+    for (let d = 0; d < 30; d++) {
+      st.hoursLeft = 8;
+      const o = Engine.getOffers().find((x) => x.type === 'repair' && !x.clientMachineId);
+      if (!o || !Engine.acceptOffer(o.id).ok) { Engine.endDay(); continue; }
+      {
+        const j = Engine.getActiveJobs().find((x) => x.id == o.id);
+        for (let g = 0; g < 8 && !j.diagnosed; g++) {
+          st.hoursLeft = 8;
+          if (j.decision && j.decision.chosen == null) { Engine.decideJob(j.id, j.decision.options.slice(-1)[0].id); continue; }
+          Engine.diagnoseJob(j.id);
+        }
+        let guard = 0;
+        while (guard++ < 12) {
+          const needs = Engine.getJobNeeds(j.id) || [];
+          const open = needs.find((n) => (n.slotsFree || 0) > 0 && n.options.length);
+          if (!open) break;
+          const op = open.options.find((x) => x.inStock) || open.options[0];
+          st.hoursLeft = 8;
+          if (!op.inStock) Engine.buyPart(op.partId, 1, { rush: true });
+          const ar = Engine.assignPart(j.id, open.index, op.partId);
+          if (ar.ok === false) {
+            if (j.decision && j.decision.chosen == null && j.decision.subkind === 'psu') { Engine.decideJob(j.id, 'skip'); continue; }
+            break;
+          }
+          if (ar.inCart) { st.hoursLeft = 8; Engine.checkoutCart({ retailShipping: 'same-day' }); }
+        }
+        for (let w = 0; w < 25 && Engine.getActiveJobs().some((x) => x.id == j.id); w++) {
+          st.hoursLeft = 8;
+          if (j.decision && j.decision.chosen == null) { Engine.decideJob(j.id, j.decision.options.slice(-1)[0].id); continue; }
+          const wr = Engine.workJob(j.id);
+          if (wr.ok === false) Engine.endDay();
+        }
+        if (Engine.getActiveJobs().some((x) => x.id == j.id)) {
+          Engine.abandonJob(j.id); Engine.endDay(); continue;   // stalled — clear & retry
+        }
+        const c = Engine.getClients().find((x) => x.name === j.customer.name);
+        if (!c || !c.machines.length) { Engine.endDay(); continue; }
+        const stC = st.clients.list.find((x) => x.id === c.id);
+        stC.loyalty = 90;
+        const machineId = c.machines[0].id;
+        // §21.2: only machine-carrying return shapes (repair/upgrade) rebind
+        // to the stored box — software/cleaning returns legitimately don't.
+        // One client's box can be pathologically hard to fault-match, so try
+        // up to 3 served clients before calling it a failure.
+        let sawNonMachine = 0;
+        for (let dd = 0; dd < 30; dd++) {
+          Engine.endDay(); st.hoursLeft = 8;
+          const ro = Engine.getOffers().find((x) => x.clientId === c.id && x.clientMachineId != null);
+          if (ro) return { served: true, name: c.name, returnFound: true,
+                           sameMachine: ro.clientMachineId === machineId,
+                           mid: machineId, got: ro.clientMachineId, type: ro.type, sawNonMachine };
+          if (Engine.getOffers().some((x) => x.clientId === c.id)) sawNonMachine++;
+        }
+        stC.loyalty = 10;   // stop this client from hogging the return rolls
+        clientsTried++;
+        if (clientsTried >= 3) return { served: true, name: c.name, returnFound: false, sawNonMachine, clientsTried };
+        d = 0; continue;    // serve another client and try again
+      }
+    }
+    return { served: false };
+  });
+  check('served client stores their machine', ret.served === true, JSON.stringify(ret));
+  check('high-loyalty client returns with THEIR machine', !!(ret.returnFound && ret.sameMachine), JSON.stringify(ret));
+  if (ret.returnFound) {
+    await page.evaluate(() => { UI.refresh(); UI.switchTab('offers'); });
+    await page.waitForTimeout(200);
+    check('client chip renders on the return offer', (await page.locator('#tab-offers .chip-client').count()) > 0);
+  }
+
+  // Business ecosystem: sign an account, verify kind/seats/health/fleet + card
+  const biz = await page.evaluate(() => {
+    const st = Engine.getState();
+    st.reputation.prestige = 3; st.reputation.rating = 4.6; st.cash = 200000;
+    // pin the offer roll so this is a shape test, not a 45-day RNG gamble
+    const savedChance = Engine.CONFIG.ACCOUNT_OFFER_CHANCE;
+    Engine.CONFIG.ACCOUNT_OFFER_CHANCE = 1;
+    try {
+      for (let d = 0; d < 20; d++) {
+        const o = Engine.getOffers().find((x) => x.type === 'business_account');
+        if (o && Engine.acceptOffer(o.id).ok) {
+          const a = (Engine.getAccounts() || []).slice(-1)[0];
+          return a ? { ok: true, kind: a.kind, seats: a.seats, health: a.health,
+                       fleet: (a.fleet || []).length, trend: a.seatsTrend } : { ok: false, why: 'no account view' };
+        }
+        Engine.endDay();
+      }
+      const gates = { prestige: st.reputation.prestige, active: (st.accounts || []).length,
+                      max: Engine.CONFIG.ACCOUNT_MAX_ACTIVE };
+      return { ok: false, why: 'no account offer in 20 pinned days', gates };
+    } finally { Engine.CONFIG.ACCOUNT_OFFER_CHANCE = savedChance; }
+  });
+  check('account signs with kind/seats/health/fleet', !!(biz.ok && biz.kind && biz.seats > 0 && biz.health > 0 && biz.fleet > 0), JSON.stringify(biz));
+  if (biz.ok) {
+    await page.evaluate(() => { UI.refresh(); UI.switchTab('clients'); });
+    await page.waitForTimeout(150);
+    await clickSubTab(page, 'clients', 'businesses');
+    check('Businesses card shows the account', await page.evaluate((k) =>
+      document.getElementById('tab-clients').innerText.includes(k), biz.kind));
   }
   const capUnits = await page.evaluate(() => Engine.fmtCapacity ? [Engine.fmtCapacity(0.0625), Engine.fmtCapacity(640), Engine.fmtCapacity(16384)] : null);
   check('dynamic capacity units (KB/MB/GB)', !!capUnits && /KB/.test(capUnits[0]) && /MB/.test(capUnits[1]) && /GB/.test(capUnits[2]), JSON.stringify(capUnits));

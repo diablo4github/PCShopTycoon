@@ -371,7 +371,7 @@
       osChip(j) +
       '</div>';
 
-    if (j.blurb) h += '<div class="blurb">&ldquo;' + esc(j.blurb) + '&rdquo;</div>';
+    h += blurbHTML(j.blurb);                                    // §22.2 (re-fix) — no double quotes
 
     h += clientMachineNoteHTML(j);   // §21.4
 

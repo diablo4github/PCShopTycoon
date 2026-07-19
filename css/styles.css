@@ -869,6 +869,20 @@ body.debug [data-debug] { display: inline-block !important; }
 }
 .era-card:hover { border-color: var(--border-strong); transform: translateY(-1px); }
 .era-card.selected { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft), var(--shadow); }
+/* §22.2 #12 (re-fix) — root cause of the "letterboxed" art strip: `.era-card`
+ * is a <button>, and Chromium's UA rendering wraps a button's children in an
+ * internal anonymous flexbox that vertically CENTERS them as a group — even
+ * though the author CSS above sets display:block — whenever the button (a
+ * `.era-grid` grid item, stretched via the default align-items:stretch to
+ * match the tallest card in its row) ends up taller than its own natural
+ * content. A card with a shorter blurb/no callout (1991, 1996) has less
+ * natural content than the row's tallest card (1983, with its "locked until
+ * 1989" callout), so the button's phantom flex centers the shortfall as an
+ * even gap ABOVE the art strip and BELOW the body text. This wrapper claims
+ * 100% of the button's (stretched) height, leaving no slack for that
+ * internal centering to redistribute — confirmed live: removes the gap
+ * entirely (art flush with the card's top border on every card). */
+.era-card-inner { height: 100%; display: block; }
 /* 3:2 banner strip — art is decorative; titles live in the body below */
 .era-card-art {
   position: relative;

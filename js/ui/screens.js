@@ -166,6 +166,14 @@
       eras.forEach(function (era) {
         var sel = !scenarioPicked && UI.state.selectedEra === era.id;
         h += '<button type="button" class="era-card' + (sel ? ' selected' : '') + '" data-action="pick-era" data-era="' + esc(era.id) + '">' +
+          /* §22.2 #12 — see era-card-inner CSS comment: a Chromium <button>
+           * vertically centers its children as a group via an internal
+           * anonymous flexbox, even under an author display:block, whenever
+           * the (grid-stretched) button is taller than its own content. This
+           * wrapper claims the full stretched height so there's no slack
+           * left for that quirk to redistribute — the art frame stays flush
+           * with the card top on every card, regardless of blurb length. */
+          '<div class="era-card-inner">' +
           cardArt('assets/eras/' + era.id + '.jpg') +
           '<div class="era-card-body">' +
             '<h3>' + esc(era.name) + '</h3>' +
@@ -177,6 +185,7 @@
             (era.customBuildsUnlocked === false
               ? '<div class="era-callout">Custom building locked until September 1989 — repairs pay the bills first.</div>'
               : '') +
+          '</div>' +
           '</div>' +
           '</button>';
       });
@@ -193,6 +202,7 @@
         var sel = UI.state.selectedScenario === sc.id;
         h += '<button type="button" class="era-card scenario-card' + (sel ? ' selected' : '') +
           '" data-action="pick-scenario" data-scenario="' + esc(sc.id) + '">' +
+          '<div class="era-card-inner">' +           // §22.2 #12 — see cardArt-wrapper comment above
           cardArt('assets/scenarios/' + sc.id + '.jpg') +
           '<div class="era-card-body">' +
             '<h3>' + esc(sc.name || sc.id) + ' <span class="badge b-scenario">SCENARIO</span></h3>' +
@@ -202,6 +212,7 @@
               (sc.cash !== undefined && sc.cash !== null ? '<span>Starting cash <b>' + esc(fm(sc.cash)) + '</b></span>' : '') +
             '</div>' +
             (sc.difficultyNote ? '<div class="era-callout">' + esc(sc.difficultyNote) + '</div>' : '') +
+          '</div>' +
           '</div>' +
           '</button>';
       });

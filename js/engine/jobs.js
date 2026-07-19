@@ -390,7 +390,15 @@
                       askPrice: null, boughtFor: null, faultPartIdx: origIdx,
                       condition: null, faultRepaired: false,
                       specSummary: specSummaryFor(partIds2) };
-      job.title = 'Upgrade: ' + upgNameMap[uc].toLowerCase() + ' for a ' + machine.name;
+      // §22 copy fix: upgNameMap is already properly cased ("RAM upgrade",
+      // not "ram upgrade") — don't lowercase it back to a raw slug. "the"
+      // sidesteps the "a"/"an" problem (machine names starting with a
+      // vowel — Intel, AMD, Asus — used to read "a Intel...") WITHOUT an
+      // em-dash: §22.2 #1's compact-title rule renders only the segment
+      // before the LAST " — " on cards, and upgrade titles have no other
+      // line naming the machine, so an em-dash here would drop it from
+      // every compact view.
+      job.title = 'Upgrade: ' + upgNameMap[uc] + ' for the ' + machine.name;
       job.difficulty = deriveDifficulty(state, job);
       assembleSteps(state, job);
       return true;
@@ -2197,7 +2205,12 @@
                                 max: Math.round(estHi) };
         }
         job.hoursRequired = 1;   // fallback-step sizing only
-        job.title = 'Upgrade: ' + picked.upgName.toLowerCase() + ' for a ' +
+        // §22 copy fix: same as the rebind path above — picked.upgName is
+        // already properly cased, and "the" replaces the hard-coded "a"/"an"
+        // article that misread before vowel-initial machine names, without
+        // an em-dash (§22.2 #1's compact-title rule would otherwise drop
+        // the machine name from every upgrade card).
+        job.title = 'Upgrade: ' + picked.upgName + ' for the ' +
           ((job.machine && job.machine.name) || machineFlavor(state, year));
         break;
       }

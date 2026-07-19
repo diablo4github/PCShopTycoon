@@ -197,72 +197,86 @@
     {
       id: "typing-pool", label: "Typing Pool", minYear: 1983, maxYear: 1994,
       seats: [6, 16],
-      blurb: "Rows of word-processing terminals turn out correspondence and legal boilerplate all day; ribbons wear out, daisy wheels crack, and someone's always jammed the platen."
+      blurb: "Rows of word-processing terminals turn out correspondence and legal boilerplate all day; ribbons wear out, daisy wheels crack, and someone's always jammed the platen.",
+      names: ["Crestview Word Processing Pool", "Metro Secretarial Services", "Rapid-Type Correspondence Center", "Ivy League Transcription Pool", "Downtown Stenography Bureau"]
     },
     {
       id: "print-shop", label: "Print Shop", minYear: 1983, maxYear: 2025,
       seats: [4, 10],
-      blurb: "Prepress and quick-print jobs run nonstop from a handful of desktop-publishing machines; toner dust and round-the-clock duty cycles cook power supplies and printers alike."
+      blurb: "Prepress and quick-print jobs run nonstop from a handful of desktop-publishing machines; toner dust and round-the-clock duty cycles cook power supplies and printers alike.",
+      names: ["Quickset Print & Copy", "Riverside Prepress Co.", "InstaPrint Quick Copy Center", "Bluebird Print Shop", "Copy Corner Printing"]
     },
     {
       id: "law-office", label: "Law Office", minYear: 1983, maxYear: 2025,
       seats: [3, 8],
-      blurb: "Billing software and case files live on a few workhorse desktops the partners refuse to replace; drives fill up, backups get forgotten, and everything is somehow due Friday."
+      blurb: "Billing software and case files live on a few workhorse desktops the partners refuse to replace; drives fill up, backups get forgotten, and everything is somehow due Friday.",
+      names: ["Harmon & Reyes, Attorneys", "Whitcombe Law Group", "Ferris & Okafor LLP", "Sutton Legal Associates", "Castellan & Brooks, Counselors"]
     },
     {
       id: "mail-order-warehouse", label: "Mail-Order Warehouse", minYear: 1983, maxYear: 2025,
       seats: [6, 18],
-      blurb: "Order desks and a warehouse floor run on inventory and shipping terminals that never get to power down; dust, forklift vibration, and nonstop uptime take their toll."
+      blurb: "Order desks and a warehouse floor run on inventory and shipping terminals that never get to power down; dust, forklift vibration, and nonstop uptime take their toll.",
+      names: ["ValueDirect Mail Order Co.", "Continental Catalog Supply", "Pinehurst Distribution Warehouse", "QuickShip Order Fulfillment", "Overland Wholesale Mailers"]
     },
     {
       id: "tax-office", label: "Tax Preparation Office", minYear: 1984, maxYear: 2025,
       seats: [4, 10],
-      blurb: "Every January the machines wake from a year of neglect to crunch returns nonstop until April; overworked drives and abused printers pick the worst possible week to fail."
+      blurb: "Every January the machines wake from a year of neglect to crunch returns nonstop until April; overworked drives and abused printers pick the worst possible week to fail.",
+      names: ["Crestline Tax Preparation", "TaxWise Preparation Center", "Family Tax & Bookkeeping", "Harbor Tax Advisors", "Ledger Line Tax Service"]
     },
     {
       id: "video-store", label: "Video Rental Store", minYear: 1985, maxYear: 2005,
       seats: [3, 8],
-      blurb: "Rental terminals track every tape and late fee across a scuffed front counter; a jammed demo unit in the window is a bigger crisis to them than the register."
+      blurb: "Rental terminals track every tape and late fee across a scuffed front counter; a jammed demo unit in the window is a bigger crisis to them than the register.",
+      names: ["Reel Deal Video Rentals", "Starlight Video & Games", "Prime Time Video Rental", "Movie Vault Rentals", "Neighborhood Video Outpost"]
     },
     {
       id: "medical-clinic", label: "Medical Clinic", minYear: 1985, maxYear: 2025,
       seats: [5, 14],
-      blurb: "Patient scheduling and billing can't afford downtime; front-desk PCs take a beating from constant use, waiting-room fingers, and reception-area coffee."
+      blurb: "Patient scheduling and billing can't afford downtime; front-desk PCs take a beating from constant use, waiting-room fingers, and reception-area coffee.",
+      names: ["Fairview Family Clinic", "Crestwood Medical Associates", "Sunnyvale Urgent Care", "Harbor Health Clinic", "Willowbrook Physicians Group"]
     },
     {
       id: "design-studio", label: "Design Studio", minYear: 1988, maxYear: 2025,
       seats: [3, 8],
-      blurb: "A handful of overpowered workstations chew through layouts and renders at all hours; heat, dust, and a designer's refusal to reboot mid-project are the usual killers."
+      blurb: "A handful of overpowered workstations chew through layouts and renders at all hours; heat, dust, and a designer's refusal to reboot mid-project are the usual killers.",
+      names: ["Prism Design Studio", "Northline Creative Co.", "Silverline Graphics Studio", "Bright Spark Design House", "Inkwell Visual Studio"]
     },
     {
       id: "architecture-firm", label: "Architecture Firm", minYear: 1990, maxYear: 2025,
       seats: [4, 10],
-      blurb: "CAD workstations and a plotter run drafting jobs against tight deadlines; oversized files and bigger renders push storage and cooling past their limits."
+      blurb: "CAD workstations and a plotter run drafting jobs against tight deadlines; oversized files and bigger renders push storage and cooling past their limits.",
+      names: ["Ashford & Kline Architects", "Meridian Architecture Group", "Cobalt Design & Architecture", "Stonebridge Architects LLP", "Draftline Architecture Studio"]
     },
     {
       id: "isp", label: "Local Internet Service Provider", minYear: 1993, maxYear: 2008,
       seats: [6, 16],
-      blurb: "A rack of modems and a handful of support-desk PCs keep dial-up subscribers connected; overheating modem banks and cranky terminal software are a daily fire drill."
+      blurb: "A rack of modems and a handful of support-desk PCs keep dial-up subscribers connected; overheating modem banks and cranky terminal software are a daily fire drill.",
+      names: ["NetLink Dial-Up Services", "QuickConnect Internet", "Cascade Online Access", "TownNet Internet Services", "ByteStream Connect"]
     },
     {
       id: "dotcom-startup", label: "Dot-Com Startup", minYear: 1996, maxYear: 2001,
       seats: [8, 18],
-      blurb: "A loft full of mismatched desktops runs the website, the demo, and the investor pitch deck on borrowed time and borrowed money; nobody budgeted for maintenance."
+      blurb: "A loft full of mismatched desktops runs the website, the demo, and the investor pitch deck on borrowed time and borrowed money; nobody budgeted for maintenance.",
+      names: ["PetSnacks.com", "Zoomify Media Labs", "ClickCart.com", "Widgetopia Ventures", "GadgetGoblin.com"]
     },
     {
       id: "lan-cafe", label: "LAN Cafe", minYear: 1998, maxYear: 2012,
       seats: [10, 24],
-      blurb: "Rows of identical gaming rigs run flat-out for paying customers by the hour; clogged fans, abused controllers, and one dead machine means a line out the door."
+      blurb: "Rows of identical gaming rigs run flat-out for paying customers by the hour; clogged fans, abused controllers, and one dead machine means a line out the door.",
+      names: ["Frag Palace", "Cyber Zone LAN Center", "Byte Bunker Gaming Cafe", "Overclock Arena", "Ping Zero LAN Lounge"]
     },
     {
       id: "crypto-outfit", label: "Crypto Mining Outfit", minYear: 2013, maxYear: 2025,
       seats: [4, 12],
-      blurb: "Racks of GPUs grind away around the clock chasing coins in a garage or spare unit; relentless heat and dust wear through fans and cards faster than anywhere else on the route."
+      blurb: "Racks of GPUs grind away around the clock chasing coins in a garage or spare unit; relentless heat and dust wear through fans and cards faster than anywhere else on the route.",
+      names: ["HashRate Mining Collective", "BlockYield Mining Co.", "Ledger Forge Mining", "Nonce Valley Miners", "Cipher Rig Collective"]
     },
     {
       id: "esports-den", label: "E-Sports Den", minYear: 2015, maxYear: 2025,
       seats: [10, 24],
-      blurb: "High-refresh gaming rigs and a streaming rack run tournament practice and broadcasts back to back; spilled energy drinks and marathon sessions are hard on every peripheral."
+      blurb: "High-refresh gaming rigs and a streaming rack run tournament practice and broadcasts back to back; spilled energy drinks and marathon sessions are hard on every peripheral.",
+      names: ["Apex Bootcamp Gaming House", "Clutch Point Esports Den", "Respawn Ridge Training Center", "Overtime Arena Esports", "Frostline Esports Academy"]
     }
   ];
 

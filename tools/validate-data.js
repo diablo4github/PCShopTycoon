@@ -1212,6 +1212,7 @@ if (!Array.isArray(BK) || BK.length < 12) {
   err('BUSINESS_KINDS: need >= 12 era-windowed kinds (§21.5), have ' + (Array.isArray(BK) ? BK.length : 'none'));
 }
 var bkIds = {};
+var bkNameSeen = {};
 BK.forEach(function (k, i) {
   var l = 'BUSINESS_KINDS[' + i + '] (' + (k && k.id ? k.id : '?') + ')';
   if (!isStr(k.id) || !/^[a-z0-9-]+$/.test(k.id)) err(l + ': id must be a non-empty kebab-case string (§21.5)');
@@ -1227,6 +1228,22 @@ BK.forEach(function (k, i) {
     if (k.seats[0] <= 0) err(l + ': seats lo must be > 0 (§21.5)');
     if (k.seats[1] < k.seats[0]) err(l + ': seats hi must be >= lo (§21.5)');
     if (k.seats[1] > 40) err(l + ': seats hi is unreasonably large (> 40) for a single business account (§21.5)');
+  }
+  // §22.3(#2): every kind needs >= 4 unique, era-plausible business names in
+  // its own trade (fixes the "Beacon Hill Accounting labeled as an ISP"
+  // mismatch) — no name duplicated across kinds.
+  if (!Array.isArray(k.names) || k.names.length < 4) {
+    err(l + ': names must be an array of >= 4 era-plausible business names (§22.3)');
+  } else {
+    var kindNameSeen = {};
+    k.names.forEach(function (n, ni) {
+      var nl = l + '.names[' + ni + ']';
+      if (!isStr(n) || n.length < 6) { err(nl + ': must be a non-empty string, len >= 6 (§22.3)'); return; }
+      if (kindNameSeen[n]) err(nl + ': duplicate name "' + n + '" within kind (§22.3)');
+      kindNameSeen[n] = true;
+      if (bkNameSeen[n]) err(l + ': name "' + n + '" duplicated across kinds (also in ' + bkNameSeen[n] + ', §22.3)');
+      else bkNameSeen[n] = (k.id || l);
+    });
   }
 });
 // §21.5: every start-era preset year (§2.4 — the six DATA.ERAS startYear values) needs

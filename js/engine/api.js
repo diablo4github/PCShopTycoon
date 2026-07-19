@@ -65,7 +65,7 @@
     if (!isFinite(seed)) seed = 42;
     var startDi = null;
     var state = {
-      version: 11,
+      version: 12,
       seed: seed,
       rng: Engine.seedRngStreams(seed),   // §17.5 five named streams
       shopName: String(opts.shopName ||
@@ -108,11 +108,15 @@
       // §13.4 certifications; §13.2 one-time article-unlock news dedup
       training: { certsEarned: [], studying: null }, certsEarnedToday: [],
       articlesSeen: [],
-      // §15: credit line, regulars, business accounts, achievements,
-      // difficulty, scenario, transition-news dedup
+      // §15: credit line, business accounts, achievements, difficulty,
+      // scenario, transition-news dedup
       credit: { drawn: 0 },
-      regulars: [],
       accounts: [],
+      // §21.1/§21.2 client registry (replaces the old state.regulars array)
+      // + the shared id counter for both client machines and account fleet
+      // machines.
+      clients: { nextId: 1, list: [] },
+      machineNextId: 1,
       achievements: {},
       achievementEvents: {},
       difficulty: difficulty,
@@ -485,11 +489,82 @@
     if (obj.cart.nextId == null) obj.cart.nextId = 1;
     return obj;
   }
+  // Self-contained mulberry32-variant step operating directly on obj.rng.misc
+  // (Engine._state isn't obj yet during migration, so Engine.rand() can't be
+  // used — this is the exact same step it runs, just addressed at obj).
+  function migRand(obj) {
+    if (!obj.rng || typeof obj.rng !== 'object') {
+      obj.rng = Engine.seedRngStreams(obj.rngState != null ? obj.rngState : (obj.seed | 0));
+    }
+    obj.rng.misc = (obj.rng.misc + 0x6D2B79F5) | 0;
+    var t = obj.rng.misc;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  }
+  function migPick(obj, arr) {
+    if (!arr || !arr.length) return null;
+    return arr[Math.floor(migRand(obj) * arr.length)];
+  }
+  // v11 -> v12 migration (§21.6 "The Clientele Update"): legacy state.regulars
+  // becomes the client registry (visits=jobs, loyalty seeded above the
+  // regular threshold so existing regulars stay regulars, tasteBrand
+  // carried, machines empty — they simply haven't been rebuilt yet).
+  // Accounts gain kind/seats/health/fleet/history: kind rolled deterministic-
+  // ally on the misc stream, seats the kind's range midpoint, health 60,
+  // fleet seeded on the NEXT monthly tick (not retroactively, per spec —
+  // Jobs.acceptOffer seeds fleet at signing, but a save that already signed
+  // pre-v12 never had that moment). Never rejects a valid v11 save.
+  function migrateV11toV12(obj) {
+    obj.version = 12;
+    if (!obj.clients || typeof obj.clients !== 'object') obj.clients = { nextId: 1, list: [] };
+    if (!Array.isArray(obj.clients.list)) obj.clients.list = [];
+    if (obj.clients.nextId == null) obj.clients.nextId = 1;
+    var loyaltyFloor = (Engine.CONFIG.LOYALTY_REGULAR || 40) + 10;
+    (obj.regulars || []).forEach(function (r) {
+      obj.clients.list.push({
+        id: obj.clients.nextId++,
+        name: r.name, type: r.type || 'home',
+        tasteBrand: r.tasteBrand || null,
+        firstSeenDay: r.lastDay != null ? r.lastDay : 0,
+        lastSeenDay: r.lastDay != null ? r.lastDay : 0,
+        visits: r.jobs || 1,
+        loyalty: Math.min(100, loyaltyFloor),
+        machines: [], workLog: [], referredBy: null
+      });
+    });
+    delete obj.regulars;
+    if (obj.machineNextId == null) obj.machineNextId = 1;
+    var BUSINESS_KIND_FALLBACK = { id: 'office', label: 'Office', seats: [4, 10] };
+    (obj.accounts || []).forEach(function (a) {
+      if (a.kind == null) {
+        var year = 1996;
+        try { year = Engine.dateInfo(obj.day, obj).y; } catch (e) { /* defensive */ }
+        var table = Engine.getData().BUSINESS_KINDS;
+        if (!Array.isArray(table) || !table.length) table = [BUSINESS_KIND_FALLBACK];
+        var live = table.filter(function (k) {
+          return (k.minYear == null || year >= k.minYear) && (k.maxYear == null || year <= k.maxYear);
+        });
+        if (!live.length) live = table;
+        var kind = migPick(obj, live) || live[0];
+        a.kind = kind.id;
+        a.seats = Math.round(((kind.seats ? kind.seats[0] : 4) +
+                              (kind.seats ? kind.seats[1] : 10)) / 2);
+      }
+      if (a.health == null) a.health = 60;
+      if (a.healthTrend == null) a.healthTrend = 'flat';
+      if (a.healthReason === undefined) a.healthReason = null;
+      if (!Array.isArray(a.fleet)) a.fleet = [];   // seeded on next monthly tick, not retroactively
+      if (!Array.isArray(a.history)) a.history = [];
+      if (a.okThisMonth == null) a.okThisMonth = 0;
+    });
+    return obj;
+  }
   Engine.importSave = function (str) {
     var obj;
     try { obj = JSON.parse(String(str)); }
     catch (e) { return err('Not valid save JSON'); }
-    if (!obj || [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11].indexOf(obj.version) === -1)
+    if (!obj || [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].indexOf(obj.version) === -1)
       return err('Unsupported save version');
     // §17.5: v8 saves carry rng streams instead of the old single rngState
     var required = ['seed', 'eraId', 'startDate', 'day', 'cash',
@@ -508,6 +583,7 @@
     if (obj.version === 8) migrateV8toV9(obj);
     if (obj.version === 9) migrateV9toV10(obj);
     if (obj.version === 10) migrateV10toV11(obj);
+    if (obj.version === 11) migrateV11toV12(obj);
     Engine._state = obj;
     return { ok: true };
   };
@@ -1758,6 +1834,95 @@
                  (state.reputation.rating < a.minRating + 0.3 ?
                    'Rating is close to their ' + a.minRating.toFixed(1) + ' floor' :
                    'One more failed job this month cancels the account') : null };
+    });
+  };
+
+  // ------------------------------------------------------------------
+  // §21.1 Client registry — the CRM spine. Read-only (CRM has no mutators).
+  // ------------------------------------------------------------------
+  function clientMachineSummary(m) {
+    return { id: m.id, name: m.name, year: m.year,
+             specSummary: m.specSummary || Engine.Jobs.specSummaryFor(m.partIds || []),
+             builtByShop: !!m.builtByShop, acquiredDay: m.acquiredDay,
+             servicedCount: m.servicedCount || 0 };
+  }
+  function clientView(c) {
+    var tier = Engine.Jobs.loyaltyTierFor(c.loyalty || 0);
+    return {
+      id: c.id, name: c.name, type: c.type,
+      loyalty: c.loyalty || 0, loyaltyTier: tier.label,
+      regular: (c.loyalty || 0) >= Engine.CONFIG.LOYALTY_REGULAR,
+      visits: c.visits || 0,
+      firstSeenDay: c.firstSeenDay, lastSeenDay: c.lastSeenDay,
+      tasteBrand: c.tasteBrand || null,
+      referredBy: c.referredBy || null,
+      machines: (c.machines || []).map(clientMachineSummary),
+      workLog: (c.workLog || []).map(function (w) {
+        return { day: w.day, title: w.title, type: w.type,
+                 outcome: w.outcome, pay: w.pay, score: w.score };
+      })
+    };
+  }
+  Engine.getClients = function () {
+    var state = S();
+    if (!state) return [];
+    var list = (state.clients && state.clients.list) || [];
+    var sorted = list.slice().sort(function (a, b) {
+      if ((b.loyalty || 0) !== (a.loyalty || 0)) return (b.loyalty || 0) - (a.loyalty || 0);
+      return (b.lastSeenDay || 0) - (a.lastSeenDay || 0);
+    });
+    return sorted.map(clientView);
+  };
+  Engine.getClient = function (id) {
+    var state = S();
+    if (!state) return null;
+    var c = Engine.Jobs.findClient(state, id);
+    return c ? clientView(c) : null;
+  };
+
+  // ------------------------------------------------------------------
+  // §21.3 Business ecosystems — extended accounts view (kind/seats/health/
+  // fleet/history). Engine.getBusinessAccounts above is unchanged for
+  // back-compat; this is the v0.10 view the Clients > Businesses tab reads.
+  // ------------------------------------------------------------------
+  Engine.getAccounts = function () {
+    var state = S();
+    if (!state) return [];
+    var C = Engine.CONFIG;
+    return (state.accounts || []).map(function (a) {
+      var atRisk = state.reputation.rating < a.minRating + 0.3 ||
+                   (a.failsThisMonth || 0) >= C.ACCOUNT_FAILS_CANCEL - 1;
+      return {
+        id: a.id, name: a.name, kind: a.kind || 'office', seats: a.seats || 0,
+        health: a.health != null ? a.health : C.ACCOUNT_HEALTH_START,
+        trend: a.healthTrend || 'flat', lastChangeReason: a.healthReason || null,
+        monthlyFee: a.monthlyFee, jobsPerMonth: a.jobsPerMonth, minRating: a.minRating,
+        signedDay: a.signedDay,
+        jobsThisMonth: a.jobsThisMonth || 0, failsThisMonth: a.failsThisMonth || 0,
+        fleet: (a.fleet || []).map(function (m) {
+          var ratio = 1, cpu = null;
+          (m.partIds || []).forEach(function (id) {
+            var p = Engine.partById(id);
+            if (p && p.category === 'cpu') cpu = p;
+          });
+          if (cpu) {
+            var bl = Engine.baselineFor(Engine.currentYear(state));
+            ratio = (bl.cpu || 1) > 0 ? ((cpu.perf || {}).cpu || 0) / (bl.cpu || 1) : 1;
+          }
+          var cond = ratio >= 1.1 ? 'cutting-edge' : ratio >= 0.85 ? 'solid' :
+                     ratio >= 0.6 ? 'aging' : 'due for replacement';
+          return { id: m.id, name: m.name, year: m.year,
+                   builtByShop: !!m.builtByShop, acquiredDay: m.acquiredDay,
+                   condition: cond };
+        }),
+        history: (a.history || []).map(function (h) {
+          return { day: h.day, seats: h.seats, delta: h.delta, reason: h.reason || null };
+        }),
+        cancelRisk: atRisk ?
+          (state.reputation.rating < a.minRating + 0.3 ?
+            'Rating is close to their ' + a.minRating.toFixed(1) + ' floor' :
+            'One more failed job this month cancels the account') : null
+      };
     });
   };
 

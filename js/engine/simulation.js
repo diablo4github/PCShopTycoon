@@ -321,9 +321,11 @@
              Engine.fmtMoney(credit.drawn) + ')',
              credit.drawn * apr / 12);
     }
-    // §15.4: business-account retainers pay on the 1st (revenue), and each
-    // account's monthly job/fail counters reset for the new month.
-    for (var a = 0; a < (state.accounts || []).length; a++) {
+    // §15.4/§21.3: business-account retainers pay on the 1st (revenue), the
+    // health tick runs on THIS month's outcome counters (grow/stable/shrink/
+    // churn), then the monthly job/fail/ok counters reset. Backward loop —
+    // churn removes the account mid-pass.
+    for (var a = (state.accounts || []).length - 1; a >= 0; a--) {
       var acct = state.accounts[a];
       var fee = Engine.round2(acct.monthlyFee || 0);
       if (fee > 0) {
@@ -331,9 +333,87 @@
         Engine.ledgerAdd(state, 'revenue', fee);
         summary.payouts.push({ label: 'Retainer — ' + acct.name, amount: fee });
       }
+      var verdict = Sim.accountMonthlyTick(state, acct, summary);
       acct.jobsThisMonth = 0;
       acct.failsThisMonth = 0;
+      acct.okThisMonth = 0;
+      if (verdict === 'churn') {
+        state.accounts.splice(a, 1);
+        Engine.pushScore(state, C.ACCOUNT_CANCEL_SCORE,
+          { title: 'Account: ' + acct.name, reasons: ['lost a business account'] });
+        var cline = Engine.Jobs.pickBusinessNews(state, 'churn', acct.name, acct.seats || 0);
+        Engine.pushNews(state, 'money', 'Account cancelled: ' + acct.name, cline);
+        summary.expired.push('Business account: ' + acct.name + ' (cancelled)');
+      }
     }
+    // §21.1: idle loyalty decay — a client who hasn't been in for a stretch
+    // drifts down slowly, once per month they stay away.
+    var clients = (state.clients && state.clients.list) || [];
+    for (var ci2 = 0; ci2 < clients.length; ci2++) {
+      var cl = clients[ci2];
+      if (state.day - (cl.lastSeenDay || 0) >= C.LOYALTY_IDLE_DECAY_DAYS) {
+        cl.loyalty = Engine.clamp(Engine.round2(cl.loyalty - C.LOYALTY_IDLE_DECAY), 0, 100);
+      }
+    }
+  };
+
+  // ------------------------------------------------------------------
+  // §21.3 Business ecosystems — monthly health tick: fleet spec vs baseline,
+  // this month's service outcomes, uncovered seats. Health bands drive
+  // growth (seats + a commissioned build offer), stability, shrink (seats
+  // down, fleet trimmed to match), or churn (health floor — the caller
+  // removes the account). Tuned so a well-served account visibly grows
+  // within ~2 months and a neglected one shrinks within ~3 (§21.6).
+  // ------------------------------------------------------------------
+  Sim.accountMonthlyTick = function (state, acct, summary) {
+    var C = CFG();
+    var ratio = Engine.Jobs.accountFleetRatio(state, acct);
+    var uncovered = Math.max(0, (acct.seats || 0) - (acct.fleet || []).length);
+    var delta = 0;
+    delta += (ratio - 1) * C.ACCOUNT_HEALTH_FLEET_WEIGHT;
+    delta += (acct.okThisMonth || 0) * C.ACCOUNT_HEALTH_OK_PER_JOB;
+    delta -= (acct.failsThisMonth || 0) * C.ACCOUNT_HEALTH_FAIL_PER_JOB;
+    delta -= uncovered * C.ACCOUNT_HEALTH_UNCOVERED_PENALTY;
+    var before = acct.health;
+    acct.health = Engine.clamp(Engine.round2(acct.health + delta), 0, 100);
+    acct.healthTrend = acct.health > before ? 'up' : (acct.health < before ? 'down' : 'flat');
+    if (uncovered > 0) acct.healthReason = uncovered + ' seat(s) without a working machine';
+    else if (ratio < 0.8) acct.healthReason = 'their fleet is falling behind the times';
+    else if ((acct.failsThisMonth || 0) > 0) acct.healthReason = 'missed service this month';
+    else if ((acct.okThisMonth || 0) > 0) acct.healthReason = 'well-serviced fleet this month';
+    else acct.healthReason = 'a quiet month';
+    acct.history = acct.history || [];
+
+    if (acct.health >= C.ACCOUNT_HEALTH_GROW_AT) {
+      var add = Engine.randInt(C.ACCOUNT_SEATS_GROW_MIN, C.ACCOUNT_SEATS_GROW_MAX, 'offers');
+      acct.seats += add;
+      acct.history.push({ day: state.day, seats: acct.seats, delta: add, reason: acct.healthReason });
+      Engine.pushNews(state, 'money', 'Growth at ' + acct.name,
+        Engine.Jobs.pickBusinessNews(state, 'growth', acct.name, add));
+      var hasOpen = state.jobs.offers.some(function (o) {
+        return o.accountId === acct.id && o.subtype === 'contract_build_custom';
+      });
+      if (!hasOpen) {
+        var coJob = Engine.Jobs.commissionedBuildOfferFor(state, acct, add);
+        if (coJob) state.jobs.offers.push(coJob);
+      }
+    } else if (acct.health <= C.ACCOUNT_HEALTH_CHURN_AT) {
+      return 'churn';
+    } else if (acct.health <= C.ACCOUNT_HEALTH_SHRINK_AT) {
+      var rem = Math.min(Math.max(0, acct.seats - C.ACCOUNT_SEATS_MIN),
+                         Engine.randInt(C.ACCOUNT_SEATS_SHRINK_MIN, C.ACCOUNT_SEATS_SHRINK_MAX, 'offers'));
+      if (rem > 0) {
+        acct.seats -= rem;
+        acct.fleet = (acct.fleet || []).sort(function (x, y) {
+          return (x.acquiredDay || 0) - (y.acquiredDay || 0);
+        });
+        while (acct.fleet.length > acct.seats) acct.fleet.shift();
+        acct.history.push({ day: state.day, seats: acct.seats, delta: -rem, reason: acct.healthReason });
+        Engine.pushNews(state, 'money', 'Cutbacks at ' + acct.name,
+          Engine.Jobs.pickBusinessNews(state, 'shrink', acct.name, rem));
+      }
+    }
+    return null;
   };
 
   // ------------------------------------------------------------------

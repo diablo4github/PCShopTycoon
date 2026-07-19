@@ -81,13 +81,18 @@
     var offerDelta = Engine.difficultyFor(state).offerDelta || 0;
     if (offerDelta) count = Math.max(1, count + offerDelta);
     var made = [];
+    var madeJobs = [];
     for (var n = 0; n < count; n++) {
       var job = makeOffer(state);
       if (!job) continue;
-      maybeRegularReturn(state, job);   // §15.4: a satisfied regular comes back
       state.jobs.offers.push(job);
       made.push(job.title);
+      madeJobs.push(job);
     }
+    // §21.1: rebrand existing fresh offers as returning/referred clients —
+    // NEVER adds volume (the ≤3.9/day guard must not move).
+    attributeClientReturns(state, madeJobs);
+    made = madeJobs.map(function (j) { return j.title; });
     // §15.4: rare business-account retainer offers at prestige >= 2
     var acct = maybeAccountOffer(state);
     if (acct) { state.jobs.offers.push(acct); made.push(acct.title); }
@@ -96,72 +101,456 @@
   };
 
   // ------------------------------------------------------------------
-  // §15.4 Repeat customers — satisfied customers come back by name.
+  // §21.1 Client registry — the CRM spine. Replaces state.regulars: every
+  // served person is remembered (created on offer ACCEPT), not just the
+  // score>=4 elite. Loyalty (0..100) drives return chance, pay premium,
+  // deadline leniency, taste persistence and referrals.
   // ------------------------------------------------------------------
-  /* Chance a given fresh offer is actually a returning regular; scales with
-   * the shop's rating. Only fires for job shapes a walk-in regular fits
-   * (never contracts — those are institutions, not people). */
-  function maybeRegularReturn(state, job) {
+  var LOYALTY_TIER_FALLBACK = [
+    { minLoyalty: 0, label: 'New face' },
+    { minLoyalty: 20, label: 'Repeat customer' },
+    { minLoyalty: 40, label: 'Regular' },
+    { minLoyalty: 60, label: 'Trusted regular' },
+    { minLoyalty: 80, label: 'Old friend' }
+  ];
+  function loyaltyTierFor(loyalty) {
+    var tiers = Engine.getData().FLAVOR && Engine.getData().FLAVOR.loyaltyTiers;
+    if (!Array.isArray(tiers) || !tiers.length) tiers = LOYALTY_TIER_FALLBACK;
+    var best = tiers[0];
+    for (var i = 0; i < tiers.length; i++) {
+      if (loyalty >= tiers[i].minLoyalty) best = tiers[i];
+    }
+    return { label: best.label, value: loyalty };
+  }
+  Jobs.loyaltyTierFor = loyaltyTierFor;
+
+  function machineCapForType(type) {
+    var m = CFG().MACHINES_PER_CLIENT || {};
+    return m[type] != null ? m[type] : 1;
+  }
+  Jobs.machineCapForType = machineCapForType;
+
+  Jobs.nextMachineId = function (state) {
+    if (state.machineNextId == null) state.machineNextId = 1;
+    return state.machineNextId++;
+  };
+
+  Jobs.findClient = function (state, id) {
+    var list = (state.clients && state.clients.list) || [];
+    var nid = Number(id);
+    for (var i = 0; i < list.length; i++) if (list[i].id === nid) return list[i];
+    return null;
+  };
+  function findClientByName(state, name) {
+    var list = (state.clients && state.clients.list) || [];
+    for (var i = 0; i < list.length; i++) if (list[i].name === name) return list[i];
+    return null;
+  }
+  /* Evict the lowest-loyalty, longest-idle client under cap pressure — never
+   * a loyalty>=LOYALTY_REGULAR client while any stranger still qualifies. */
+  function evictClientIfNeeded(state) {
     var C = CFG();
-    var regs = state.regulars || [];
-    if (!regs.length) return;
-    if (job.type === 'contract' || job.type === 'refurb') return;
-    var chance = Engine.clamp(
-      C.REGULAR_CHANCE_BASE +
-      C.REGULAR_CHANCE_PER_STAR * (state.reputation.rating - 3),
-      0, C.REGULAR_CHANCE_MAX);
-    if (!Engine.chance(chance, 'offers')) return;   // §17.5
-    var reg = Engine.pick(regs, 'offers');
-    if (!reg) return;
-    job.customer = { name: reg.name, type: reg.type || job.customer.type };
-    job.regular = true;
-    job.regularVisits = reg.jobs || 1;       // UI chip: how many times they've been in
-    job.pay = Math.round((job.pay || 0) * C.REGULAR_PAY_MULT);   // loyalty premium
-    reg.lastDay = state.day;
-    // §15.4: their taste stays consistent visit to visit (the IBM loyalist
-    // keeps coming back for IBM). Category rides the job when one applies.
-    if (reg.tasteBrand) {
-      var cat = tasteCategoryFor(job);
-      job.taste = {
-        brand: reg.tasteBrand, category: cat || null,
-        bonusPct: C.REGULAR_TASTE_BONUS,
-        label: 'Swears by ' + reg.tasteBrand +
-               (cat ? ' ' + (TASTE_PLURAL[cat] || cat) : ' gear')
+    var list = state.clients.list;
+    if (list.length <= C.CLIENTS_CAP) return;
+    var pool = list.filter(function (c) { return c.loyalty < C.LOYALTY_REGULAR; });
+    if (!pool.length) pool = list;
+    var victim = pool[0];
+    for (var i = 1; i < pool.length; i++) {
+      var c = pool[i];
+      if (c.loyalty < victim.loyalty ||
+          (c.loyalty === victim.loyalty && c.lastSeenDay < victim.lastSeenDay)) victim = c;
+    }
+    var idx = list.indexOf(victim);
+    if (idx !== -1) list.splice(idx, 1);
+  }
+  /* A client record is created (or matched by name/id) the moment an offer
+   * is ACCEPTED — every served person is remembered. Declined offers never
+   * create records; account/institutional jobs never create PERSON records. */
+  function findOrCreateClient(state, job) {
+    if (job.type === 'contract' || job.accountId || job.type === 'business_account') return null;
+    if (!job.customer || typeof job.customer !== 'object' || !job.customer.name) return null;
+    state.clients = state.clients || { nextId: 1, list: [] };
+    var client = job.clientId != null ? Jobs.findClient(state, job.clientId) : null;
+    if (!client) client = findClientByName(state, job.customer.name);
+    if (!client) {
+      client = {
+        id: state.clients.nextId++, name: job.customer.name, type: job.customer.type || 'home',
+        tasteBrand: null, firstSeenDay: state.day, lastSeenDay: state.day,
+        visits: 0,
+        loyalty: job.referredStartingLoyalty != null ? job.referredStartingLoyalty : 0,
+        machines: [], workLog: [], referredBy: job.referredBy || null
       };
+      state.clients.list.push(client);
+      evictClientIfNeeded(state);
+    }
+    job.clientId = client.id;
+    return client;
+  }
+  Jobs.findOrCreateClient = findOrCreateClient;
+
+  /* Write the completed job's machine back to the client's stored record
+   * (§21.2). Repair/upgrade completions on a KNOWN box (job.clientMachineId)
+   * write back in place; a first-time machine-carrying completion (or a
+   * shop build) is added as a new tracked machine, capped per customer type
+   * — at cap, an untracked box is simply not added (never silently swaps a
+   * client's established identity). */
+  function updateClientMachine(state, client, job) {
+    var partIds, name, builtByShop = false, freshBuild = false;
+    if (isBuildJob(job) && job.build && !job.stockBuild) {
+      partIds = flattenBuildIds(job.build);
+      var cpuN = null;
+      for (var i = 0; i < partIds.length; i++) {
+        var p = Engine.partById(partIds[i]);
+        if (p && p.category === 'cpu') { cpuN = p.name; break; }
+      }
+      name = (cpuN ? cpuN + ' system' : 'Custom build') + ' — built for ' + client.name;
+      builtByShop = true; freshBuild = true;
+    } else if ((job.type === 'repair' || job.type === 'upgrade') && job.machine) {
+      partIds = job.machine.partIds.slice();
+      name = job.machine.name;
+    } else {
+      return;   // not a machine-carrying completion
+    }
+    if (job.clientMachineId) {
+      for (var m = 0; m < client.machines.length; m++) {
+        if (client.machines[m].id === job.clientMachineId) {
+          client.machines[m].partIds = partIds;
+          client.machines[m].specSummary = specSummaryFor(partIds);
+          client.machines[m].servicedCount = (client.machines[m].servicedCount || 0) + 1;
+          return;
+        }
+      }
+    }
+    var cap = machineCapForType(client.type);
+    if (client.machines.length >= cap) return;
+    client.machines.push({
+      id: Jobs.nextMachineId(state), name: name,
+      year: (job.machine && job.machine.year) || Engine.currentYear(state),
+      partIds: partIds, specSummary: specSummaryFor(partIds),
+      acquiredDay: state.day, builtByShop: builtByShop,
+      servicedCount: freshBuild ? 0 : 1
+    });
+  }
+  /* Shared completion/failure bookkeeping for ANY resolved job tied to a
+   * client (job.clientId set at accept). Pushes a workLog entry, moves
+   * loyalty, and (for machine-carrying completions) writes the machine back. */
+  function recordClientOutcome(state, job, outcome, score, pay) {
+    if (!job.clientId) return;
+    var client = Jobs.findClient(state, job.clientId);
+    if (!client) return;
+    var C = CFG();
+    if (outcome !== 'callback') client.visits = (client.visits || 0) + 1;
+    client.lastSeenDay = state.day;
+    client.workLog = client.workLog || [];
+    client.workLog.unshift({ day: state.day, title: job.title, type: job.type,
+                             outcome: outcome, pay: Engine.round2(pay || 0),
+                             score: score != null ? Engine.round2(score) : null });
+    while (client.workLog.length > C.CLIENT_WORKLOG_CAP) client.workLog.pop();
+
+    var delta = 0;
+    if (outcome === 'done') {
+      delta += C.LOYALTY_ONTIME;
+      if (score != null && score >= C.LOYALTY_SCORE5_AT) delta += C.LOYALTY_SCORE5_BONUS;
+      var reasons = (job.result && job.result.reasons) || [];
+      if (reasons.indexOf('taste matched') !== -1) delta += C.LOYALTY_TASTE_HIT;
+      if (reasons.indexOf('caught a problem early') !== -1) delta += C.LOYALTY_APPROVAL_BONUS;
+      if (reasons.indexOf('overspent hard on a part') !== -1) delta -= C.LOYALTY_OVERSPEND_ANGER;
+    } else if (outcome === 'late') {
+      delta -= C.LOYALTY_LATE;
+    } else if (outcome === 'failed' || outcome === 'abandoned') {
+      delta -= C.LOYALTY_FAILED;
+    } else if (outcome === 'callback') {
+      delta -= C.LOYALTY_CALLBACK;
+    }
+    client.loyalty = Engine.clamp(Engine.round2(client.loyalty + delta), 0, 100);
+    // §15.4-legacy: their taste stays consistent — first observed sticks.
+    if (!client.tasteBrand && job.taste && job.taste.brand) client.tasteBrand = job.taste.brand;
+
+    updateClientMachine(state, client, job);
+  }
+  Jobs.recordClientOutcome = recordClientOutcome;
+
+  /* §21.2/§21.3: re-target a machine-carrying offer (repair/upgrade) onto a
+   * STORED machine (a client's box or an account fleet unit) — same partIds
+   * the shop last saw. Tries the job's already-rolled fault category first;
+   * for a repair, falls back to a different fault category the stored
+   * machine can actually support. For an upgrade, a strictly-better
+   * purchasable part must exist for that category (nothing-installed is
+   * fine — the qualifying-part search is the same rule §14.1 already uses).
+   * Returns true on success (mutates job.machine/fault/needs/title/steps);
+   * the caller falls back to a non-machine job shape rather than leak a
+   * fresh machine. Caller sets job.clientId/clientMachineId afterward. */
+  function rebindJobMachine(state, job, machine) {
+    var C = CFG();
+    if (job.type === 'repair') {
+      var cat = job.fault && job.fault.partCategory;
+      if (cat && !solvableFaultCategoryInMachine(state, machine, cat)) {
+        var faultCats = repairFaultCategories(state).filter(function (fc) {
+          return solvableFaultCategoryInMachine(state, machine, fc.cat);
+        });
+        if (!faultCats.length) return false;
+        var newCat = pickFaultCategory(faultCats);
+        var F = FLAVOR();
+        var tmpl = Engine.pick((F.faults || {})[newCat] ||
+          [{ desc: 'Mystery gremlins', laborHours: 2 }], 'faults');
+        job.fault = { desc: tmpl.desc, partCategory: newCat === 'laborOnly' ? null : newCat,
+                      laborHours: Engine.clamp(Math.round(tmpl.laborHours || 2), 1, 3) };
+        if (Array.isArray(tmpl.complaints) && tmpl.complaints.length)
+          job.blurbOverride = Engine.pick(tmpl.complaints, 'offers');
+        cat = job.fault.partCategory;
+      }
+      var partIds = machine.partIds.slice();
+      var idx = null;
+      if (cat) {
+        for (var i = 0; i < partIds.length; i++) {
+          var pc = Engine.partById(partIds[i]);
+          if (pc && pc.category === cat) { idx = i; break; }
+        }
+      }
+      job.machine = { name: machine.name, year: machine.year, partIds: partIds,
+                      askPrice: null, boughtFor: null, faultPartIdx: idx,
+                      condition: null, faultRepaired: false,
+                      specSummary: specSummaryFor(partIds) };
+      var sym = symptomSuffix(job.fault, job.blurbOverride);
+      job.title = 'Repair: ' + machine.name + (sym ? ' — ' + sym : '');
+      job.difficulty = deriveDifficulty(state, job);
+      assembleSteps(state, job);
+      return true;
+    }
+    if (job.type === 'upgrade') {
+      var nd = job.needs[0];
+      if (!nd) return false;
+      var uc = nd.category;
+      var upgKeyMap = { ram: 'ramMB', storage: 'storageGB', gpu: 'gpu' };
+      var upgKey = upgKeyMap[uc];
+      if (!upgKey) return false;
+      var partIds2 = machine.partIds.slice();
+      var origIdx = null;
+      for (var j = 0; j < partIds2.length; j++) {
+        var pj = Engine.partById(partIds2[j]);
+        if (pj && pj.category === uc) { origIdx = j; break; }
+      }
+      var origPart = origIdx != null ? Engine.partById(partIds2[origIdx]) : null;
+      var origVal = origPart ? ((origPart.perf || {})[upgKey] || 0) : 0;
+      var mobo2 = null;
+      for (var k = 0; k < partIds2.length; k++) {
+        var pk = Engine.partById(partIds2[k]);
+        if (pk && pk.category === 'motherboard') mobo2 = pk;
+      }
+      var prefix = Engine.Compat.namespaceForCategory(uc);
+      var fitTags = null;
+      if (mobo2 && prefix) {
+        var tags = Engine.Compat.tagsInNamespace(mobo2, prefix);
+        if (tags.length) fitTags = tags;
+      }
+      var cands = purchasableByCategory(state, uc).filter(function (p) {
+        if (!fitTags) return true;
+        var ptags = p.platformTags || [];
+        for (var t = 0; t < fitTags.length; t++) if (ptags.indexOf(fitTags[t]) !== -1) return true;
+        return false;
+      });
+      var seen = {}, distinct = [];
+      for (var pc2 = 0; pc2 < cands.length; pc2++) {
+        var v = (cands[pc2].perf || {})[upgKey] || 0;
+        if (v > origVal && !seen[v]) { seen[v] = true; distinct.push(v); }
+      }
+      distinct.sort(function (a, b) { return a - b; });
+      if (!distinct.length) return false;   // not solvable on this machine
+      var target125 = origVal * 1.25;
+      var minVal = null;
+      for (var dv = 0; dv < distinct.length; dv++) {
+        if (distinct[dv] >= target125) { minVal = distinct[dv]; break; }
+      }
+      if (minVal == null) minVal = distinct[0];
+      var minPerf = {}; minPerf[upgKey] = minVal;
+      var upgNameMap = { ram: 'RAM upgrade', storage: 'Storage upgrade', gpu: 'Graphics upgrade' };
+      var origLabel = origPart ? fmtPerfReq(upgKey, origVal) : 'nothing installed';
+      var label = upgNameMap[uc] + ' — bigger than the current ' + origLabel +
+                  ' → at least ' + fmtPerfReq(upgKey, minVal);
+      var slotCap2 = machineSlotsFor({ partIds: partIds2 }, uc);
+      var occ = machineOccupied({ partIds: partIds2 }, uc);
+      var freeSlots = Math.max(1, slotCap2 - occ + (origPart ? 1 : 0));
+      var summable = SUMMABLE_CATS[uc] && (uc !== 'gpu' || slotCap2 >= 2);
+      job.needs = [{ category: uc, anyOfTags: fitTags, minPerf: minPerf,
+                     qty: summable ? freeSlots : 1, filledPartIds: [], label: label,
+                     summable: !!summable, sumKey: summable ? upgKey : null,
+                     originalPartId: origPart ? origPart.id : null }];
+      job.machine = { name: machine.name, year: machine.year, partIds: partIds2,
+                      askPrice: null, boughtFor: null, faultPartIdx: origIdx,
+                      condition: null, faultRepaired: false,
+                      specSummary: specSummaryFor(partIds2) };
+      job.title = 'Upgrade: ' + upgNameMap[uc].toLowerCase() + ' for a ' + machine.name;
+      job.difficulty = deriveDifficulty(state, job);
+      assembleSteps(state, job);
+      return true;
+    }
+    return false;
+  }
+  /* Client-facing wrapper: rebind + set the person-client link fields. */
+  function rebindToClientMachine(state, job, client, machine) {
+    if (!rebindJobMachine(state, job, machine)) return false;
+    job.clientId = client.id; job.clientMachineId = machine.id;
+    job.clientMachineServiceCount = machine.servicedCount || 0;
+    return true;
+  }
+  /* Account-fleet wrapper: rebind + set only the machine link (job.accountId
+   * already identifies the business — no person client involved). */
+  function rebindToFleetMachine(state, job, machine) {
+    if (!rebindJobMachine(state, job, machine)) return false;
+    job.clientMachineId = machine.id;
+    job.clientMachineServiceCount = machine.servicedCount || 0;
+    return true;
+  }
+  function solvableFaultCategoryInMachine(state, machine, cat) {
+    if (cat == null || cat === 'laborOnly') return true;
+    var mobo = null, hasCat = false;
+    for (var i = 0; i < machine.partIds.length; i++) {
+      var p = Engine.partById(machine.partIds[i]);
+      if (!p) continue;
+      if (p.category === 'motherboard') mobo = p;
+      if (p.category === cat) hasCat = true;
+    }
+    if (!hasCat) return false;
+    var cands = purchasableByCategory(state, cat);
+    if (!cands.length) return false;
+    if (!mobo) return true;
+    for (var j = 0; j < cands.length; j++) if (Engine.Compat.fits(cands[j], mobo).fits) return true;
+    return false;
+  }
+  /* §21.2 aging & replacement: a badly outdated stored machine may be swapped
+   * for a fresh era-appropriate one on an eligible return visit; the old box
+   * SHOULD then appear once in the as-is market (shipped behind
+   * ACCOUNT_FLEET_ASIS_HOOK — see report for the liveness-guard call). */
+  function maybeReplaceAgingMachine(state, ownerName, machine) {
+    var C = CFG();
+    var age = Engine.currentYear(state) - (machine.year || Engine.currentYear(state));
+    if (age < C.MACHINE_REPLACE_AGE_YEARS) return machine;
+    if (!Engine.chance(C.MACHINE_REPLACE_CHANCE, 'market')) return machine;
+    var built = assembleMachineParts(state, 'market');
+    if (!built) return machine;
+    if (C.ACCOUNT_FLEET_ASIS_HOOK && state.asIsMarket.length < CFG().ASIS_MAX) {
+      var value = machinePartsValue(state, { partIds: machine.partIds });
+      var ask = Engine.round2(value * ((CFG().ASIS_ASK_MIN + CFG().ASIS_ASK_MAX) / 2));
+      state.asIsMarket.push({
+        id: 'm' + (state.asIsNextId++), name: ownerName + '’s old machine',
+        year: machine.year, askPrice: Math.max(10, ask),
+        hint: 'Traded in for something newer — works fine as-is.',
+        partIds: machine.partIds.slice(), faultPartIdx: null,
+        listedDay: state.day, specSummary: specSummaryFor(machine.partIds)
+      });
+    }
+    var year = Engine.currentYear(state);
+    var cpuName = null;
+    for (var i = 0; i < built.partIds.length; i++) {
+      var p = Engine.partById(built.partIds[i]);
+      if (p && p.category === 'cpu') { cpuName = p.name; break; }
+    }
+    machine.name = (cpuName || 'Newer') + ' system';
+    machine.year = year;
+    machine.partIds = built.partIds;
+    machine.specSummary = specSummaryFor(built.partIds);
+    machine.servicedCount = 0;
+    return machine;
+  }
+
+  /* §21.1: rebrand a subset of tonight's already-generated fresh offers as
+   * returning clients (weighted toward higher loyalty), and rebrand one
+   * further unclaimed offer as a high-loyalty client's referral. NEVER adds
+   * offer volume — only relabels jobs makeOffer already produced. */
+  function attributeClientReturns(state, jobs) {
+    var C = CFG();
+    var list = (state.clients && state.clients.list) || [];
+    if (!list.length || !jobs.length) return;
+    var claimed = {}, usedClientIds = {};
+    var rating = state.reputation.rating;
+    var baseChance = Engine.clamp(
+      C.CLIENT_RETURN_CHANCE_BASE + C.CLIENT_RETURN_CHANCE_PER_STAR * (rating - 3),
+      0, C.CLIENT_RETURN_CHANCE_MAX);
+    var returned = [];
+    for (var i = 0; i < jobs.length; i++) {
+      if (claimed[i]) continue;
+      var job = jobs[i];
+      if (job.type === 'contract' || job.type === 'refurb') continue;
+      if (!Engine.chance(baseChance, 'offers')) continue;
+      var pool = list.filter(function (c) { return !usedClientIds[c.id]; });
+      if (!pool.length) break;
+      var machineJob = job.type === 'repair' || job.type === 'upgrade';
+      var client = null, tries = 0;
+      while (!client && pool.length && tries++ < 6) {
+        var w = weightedClientPick(pool);
+        if (!w) break;
+        if (machineJob && w.machines && w.machines.length) {
+          var mach = maybeReplaceAgingMachine(state, w.name, w.machines[0]);
+          if (!rebindToClientMachine(state, job, w, mach)) {
+            pool = pool.filter(function (c) { return c.id !== w.id; });
+            continue;   // this client's stored machine can't take this job — try another
+          }
+        }
+        client = w;
+      }
+      if (!client) continue;
+      claimed[i] = true;
+      usedClientIds[client.id] = true;
+      job.customer = { name: client.name, type: client.type || job.customer.type };
+      job.clientId = client.id;
+      job.regular = client.loyalty >= C.LOYALTY_REGULAR;
+      job.regularVisits = client.visits || 0;
+      if (job.regular) job.pay = Math.round((job.pay || 0) * C.REGULAR_PAY_MULT);
+      if (client.tasteBrand) {
+        var tcat = tasteCategoryFor(job);
+        job.taste = {
+          brand: client.tasteBrand, category: tcat || null,
+          bonusPct: C.REGULAR_TASTE_BONUS,
+          label: 'Swears by ' + client.tasteBrand +
+                 (tcat ? ' ' + (TASTE_PLURAL[tcat] || tcat) : ' gear')
+        };
+      }
+      if (client.loyalty >= C.LOYALTY_HIGH && job.deadlineDay != null) {
+        job.deadlineDay = shiftOffSunday(state, job.deadlineDay + C.CLIENT_DEADLINE_LENIENCY_DAYS);
+      }
+      returned.push(client);
+    }
+    // Referrals: a high-loyalty client who returned tonight may send a
+    // fresh, unclaimed offer someone's way (volume-neutral — rebrands an
+    // offer that already exists; the new client's RECORD is only created
+    // if/when the player accepts, per the normal accept-time rule).
+    for (var r = 0; r < returned.length; r++) {
+      var ref = returned[r];
+      if (ref.loyalty < C.LOYALTY_HIGH) continue;
+      if (!Engine.chance(C.CLIENT_REFERRAL_CHANCE, 'offers')) continue;
+      var target = -1;
+      for (var j = 0; j < jobs.length; j++) {
+        if (!claimed[j] && jobs[j].type !== 'contract' && jobs[j].type !== 'refurb' &&
+            jobs[j].type !== 'business_account') { target = j; break; }
+      }
+      if (target === -1) continue;
+      claimed[target] = true;
+      var rjob = jobs[target];
+      rjob.referredBy = ref.name;
+      rjob.referredStartingLoyalty = C.CLIENT_REFERRAL_STARTING_LOYALTY;
+      var blurbs = (Engine.getData().FLAVOR && Engine.getData().FLAVOR.referralBlurbs) || [];
+      if (!blurbs.length) blurbs = ['{name} sent someone your way.'];
+      var line = Engine.pick(blurbs, 'offers') || blurbs[0];
+      rjob.blurb = String(line).replace(/\{name\}/g, ref.name);
     }
   }
-  /* Record/refresh a regular after a satisfying completion (score >= 4). */
-  function rememberRegular(state, job, score) {
-    var C = CFG();
-    if (score < C.REGULAR_SCORE_MIN) return;
-    if (!job.customer || !job.customer.name) return;
-    if (job.type === 'refurb' || job.type === 'callback') return;
-    if (job.accountId) return;   // account jobs belong to the business, not a person
-    state.regulars = state.regulars || [];
-    var reg = null;
-    for (var i = 0; i < state.regulars.length; i++) {
-      if (state.regulars[i].name === job.customer.name) { reg = state.regulars[i]; break; }
+  /* Loyalty-weighted pick: weight = 0.2 + loyalty/40 (a brand-new client
+   * still has SOME chance; a loyalty-100 regular is ~5.7x as likely). */
+  function weightedClientPick(pool) {
+    if (!pool.length) return null;
+    var total = 0, i;
+    for (i = 0; i < pool.length; i++) total += 0.2 + pool[i].loyalty / 40;
+    var r = Engine.rand('offers') * total;
+    for (i = 0; i < pool.length; i++) {
+      r -= 0.2 + pool[i].loyalty / 40;
+      if (r <= 0) return pool[i];
     }
-    if (!reg) {
-      reg = { name: job.customer.name, type: job.customer.type || 'home',
-              lastDay: state.day, jobs: 0, tasteBrand: null };
-      state.regulars.push(reg);
-    }
-    reg.jobs = (reg.jobs || 0) + 1;
-    reg.lastDay = state.day;
-    if (!reg.tasteBrand && job.taste && job.taste.brand)
-      reg.tasteBrand = job.taste.brand;   // first observed taste sticks
-    // Cap: evict the regular who hasn't been in the longest
-    while (state.regulars.length > C.REGULARS_CAP) {
-      var oldest = 0;
-      for (var o = 1; o < state.regulars.length; o++)
-        if (state.regulars[o].lastDay < state.regulars[oldest].lastDay) oldest = o;
-      state.regulars.splice(oldest, 1);
-    }
+    return pool[pool.length - 1];
   }
 
   // ------------------------------------------------------------------
-  // §15.4 Business accounts — retainer offers, monthly fees, auto-jobs.
+  // §15.4/§21.3 Business accounts — retainer offers, monthly fees, auto-jobs,
+  // kind/seats/health/fleet ecosystem.
   // ------------------------------------------------------------------
   function businessNameFor(state) {
     var F = FLAVOR();
@@ -177,6 +566,23 @@
     var last = Engine.pick(F.lastNames || ['Meridian'], 'offers') || 'Meridian';
     return last + ' & Associates';
   }
+  var BUSINESS_KIND_FALLBACK = [
+    { id: 'office', label: 'Office', minYear: 0, maxYear: 9999, seats: [4, 10],
+      blurb: 'A modest office running a handful of machines.' }
+  ];
+  // §21.3: era-windowed business-account archetype (feature-detects
+  // DATA.BUSINESS_KINDS while the DATA workstream lands it).
+  function businessKindFor(state) {
+    var year = Engine.currentYear(state);
+    var table = Engine.getData().BUSINESS_KINDS;
+    if (!Array.isArray(table) || !table.length) table = BUSINESS_KIND_FALLBACK;
+    var live = table.filter(function (k) {
+      return (k.minYear == null || year >= k.minYear) && (k.maxYear == null || year <= k.maxYear);
+    });
+    if (!live.length) live = table;
+    return Engine.pick(live, 'offers') || BUSINESS_KIND_FALLBACK[0];
+  }
+  Jobs.businessKindFor = businessKindFor;
   function maybeAccountOffer(state) {
     var C = CFG();
     if (state.reputation.prestige < C.ACCOUNT_PRESTIGE_MIN) return null;
@@ -186,6 +592,8 @@
     if (!Engine.chance(C.ACCOUNT_OFFER_CHANCE, 'offers')) return null;
     var year = Engine.currentYear(state);
     var name = businessNameFor(state);
+    var kind = businessKindFor(state);
+    var seats = Engine.randInt(kind.seats[0], kind.seats[1], 'offers');
     var fee = Math.round(Engine.laborRate(year) * C.ACCOUNT_FEE_LABOR_MULT);
     var jobsPerMonth = Engine.randInt(C.ACCOUNT_JOBS_MIN, C.ACCOUNT_JOBS_MAX, 'offers');
     var minRating = Engine.round2(Engine.clamp(
@@ -195,8 +603,8 @@
       id: state.jobs.nextId++,
       type: 'business_account', subtype: null, rush: false,
       title: 'Business account: ' + name,
-      blurb: '"We need a shop we can call. ' + jobsPerMonth +
-             ' service visits a month, retainer paid on the 1st."',
+      blurb: '"We need a shop we can call. ' + kind.label + ', ' + seats + ' seats. ' +
+             jobsPerMonth + ' service visits a month, retainer paid on the 1st."',
       customer: { name: name, type: 'smallbiz' },
       taste: null,
       pay: fee,                                  // shown as the monthly fee
@@ -220,9 +628,9 @@
       machine: null, peripheral: null, osRequest: null,
       device: null, deviceModern: false, devicePartsCost: 0, devicePayBase: null,
       drTier: 0, crt: false, budgetAsk: false, result: null,
-      // §15.4 account terms (UI contract)
+      // §15.4/§21.3 account terms (UI contract)
       account: { name: name, monthlyFee: fee, jobsPerMonth: jobsPerMonth,
-                 minRating: minRating }
+                 minRating: minRating, kindId: kind.id, kindLabel: kind.label, seats: seats }
     };
   }
   /* §15.4: nightly auto-jobs for active business accounts — 2-4 service jobs
@@ -247,6 +655,18 @@
       job.decision = null; job.decisionPlan = null;   // §17.1: never on retainer work
       job.regular = false; job.regularVisits = null;
       job.taste = null;                       // businesses buy on spec, not fandom
+      // §21.3: service the FLEET with persistent identity when possible —
+      // try a couple of fleet machines before giving up and leaving the
+      // job on its originally-generated (untracked) machine.
+      if ((job.type === 'repair' || job.type === 'upgrade') && (acct.fleet || []).length) {
+        var fleetPool = acct.fleet.slice(), fleetTries = 0, bound = false;
+        while (!bound && fleetPool.length && fleetTries++ < 4) {
+          var fmIdx = Engine.randInt(0, fleetPool.length - 1, 'offers');
+          var fm = maybeReplaceAgingMachine(state, acct.name, fleetPool[fmIdx]);
+          if (rebindToFleetMachine(state, job, fm)) bound = true;
+          else fleetPool.splice(fmIdx, 1);
+        }
+      }
       job.title = job.title + ' (' + acct.name + ')';
       job.deadlineDay = shiftOffSunday(state,
         state.day + Engine.randInt(C.ACCOUNT_DEADLINE_MIN, C.ACCOUNT_DEADLINE_MAX, 'offers'));
@@ -261,6 +681,113 @@
         job.title + ' — on the bench under the retainer.');
     }
   };
+
+  Jobs.findAccount = function (state, id) {
+    var accounts = state.accounts || [];
+    for (var i = 0; i < accounts.length; i++) if (accounts[i].id === id) return accounts[i];
+    return null;
+  };
+
+  /* §21.3: a fleet machine — generated the same way as-is machines are
+   * (assembleMachineParts), "slightly dated" at signing (fresh === false) or
+   * brand-new when delivered by a commissioned build (fresh === true). */
+  function fleetMachineFor(state, fresh) {
+    var built = assembleMachineParts(state, 'offers');
+    if (!built) return null;
+    var partIds = built.partIds, mobo = built.mobo;
+    var year = Engine.currentYear(state);
+    var cpuName = null;
+    for (var j = 0; j < partIds.length; j++) {
+      var pj = Engine.partById(partIds[j]);
+      if (pj && pj.category === 'cpu') { cpuName = pj.name; break; }
+    }
+    var machineYear;
+    if (fresh) {
+      machineYear = year;
+    } else {
+      var datedBack = Engine.randInt(CFG().ACCOUNT_FLEET_DATED_MIN_YEARS,
+        CFG().ACCOUNT_FLEET_DATED_MAX_YEARS, 'offers');
+      machineYear = Engine.clamp(year - datedBack, mobo.introYear, year);
+    }
+    return {
+      id: Jobs.nextMachineId(state), name: (cpuName || 'Office') + ' workstation',
+      year: machineYear, partIds: partIds, specSummary: specSummaryFor(partIds),
+      acquiredDay: state.day, builtByShop: !!fresh, servicedCount: 0
+    };
+  }
+  Jobs.fleetMachineFor = fleetMachineFor;
+
+  var BUSINESS_NEWS_FALLBACK = {
+    growth: ['{name} just added {seats} more seats — keeping their machines running paid off.'],
+    shrink: ['{name} is trimming down — {seats} seats gone quiet this month.'],
+    churn: ['{name} has canceled the account after {seats} seats' + '’' + ' worth of neglect.']
+  };
+  function pickBusinessNews(state, kind, name, seats) {
+    var table = (Engine.getData().FLAVOR && Engine.getData().FLAVOR.businessNews) || {};
+    var pool = table[kind];
+    if (!Array.isArray(pool) || !pool.length) pool = BUSINESS_NEWS_FALLBACK[kind];
+    var line = Engine.pick(pool, 'offers') || pool[0];
+    return String(line).replace(/\{name\}/g, name).replace(/\{seats\}/g, String(seats));
+  }
+  Jobs.pickBusinessNews = pickBusinessNews;
+
+  /* §21.3: fleet spec vs the year's baseline (dated fleet drags health). No
+   * fleet at all is treated as badly behind (0), not neutral. */
+  Jobs.accountFleetRatio = function (state, acct) {
+    var year = Engine.currentYear(state);
+    var bl = Engine.baselineFor(year);
+    var fleet = acct.fleet || [];
+    if (!fleet.length) return 0;
+    var basePerf = bl.cpu || 1;
+    var sum = 0;
+    fleet.forEach(function (m) {
+      var cpu = null;
+      (m.partIds || []).forEach(function (id) {
+        var p = Engine.partById(id);
+        if (p && p.category === 'cpu') cpu = p;
+      });
+      var perf = cpu ? (cpu.perf || {}).cpu || 0 : 0;
+      sum += basePerf > 0 ? Engine.clamp(perf / basePerf, 0, 2) : 1;
+    });
+    return sum / fleet.length;
+  };
+
+  /* §21.3: a commissioned CONTRACT offer for an account's newly-grown seats
+   * — tagged job.accountId, bounded to one open commissioned offer per
+   * account. On completion the delivered machines enter the fleet
+   * (job.fleetSeatsCommissioned, resolved in completeJob). */
+  function commissionedBuildOfferFor(state, acct, seatsAdded) {
+    var C = CFG();
+    var year = Engine.currentYear(state);
+    var bl = Engine.baselineFor(year);
+    var job = {
+      id: state.jobs.nextId++,
+      type: 'contract', subtype: 'contract_build_custom', rush: false,
+      title: 'Contract: build ' + seatsAdded + ' new workstation' +
+             (seatsAdded > 1 ? 's' : '') + ' for ' + acct.name,
+      blurb: '"We just added ' + seatsAdded + ' more seats — same standard spec as ' +
+             'the rest of the fleet, please."',
+      customer: { name: acct.name, type: 'smallbiz' },
+      accountId: acct.id,
+      taste: null, pay: 0,
+      offeredDay: state.day,
+      deadlineDay: shiftOffSunday(state, state.day + C.CONTRACT_DEADLINE_MIN),
+      difficulty: 2, speed: 'standard', status: 'offer',
+      hoursRequired: 2, hoursDone: 0,
+      steps: [], stepIndex: 0,
+      diagnosed: true, needsDiagnosis: false,
+      fault: null, needs: [], build: null,
+      units: seatsAdded, unitsDone: 0,
+      machine: null, peripheral: null, osRequest: null,
+      device: null, deviceModern: false, devicePartsCost: 0, devicePayBase: null,
+      drTier: 0, crt: false, budgetAsk: false, result: null,
+      fleetSeatsCommissioned: seatsAdded
+    };
+    assembleSteps(state, job);   // scales hours by job.units automatically
+    job.pay = Math.round((bl.buildBudget || 1000) * seatsAdded * C.ACCOUNT_FLEET_BUILD_PAY_MULT);
+    return job;
+  }
+  Jobs.commissionedBuildOfferFor = commissionedBuildOfferFor;
 
   // ------------------------------------------------------------------
   // §17.1 Job decision moments — forks, approval calls, overclock tuning.
@@ -2162,12 +2689,21 @@
     if (job.type === 'business_account') {
       removeFrom(state.jobs.offers, job);
       state.accounts = state.accounts || [];
+      var seats = job.account.seats || 4;
+      var fleet = [];
+      for (var fi = 0; fi < seats; fi++) {
+        var fm0 = fleetMachineFor(state, false);   // §21.3: seeded, slightly dated
+        if (fm0) fleet.push(fm0);
+      }
       state.accounts.push({
         id: 'acct' + job.id, name: job.account.name,
         monthlyFee: job.account.monthlyFee,
         jobsPerMonth: job.account.jobsPerMonth,
         minRating: job.account.minRating,
-        signedDay: state.day, failsThisMonth: 0, jobsThisMonth: 0
+        signedDay: state.day, failsThisMonth: 0, jobsThisMonth: 0, okThisMonth: 0,
+        kind: job.account.kindId || 'office', seats: seats,
+        health: CFG().ACCOUNT_HEALTH_START, healthTrend: 'flat', healthReason: null,
+        fleet: fleet, history: []
       });
       Engine.recordAchievementEvent(state, 'account-signed');
       Engine.pushNews(state, 'money', 'Account signed: ' + job.account.name,
@@ -2183,6 +2719,7 @@
     removeFrom(state.jobs.offers, job);
     job.status = 'active';
     state.jobs.active.push(job);
+    findOrCreateClient(state, job);   // §21.1: every served person is remembered
     // §16.2d: feasibility warning (informational — the accept still succeeds).
     // Committed standard-speed hours across active non-refurb jobs (incl. this
     // one) vs the open-day hours before THIS job's deadline.
@@ -3896,6 +4433,24 @@
         Engine.addCash(state, payout);
         Engine.ledgerAdd(state, 'revenue', payout);
       }
+      // §21.3: business-account bookkeeping — this month's on-time count for
+      // the health tick, plus commissioned-build machines entering the fleet.
+      if (job.accountId) {
+        var acctDone = Jobs.findAccount(state, job.accountId);
+        if (acctDone) {
+          acctDone.okThisMonth = (acctDone.okThisMonth || 0) + 1;
+          if (job.fleetSeatsCommissioned > 0) {
+            acctDone.fleet = acctDone.fleet || [];
+            for (var fsi = 0; fsi < job.fleetSeatsCommissioned; fsi++) {
+              var fsm = fleetMachineFor(state, true);   // fresh — just built
+              if (fsm) acctDone.fleet.push(fsm);
+            }
+            Engine.pushNews(state, 'job', 'New machines delivered: ' + acctDone.name,
+              job.fleetSeatsCommissioned + ' fresh workstation' +
+              (job.fleetSeatsCommissioned > 1 ? 's join' : ' joins') + ' the fleet.');
+          }
+        }
+      }
     }
 
     if (job.units > 1) job.unitsDone = job.units;
@@ -3908,8 +4463,6 @@
     state.reputation.jobsCompleted++;
     state.ledger.lifetime.jobsCompleted++;
 
-    // §15.4: satisfied customers become regulars (score >= 4)
-    rememberRegular(state, job, score);
     // §15.5: achievement event hooks tied to completion shapes
     if (job.type === 'device_repair')
       Engine.recordAchievementEvent(state, 'device-repair');
@@ -3945,7 +4498,8 @@
           state.day + Engine.randInt(C.CALLBACK_DELAY_MIN, C.CALLBACK_DELAY_MAX, 'misc') : null,
         callbackChance: Engine.round2(cb * 1000) / 1000,
         fired: fired,
-        origHours: job.hoursRequired
+        origHours: job.hoursRequired,
+        clientId: job.clientId || null   // §21.1: links a later callback ding back to the client
       });
     }
 
@@ -3954,6 +4508,8 @@
                    score: score, payout: payout, notes: notes,
                    tasteMatched: tasteMatched, qualityFlags: qualityFlags,
                    ratingDelta: ratingDelta };   // §17.2
+    // §21.1: workLog + loyalty + persistent-machine write-back
+    recordClientOutcome(state, job, drFailed ? 'failed' : 'done', score, payout);
     removeFrom(state.jobs.active, job);
     Engine.cartUnlinkJob(state, job.id);   // §20.2: no orphan jobLinks, ever
     return job.result;
@@ -4030,7 +4586,8 @@
         'Shop project shelved — parts back on the shelf.');
       return { ok: true, returned: returned };
     }
-    recordJobFailure(state, job, CFG().SCORE_ABANDON, 'abandoned');   // §15.4/§17.2
+    var abandonScore = recordJobFailure(state, job, CFG().SCORE_ABANDON, 'abandoned');   // §15.4/§17.2
+    recordClientOutcome(state, job, 'abandoned', abandonScore, 0);   // §21.1
     Engine.pushNews(state, 'job', 'Job abandoned: ' + job.title,
       customerNameOf(job) + ' will not be recommending the shop.');
     return { ok: true, ratingDelta: Jobs._lastFailRatingDelta };
@@ -4052,6 +4609,7 @@
                        notes: job.regular ?
                          ['Missed the deadline', 'A loyal regular, let down'] :
                          ['Missed the deadline'] };
+        recordClientOutcome(state, job, 'late', failScore, 0);   // §21.1
         Engine.pushNews(state, 'job', 'Deadline missed: ' + job.title,
           customerNameOf(job) + ' took their machine elsewhere.');
         summary.expired.push(job.title + ' (deadline missed)');
@@ -4100,6 +4658,13 @@
         Engine.pushNews(state, 'job', 'Warranty callback: ' + e.title,
           'The fix did not hold. Make it right for free.');
         summary.callbacks.push(e.title);
+        // §21.1: ding the client that job belonged to, if any (a workLog
+        // entry on the ORIGINAL job — not a new visit, no machine touched).
+        if (e.clientId) {
+          recordClientOutcome(state,
+            { clientId: e.clientId, title: e.title, type: 'callback' },
+            'callback', null, 0);
+        }
         e.fired = false; // consumed
       }
       if (state.day - e.day > C.COMPLETED_RECENT_KEEP_DAYS) list.splice(i, 1);

@@ -449,13 +449,71 @@
     // v0.9.1 shopping cart — one flat checkout cost regardless of line count
     // (cheaper than the old 0.5h SUPPLY_RUN_HOURS habit it replaces for part
     // purchases). Courier fee reuses RUSH_SURCHARGE_MIN/PCT at cart level.
-    CHECKOUT_HOURS: 0.2
+    CHECKOUT_HOURS: 0.2,
+
+    // ------------------------------------------------------------------
+    // §21.1 Client registry (v0.10) — replaces state.regulars. Every served
+    // person is remembered (created on offer ACCEPT); loyalty (0..100) drives
+    // return chance, pay premium, deadline leniency and referrals.
+    // ------------------------------------------------------------------
+    CLIENTS_CAP: 60,             // total tracked clients; evicts lowest-loyalty/longest-idle
+    CLIENT_WORKLOG_CAP: 12,      // per-client job history, newest first
+    LOYALTY_REGULAR: 40,         // "Regular" threshold: pay premium + taste persistence
+    LOYALTY_HIGH: 70,            // deadline leniency + referral eligibility
+    LOYALTY_ONTIME: 8,           // base rise on an on-time completion
+    LOYALTY_SCORE5_AT: 4.9,      // score at/above this counts as "near-perfect"
+    LOYALTY_SCORE5_BONUS: 4,     // ...extra rise when it does
+    LOYALTY_APPROVAL_BONUS: 3,   // caught-a-problem-early delight
+    LOYALTY_TASTE_HIT: 3,        // an installed part matched their stated taste
+    LOYALTY_LATE: 14,            // penalty: missed deadline
+    LOYALTY_FAILED: 20,          // penalty: unrecoverable data / abandoned mid-job
+    LOYALTY_CALLBACK: 16,        // penalty: warranty callback arrives on their job
+    LOYALTY_OVERSPEND_ANGER: 6,  // penalty: an un-waived hard overspend ding
+    LOYALTY_IDLE_DECAY: 3,       // decays this much per idle window with no visit
+    LOYALTY_IDLE_DECAY_DAYS: 30, // ...per this many days since their last visit
+    // Return-visit chance: rating-scaled base, weighted pick among clients
+    // favors higher loyalty (never adds offer VOLUME — rebrands one of the
+    // night's already-generated fresh offers).
+    CLIENT_RETURN_CHANCE_BASE: 0.11,
+    CLIENT_RETURN_CHANCE_PER_STAR: 0.06,
+    CLIENT_RETURN_CHANCE_MAX: 0.5,
+    CLIENT_REFERRAL_CHANCE: 0.09,        // per high-loyalty client that returns tonight
+    CLIENT_REFERRAL_STARTING_LOYALTY: 12,// the new referred client's seeded loyalty
+    CLIENT_DEADLINE_LENIENCY_DAYS: 1,    // +1 day at loyalty >= LOYALTY_HIGH
+    // Machines-per-client by customer type (DATA.FLAVOR.customerTypes ids);
+    // any type not listed defaults to 1 (most people own one PC).
+    MACHINES_PER_CLIENT: { gamer: 2, hobbyist: 2, creator: 2, miner: 2 },
+
+    // §21.2 Persistent machines — aging & replacement.
+    MACHINE_REPLACE_AGE_YEARS: 7,   // core badly outdated vs current year past this
+    MACHINE_REPLACE_CHANCE: 0.5,    // per eligible return visit, once overdue
+
+    // §21.3 Business ecosystems — health (0..100) drives grow/stable/shrink/
+    // churn on the monthly tick (alongside retainer billing). Tuned so a
+    // well-served account visibly grows in ~2 months and a neglected one
+    // shrinks in ~3 (§21.6).
+    ACCOUNT_HEALTH_START: 60,
+    ACCOUNT_HEALTH_GROW_AT: 75,
+    ACCOUNT_HEALTH_SHRINK_AT: 45,
+    ACCOUNT_HEALTH_CHURN_AT: 15,
+    ACCOUNT_HEALTH_OK_PER_JOB: 3,        // this month's on-time service jobs
+    ACCOUNT_HEALTH_FAIL_PER_JOB: 12,     // this month's late/failed service jobs
+    ACCOUNT_HEALTH_UNCOVERED_PENALTY: 8, // per seat with no fleet machine behind it
+    ACCOUNT_HEALTH_FLEET_WEIGHT: 15,     // x (fleet perf ratio vs year baseline - 1)
+    ACCOUNT_SEATS_GROW_MIN: 1, ACCOUNT_SEATS_GROW_MAX: 2,
+    ACCOUNT_SEATS_SHRINK_MIN: 1, ACCOUNT_SEATS_SHRINK_MAX: 2,
+    ACCOUNT_SEATS_MIN: 2,                // never shrinks below this while alive
+    ACCOUNT_FLEET_DATED_MIN_YEARS: 1, ACCOUNT_FLEET_DATED_MAX_YEARS: 4,  // signing fleet age
+    ACCOUNT_FLEET_BUILD_PAY_MULT: 1.15,  // commissioned build pay vs buildBudget x seats
+    ACCOUNT_FLEET_ASIS_HOOK: true        // §21.2 as-is-market "old machine" hook (SHOULD)
   };
 
   // ------------------------------------------------------------------
   // Live state reference (set by api.js newGame/importSave)
   // ------------------------------------------------------------------
-  Engine.VERSION = '0.9.1';      // v0.9.1: parseFloat-compatible with the UI's >=0.4 gate
+  // v0.10: honest dotted string (§21 version-compare hazard — parseFloat('0.10')
+  // is 0.1 and would regress every gate; the UI owns a segment-wise semver fix).
+  Engine.VERSION = '0.10';
   Engine._state = null;
   Engine.getData = function () { return root.DATA || {}; };
 
@@ -1505,7 +1563,9 @@
     { id: 'regular-10', name: 'The Usual, Please',
       desc: 'Serve the same regular customer 10 times.',
       check: function (s) {
-        return (s.regulars || []).some(function (r) { return (r.jobs || 0) >= 10; });
+        // §21.1: state.regulars is replaced by the client registry
+        var list = (s.clients && s.clients.list) || [];
+        return list.some(function (c) { return (c.visits || 0) >= 10; });
       } },
     { id: 'account-signed', name: 'On Retainer',
       desc: 'Sign your first business account.',

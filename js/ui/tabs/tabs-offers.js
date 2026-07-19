@@ -15,7 +15,7 @@
       getState = S.getState, emptyBox = S.emptyBox, has = S.has,
       typeChip = S.typeChip, tasteChip = S.tasteChip, customerLine = S.customerLine,
       dueText = S.dueText, osChip = S.osChip, regularChip = S.regularChip,
-      shortTitle = S.shortTitle;
+      shortTitle = S.shortTitle, blurbHTML = S.blurbHTML;
 
   /* §21.4 — compact client chip for offers from known clients: name +
    * loyalty tier, or a "referred by X" variant for a fresh referral offer.
@@ -181,7 +181,7 @@
         '<div class="card-title">' + esc(shortTitle(j.title)) +           // §22.2 #1
           (j.rush ? ' <span class="badge b-rush">RUSH</span>' : '') + '</div>' +
         '<div class="meta-row">' + typeChip(j) + UI.wrenches(j.difficulty) + regularChip(j) + tasteChip(j) + osChip(j) + '</div>' +
-        (j.blurb ? '<div class="blurb">&ldquo;' + esc(j.blurb) + '&rdquo;</div>' : '') +
+        blurbHTML(j.blurb) +                                    // §22.2 (re-fix) — no double quotes
         '<div class="meta-row">' + customerLine(j) + clientChipHTML(clientChipOf(j)) + '</div>' +   // §21.4
         '<div class="meta-row flex-between">' +
           '<span class="pay num">' + (j.pay !== null && j.pay !== undefined ? fm(j.pay) : 'Market-priced') + '</span>' +
@@ -218,7 +218,7 @@
     return '<div class="card job-card account-card" id="offercard-' + j.id + '">' +
       '<div class="card-title">' + esc(shortTitle(j.title) || (acct.name || 'Local business')) +   // §22.2 #1
         ' <span class="badge b-account">BUSINESS ACCOUNT</span></div>' +
-      (j.blurb ? '<div class="blurb">&ldquo;' + esc(j.blurb) + '&rdquo;</div>' : '') +
+      blurbHTML(j.blurb) +                                      // §22.2 (re-fix) — no double quotes
       '<div class="meta-row small">' +
         (fee !== undefined && fee !== null ? '<span class="chip">Retainer <b class="num">' + esc(fm(fee)) + '</b>/month</span>' : '') +
         (acct.jobsPerMonth ? '<span class="chip">' + esc(acct.jobsPerMonth) + ' service job' + (Number(acct.jobsPerMonth) === 1 ? '' : 's') + '/month, auto-accepted</span>' : '') +

@@ -297,6 +297,26 @@
     return i === -1 ? s : s.slice(0, i);
   }
 
+  /* §22.2 (re-fix) — every card that quotes a blurb/hint wraps it in
+   * curly &ldquo;/&rdquo;. Some engine/flavor strings already carry their
+   * own quote marks (straight " or curly “”‘’ at both ends), which
+   * produced a doubled-up look ("The disk went in…"). Detect an
+   * already-quoted string and render it as-is (still esc()'d) instead of
+   * adding a second pair. Self-contained: '' in, '' out — every call site
+   * just does `blurbHTML(x.blurb)`, no surrounding ternary needed. */
+  var QUOTE_CHARS = '"“”‘’\'';
+  function looksQuoted(s) {
+    if (!s) return false;
+    var first = s.charAt(0), last = s.charAt(s.length - 1);
+    return QUOTE_CHARS.indexOf(first) !== -1 && QUOTE_CHARS.indexOf(last) !== -1;
+  }
+  function blurbHTML(text) {
+    if (!text) return '';
+    var t = String(text);
+    var inner = looksQuoted(t) ? esc(t) : ('&ldquo;' + esc(t) + '&rdquo;');
+    return '<div class="blurb">' + inner + '</div>';
+  }
+
   function dueText(j, st) {
     if (j.deadlineDay === null || j.deadlineDay === undefined) return { txt: 'No deadline', urgent: false };
     var d = j.deadlineDay - st.day;
@@ -558,6 +578,7 @@
   S.typeChip = typeChip; S.tasteChip = tasteChip;
   S.custTypeLabel = custTypeLabel; S.customerLine = customerLine;
   S.shortTitle = shortTitle;                                  /* §22.2 #1 */
+  S.blurbHTML = blurbHTML;                                    /* §22.2 (re-fix) */
   S.dueText = dueText; S.osChip = osChip;
   S.ordinal = ordinal; S.regularChip = regularChip;
   S.perfStr = perfStr; S.statusChip = statusChip;

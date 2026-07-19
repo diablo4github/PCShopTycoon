@@ -2250,7 +2250,21 @@ button.chip-client:hover { border-color: var(--accent); }
 }
 .fleet-item .meta-row { gap: 4px; margin: 2px 0 0; }
 .fleet-name { font-weight: 600; font-size: 11.5px; line-height: 1.25; overflow-wrap: break-word; }
-.fleet-cond { font-size: 10.5px; padding: 1px 6px; }
+/* §22.2 (re-fix) — the base .chip is `white-space: nowrap`, and a flex
+ * item's default min-width:auto keeps it from shrinking below that nowrap
+ * text width — on a 96px tile, a long condition label ("due for
+ * replacement") simply overflowed the tile edge instead of wrapping.
+ * Letting it wrap (plus min-width:0 so the flex row can actually shrink
+ * it) keeps every condition chip inside its tile at any viewport width. */
+.fleet-cond {
+  font-size: 10.5px;
+  padding: 1px 6px;
+  white-space: normal;
+  text-align: center;
+  line-height: 1.2;
+  min-width: 0;
+  max-width: 100%;
+}
 .fleet-more { margin-top: 4px; }
 .account-card-full .sub-title { margin-top: 8px; }
 .clients-empty-note { margin-top: 6px; }

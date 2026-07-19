@@ -23,7 +23,7 @@
       typeChip = S.typeChip, tasteChip = S.tasteChip, customerLine = S.customerLine,
       dueText = S.dueText, osChip = S.osChip, regularChip = S.regularChip,
       perfStr = S.perfStr, showPartInfo = S.showPartInfo,
-      animatedBar = S.animatedBar, shortTitle = S.shortTitle;
+      animatedBar = S.animatedBar, shortTitle = S.shortTitle, blurbHTML = S.blurbHTML;
 
   /* §21.4 — a client-machine job (job.clientMachineId set) is a returning
    * client's own box, not a fresh random machine: note it plainly. The
@@ -317,7 +317,7 @@
       html += '<div class="card">' +
         '<div class="card-title">' + esc(m.name) + ' <span class="muted small">(' + esc(m.year) + ')</span></div>' +
         (m.specSummary ? '<div class="asis-spec">' + esc(m.specSummary) + '</div>' : '') +
-        (m.hint ? '<div class="blurb">&ldquo;' + esc(m.hint) + '&rdquo;</div>' : '') +
+        blurbHTML(m.hint) +                                     // §22.2 (re-fix) — no double quotes
         '<div class="meta-row"><span class="muted small">' + arr(m.partIds).length + ' parts inside • sold as-is, no returns</span>' +
           (ageTxt ? '<span class="asis-age">' + esc(ageTxt) + '</span>' : '') + '</div>' +
         '<div class="job-actions">' +

@@ -2909,7 +2909,7 @@ function certScenario() {
 // Scenario (§10.8/§11.7/§12.6/§13.8): v1-v5 fixtures migrate to v6 and play
 // ------------------------------------------------------------------
 function migrationScenario(era) {
-  console.log('--- Save migration (v1/v2/v3/v4/v5/v6/v7/v8/v9/v10 -> v11) ---');
+  console.log('--- Save migration (v1/v2/v3/v4/v5/v6/v7/v8/v9/v10/v11 -> v12) ---');
   var E = Engine;
   var r = E.newGame({ eraId: era.id, shopName: 'Migrate Test', seed: 73737 });
   if (!assert(r.ok, 'migration: newGame failed')) return;
@@ -2929,11 +2929,24 @@ function migrationScenario(era) {
   // §20.1: touch the cart too, so the v10 snapshot carries a non-empty one
   var cartPart = Engine.Jobs.purchasableByCategory(E.getState(), 'cooling')[0];
   if (cartPart) E.addToCart('retail', cartPart.id, 1);
-  var v11snapshot = E.exportSave();
+  var v12snapshot = E.exportSave();
 
   function downgrade(version) {
-    var obj = JSON.parse(v11snapshot);
+    var obj = JSON.parse(v12snapshot);
     obj.version = version;
+    // §21.6: pre-v12 saves never met the client registry or the account
+    // kind/seats/health/fleet/history ecosystem fields.
+    if (version < 12) {
+      delete obj.clients; delete obj.machineNextId;
+      (obj.accounts || []).forEach(function (a) {
+        delete a.kind; delete a.seats; delete a.health; delete a.healthTrend;
+        delete a.healthReason; delete a.fleet; delete a.history; delete a.okThisMonth;
+      });
+      [].concat(obj.jobs.offers || [], obj.jobs.active || []).forEach(function (j) {
+        delete j.clientId; delete j.clientMachineId; delete j.clientMachineServiceCount;
+        delete j.referredBy; delete j.referredStartingLoyalty; delete j.fleetSeatsCommissioned;
+      });
+    }
     // §20.1: pre-v11 saves never met the shopping cart
     if (version < 11) delete obj.cart;
     // §19.3: pre-v10 saves had wholesale-only pendingOrders and no
@@ -3058,15 +3071,27 @@ function migrationScenario(era) {
     return JSON.stringify(obj);
   }
 
-  [1, 2, 3, 4, 5, 6, 7, 8, 9, 10].forEach(function (ver) {
+  [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11].forEach(function (ver) {
     var imp = E.importSave(downgrade(ver));
     if (!assert(imp.ok, 'migration: v' + ver + ' fixture rejected: ' + (imp.error || ''))) return;
     var s = E.getState();
-    assert(s.version === 11, 'migration: v' + ver + ' should land on version 11');
-    // §20.1: the shopping cart fills in empty for any pre-v11 save
-    assert(s.cart && s.cart.nextId === 1 && Array.isArray(s.cart.items) &&
-           s.cart.items.length === 0,
-           'migration: v' + ver + ' missing empty cart {nextId:1, items:[]}');
+    assert(s.version === 12, 'migration: v' + ver + ' should land on version 12');
+    // §21.1/§21.6: the client registry fills in empty for any pre-v12 save
+    assert(s.clients && Array.isArray(s.clients.list) && s.clients.nextId >= 1 &&
+           s.machineNextId >= 1,
+           'migration: v' + ver + ' missing clients{nextId,list}/machineNextId');
+    // §21.3: accounts gain kind/seats/health/fleet/history (fleet NOT seeded
+    // retroactively — only on the next monthly tick, per spec)
+    assert((s.accounts || []).every(function (a) {
+      return typeof a.kind === 'string' && a.seats > 0 &&
+             a.health === 60 && Array.isArray(a.fleet) && a.fleet.length === 0 &&
+             Array.isArray(a.history) && a.okThisMonth === 0;
+    }), 'migration: v' + ver + ' accounts missing kind/seats/health/fleet/history');
+    // §20.1: the shopping cart fills in empty for any pre-v11 save (a v11
+    // fixture already legitimately carries the cart it had — untouched)
+    assert(s.cart && s.cart.nextId >= 1 && Array.isArray(s.cart.items) &&
+           (ver < 11 ? s.cart.items.length === 0 : true),
+           'migration: v' + ver + ' cart shape wrong');
     // §19.3: unified logistics fields fill in
     assert((s.pendingOrders || []).every(function (o) {
       return typeof o.source === 'string' && 'jobId' in o && 'needIndex' in o;
@@ -3093,8 +3118,8 @@ function migrationScenario(era) {
     // §15: v7 fields fill in with sane defaults
     assert(s.credit && s.credit.drawn === 0,
            'migration: v' + ver + ' missing credit.{drawn:0}');
-    assert(Array.isArray(s.regulars) && Array.isArray(s.accounts),
-           'migration: v' + ver + ' missing regulars/accounts arrays');
+    assert(Array.isArray(s.accounts) && s.regulars === undefined,
+           'migration: v' + ver + ' missing accounts array / stale regulars key');
     assert(s.achievements && typeof s.achievements === 'object' &&
            s.achievementEvents && typeof s.achievementEvents === 'object',
            'migration: v' + ver + ' missing achievements bookkeeping');
@@ -3142,11 +3167,49 @@ function migrationScenario(era) {
     }
     console.log('  v' + ver + ' fixture migrated & playable');
   });
-  // Idempotence: v11 round-trips byte-identically
-  E.importSave(v11snapshot);
-  var v11b = E.exportSave();
-  E.importSave(v11b);
-  assert(E.exportSave() === v11b, 'migration: v11 re-import not byte-identical');
+  // Idempotence: v12 round-trips byte-identically
+  E.importSave(v12snapshot);
+  var v12b = E.exportSave();
+  E.importSave(v12b);
+  assert(E.exportSave() === v12b, 'migration: v12 re-import not byte-identical');
+
+  // §21.6 dedicated fixture: legacy state.regulars becomes regular-tier
+  // clients (visits=jobs, loyalty above the threshold, tasteBrand carried),
+  // and a legacy business_account gains kind/seats/health/fleet/history.
+  var legacyObj = JSON.parse(downgrade(11));
+  legacyObj.regulars = [
+    { name: 'Terry Regular', type: 'home', lastDay: 5, jobs: 7, tasteBrand: 'IBM' },
+    { name: 'Fresh Face', type: 'student', lastDay: 3, jobs: 1, tasteBrand: null }
+  ];
+  legacyObj.accounts = [
+    { id: 'acctLegacy', name: 'Legacy Biz', monthlyFee: 200, jobsPerMonth: 3,
+      minRating: 3.0, signedDay: 0, failsThisMonth: 0, jobsThisMonth: 0 }
+  ];
+  var legacyImp = E.importSave(JSON.stringify(legacyObj));
+  if (assert(legacyImp.ok, 'migration: legacy regulars/account fixture rejected: ' +
+             (legacyImp.error || ''))) {
+    var ls = E.getState();
+    assert(ls.version === 12, 'migration: legacy fixture should land on version 12');
+    var terry = ls.clients.list.filter(function (c) { return c.name === 'Terry Regular'; })[0];
+    if (assert(!!terry, 'migration: Terry Regular did not become a client')) {
+      assert(terry.visits === 7 && terry.tasteBrand === 'IBM' &&
+             terry.loyalty >= E.getConfig().LOYALTY_REGULAR &&
+             terry.firstSeenDay === 5 && terry.lastSeenDay === 5 &&
+             Array.isArray(terry.machines) && terry.machines.length === 0,
+             'migration: Terry Regular client malformed: ' + JSON.stringify(terry));
+    }
+    var fresh = ls.clients.list.filter(function (c) { return c.name === 'Fresh Face'; })[0];
+    assert(!!fresh && fresh.loyalty >= E.getConfig().LOYALTY_REGULAR,
+           'migration: every legacy regular (even a 1-job one) should seed a regular-tier client');
+    var lb = ls.accounts.filter(function (a) { return a.id === 'acctLegacy'; })[0];
+    if (assert(!!lb, 'migration: legacy account missing after migration')) {
+      assert(typeof lb.kind === 'string' && lb.seats > 0 && lb.health === 60 &&
+             Array.isArray(lb.fleet) && lb.fleet.length === 0 && Array.isArray(lb.history),
+             'migration: legacy account missing kind/seats/health/fleet/history: ' +
+             JSON.stringify(lb));
+    }
+    console.log('  legacy regulars -> regular-tier clients, legacy account -> kind/seats/health ok');
+  }
 }
 
 // ------------------------------------------------------------------
@@ -3466,62 +3529,181 @@ function creditScenario(era) {
 }
 
 // ------------------------------------------------------------------
-// Scenario (§15.4): regulars — recorded on a satisfying completion, return
-// by name with the loyalty premium flag, and fail HARSHER than strangers.
+// Scenario (§21.1/§21.2): the client registry — every served person is
+// remembered on accept, loyalty rises to "Regular" in 2-3 visits, a return
+// on a machine-carrying offer reuses the SAME stored machine (with the
+// previously-installed part still present), loyalty decays when idle,
+// referrals seed a new client, the cap evicts the least-loyal/longest-idle
+// stranger first, and a regular's fail dings harsher.
 // ------------------------------------------------------------------
-function regularsScenario(era) {
-  console.log('--- Repeat customers (§15.4) ---');
+function clientsScenario(era) {
+  console.log('--- Client registry & persistent machines (§21.1/§21.2) ---');
   var E = Engine;
-  var r = E.newGame({ eraId: era.id, shopName: 'Regulars Test', seed: 18181 });
-  if (!assert(r.ok, 'regulars: newGame failed')) return;
+  var r = E.newGame({ eraId: era.id, shopName: 'Clients Test', seed: 18181 });
+  if (!assert(r.ok, 'clients: newGame failed')) return;
   var s = E.getState();
-  s.cash = 100000;
-  // Complete a no-parts job cleanly (cleaning: no overspend risk, score 5)
-  var done = null, guard = 0;
-  while (!done && guard++ < 25) {
+  s.cash = 200000;
+  s.reputation.rating = 5;
+
+  // 1) Accept creates the client record (before it's ever served).
+  var repairJob = null, guard = 0;
+  while (!repairJob && guard++ < 60) {
     var offers = E.getOffers().slice();
     for (var i = 0; i < offers.length; i++) {
       var o = offers[i];
-      if ((o.type === 'cleaning' || o.type === 'software') && !o.rush &&
+      if (o.type === 'repair' && o.fault && o.fault.partCategory && !o.rush &&
           E.acceptOffer(o.id).ok) {
-        var job = E.getActiveJobs().filter(function (j) { return j.id === o.id; })[0];
-        var werr = workToDone(E, job);
-        if (!werr && job.result && job.result.score >= 4) { done = job; break; }
+        repairJob = E.getActiveJobs().filter(function (j) { return j.id === o.id; })[0];
+        break;
       }
     }
-    if (!done) E.endDay();
+    if (!repairJob) E.endDay();
   }
-  if (!assert(!!done, 'regulars: no clean completion in 25 days')) return;
-  var reg = (s.regulars || []).filter(function (g) {
-    return g.name === done.customer.name;
-  })[0];
-  if (!assert(!!reg, 'regulars: satisfied customer not recorded')) return;
-  assert(reg.jobs >= 1 && reg.type === done.customer.type,
-         'regulars: recorded entry malformed: ' + JSON.stringify(reg));
+  if (!assert(!!repairJob, 'clients: no part-fault repair offer in 60 days')) return;
+  var clientId = repairJob.clientId;
+  if (!assert(clientId != null, 'clients: acceptOffer did not create a client record')) return;
+  var client0 = E.getClient(clientId);
+  assert(!!client0 && client0.visits === 0 && client0.machines.length === 0,
+         'clients: fresh client should start at 0 visits/machines, got ' + JSON.stringify(client0));
 
-  // Force a return: high rating maximizes the chance; sweep offer batches
-  s.reputation.rating = 5;
-  var back = generateUntil(s, function (o) { return o.regular === true; }, 200);
-  if (!assert(!!back, 'regulars: no regular returned across 200 offer batches')) return;
-  assert(back.regularVisits >= 1, 'regulars: visit count missing on the return offer');
-  assert((s.regulars || []).some(function (g) { return g.name === back.customer.name; }),
-         'regulars: returning customer not from the regulars book');
-
-  // Harsher fail: a regular's missed deadline dings extra
-  var acc = E.acceptOffer(back.id);
-  if (assert(acc.ok, 'regulars: accept failed')) {
-    back.deadlineDay = s.day - 1;
-    var histBefore = s.reputation.history.length;
-    Engine.Jobs.deadlineSweep(s, Engine.Sim.newSummary());
-    var pushedEntry = s.reputation.history[s.reputation.history.length - 1];
-    var pushed = Engine.entryScore(pushedEntry);   // §17.2 entries are objects
-    var expected = Math.max(0, E.getConfig().SCORE_LATE - E.getConfig().REGULAR_FAIL_EXTRA);
-    assert(s.reputation.history.length > histBefore &&
-           Math.abs(pushed - expected) < 1e-9,
-           'regulars: failed regular should push ' + expected + ', got ' + pushed);
+  // 2) Complete it with an installed part — first machine-carrying
+  // completion seeds a tracked client machine.
+  disarmDecisions(repairJob); pokeBigPsu(E, repairJob);
+  if (repairJob.needsDiagnosis && !repairJob.diagnosed) E.diagnoseJob(repairJob.id);
+  var need0 = E.getJobNeeds(repairJob.id)[0];
+  var opt = need0 && need0.options.filter(function (o) { return o.meets; })[0];
+  if (!assert(!!opt, 'clients: no qualifying replacement part for the rolled fault')) return;
+  var installedPartId = opt.partId;
+  var a1 = E.assignPart(repairJob.id, 0, installedPartId, { rush: true });
+  var ag = 0;
+  while (a1.ok && a1.mishap && a1.filled < 1 && ag++ < 8) {
+    a1 = E.assignPart(repairJob.id, 0, installedPartId, { rush: true });
   }
-  console.log('  recorded "' + reg.name + '", returned with regular flag (visits ' +
-              back.regularVisits + '), harsher fail ok');
+  if (!assert(a1.ok, 'clients: assign failed: ' + (a1.error || ''))) return;
+  var werr = workToDone(E, repairJob);
+  if (!assert(!werr, 'clients: repair did not complete: ' + werr)) return;
+
+  var client1 = E.getClient(clientId);
+  if (!assert(!!client1 && client1.visits === 1 && client1.workLog.length === 1 &&
+              client1.workLog[0].outcome === 'done' && client1.machines.length === 1,
+              'clients: visits/workLog/machine not updated on completion: ' +
+              JSON.stringify(client1))) return;
+  var machineId = client1.machines[0].id;
+  assert(client1.loyalty >= E.getConfig().LOYALTY_ONTIME,
+         'clients: loyalty should rise on a clean completion, got ' + client1.loyalty);
+
+  // 3) Persistence: force the SAME client's return on a machine-carrying
+  // offer — same stored machine id, same previously-installed part.
+  Engine.Jobs.findClient(s, clientId).loyalty = 90;
+  var back = generateUntil(s, function (o) {
+    return o.clientId === clientId && (o.type === 'repair' || o.type === 'upgrade');
+  }, 400);
+  if (!assert(!!back, 'clients: client never returned on a machine-carrying offer')) return;
+  assert(back.clientMachineId === machineId,
+         'clients: return offer should reuse the SAME stored machine id, got ' +
+         back.clientMachineId + ' vs ' + machineId);
+  assert(back.machine && back.machine.partIds.indexOf(installedPartId) !== -1,
+         'clients: return offer machine lost the previously-installed part');
+  assert(back.clientMachineServiceCount === 1,
+         'clients: serviced-count should reflect the prior visit, got ' +
+         back.clientMachineServiceCount);
+  assert(back.regular === true && back.pay > 0,
+         'clients: a loyalty>=REGULAR return should carry the regular flag + pay premium');
+
+  var machineId2 = machineId;
+  disarmDecisions(back); pokeBigPsu(E, back);
+  var acc2 = E.acceptOffer(back.id);
+  if (assert(acc2.ok, 'clients: accept on return offer failed: ' + (acc2.error || ''))) {
+    var job2 = E.getActiveJobs().filter(function (j) { return j.id === back.id; })[0];
+    if (job2.needsDiagnosis && !job2.diagnosed) E.diagnoseJob(job2.id);
+    var nv2 = E.getJobNeeds(job2.id);
+    if (nv2 && nv2[0]) {
+      var opt2 = nv2[0].options.filter(function (o) { return o.meets; })[0];
+      if (opt2) {
+        var a2 = E.assignPart(job2.id, 0, opt2.partId, { rush: true });
+        var ag2 = 0;
+        while (a2.ok && a2.mishap && a2.filled < 1 && ag2++ < 8) {
+          a2 = E.assignPart(job2.id, 0, opt2.partId, { rush: true });
+        }
+      }
+    }
+    var werr2 = workToDone(E, job2);
+    assert(!werr2, 'clients: return job did not complete: ' + werr2);
+    var client2 = E.getClient(clientId);
+    assert(client2.visits === 2 && client2.machines.length === 1 &&
+           client2.machines[0].id === machineId2 && client2.machines[0].servicedCount === 2,
+           'clients: second completion should write back to the SAME machine record: ' +
+           JSON.stringify(client2));
+    assert(client2.loyalty >= E.getConfig().LOYALTY_REGULAR,
+           'clients: 2 clean visits should cross the Regular threshold (2-3 visit spec), got ' +
+           client2.loyalty);
+  }
+
+  // 4) Harsher fail: a regular's missed deadline dings extra + a 'late'
+  // workLog entry appears.
+  var lateOffer = generateUntil(s, function (o) {
+    return o.clientId === clientId && o.type !== 'contract' && o.type !== 'refurb';
+  }, 300);
+  if (lateOffer) {
+    var acc3 = E.acceptOffer(lateOffer.id);
+    if (acc3.ok) {
+      var loyaltyBefore = E.getClient(clientId).loyalty;
+      lateOffer.deadlineDay = s.day - 1;
+      var histBefore = s.reputation.history.length;
+      Engine.Jobs.deadlineSweep(s, Engine.Sim.newSummary());
+      var pushed = Engine.entryScore(s.reputation.history[s.reputation.history.length - 1]);
+      var expected = Math.max(0, E.getConfig().SCORE_LATE - E.getConfig().REGULAR_FAIL_EXTRA);
+      assert(s.reputation.history.length > histBefore && Math.abs(pushed - expected) < 1e-9,
+             'clients: a regular late-fail should push ' + expected + ', got ' + pushed);
+      var client3 = E.getClient(clientId);
+      assert(client3.workLog[0].outcome === 'late' && client3.loyalty < loyaltyBefore,
+             'clients: a late outcome should log + lower loyalty: ' + JSON.stringify(client3));
+    }
+  }
+
+  // 5) Referral: a high-loyalty client may send a fresh offer someone's way.
+  Engine.Jobs.findClient(s, clientId).loyalty = 95;
+  var refClientName = Engine.Jobs.findClient(s, clientId).name;
+  var referral = generateUntil(s, function (o) { return o.referredBy === refClientName; }, 400);
+  if (assert(!!referral, 'clients: no referral seeded across 400 offer batches')) {
+    assert(referral.clientId == null,
+           'clients: a referral target has no record yet — clientId must stay unset until accept');
+    var refAcc = E.acceptOffer(referral.id);
+    if (assert(refAcc.ok, 'clients: accept on a referral offer failed')) {
+      var newClient = E.getClient(referral.clientId);
+      assert(!!newClient && newClient.referredBy === refClientName &&
+             newClient.loyalty === E.getConfig().CLIENT_REFERRAL_STARTING_LOYALTY,
+             'clients: referred client should seed at CLIENT_REFERRAL_STARTING_LOYALTY: ' +
+             JSON.stringify(newClient));
+    }
+  }
+
+  // 6) Idle decay: a client untouched for LOYALTY_IDLE_DECAY_DAYS drifts down
+  // on the monthly tick.
+  var decayClient = Engine.Jobs.findClient(s, clientId);
+  var beforeDecay = decayClient.loyalty;
+  decayClient.lastSeenDay = s.day - E.getConfig().LOYALTY_IDLE_DECAY_DAYS - 1;
+  Engine.Sim.monthlyBilling(s, Engine.Sim.newSummary(), Engine.dateInfo(s.day, s));
+  assert(decayClient.loyalty === Engine.clamp(
+    Engine.round2(beforeDecay - E.getConfig().LOYALTY_IDLE_DECAY), 0, 100),
+    'clients: idle decay did not apply, ' + beforeDecay + ' -> ' + decayClient.loyalty);
+
+  // 7) Eviction: eviction runs on EVERY new-client insert (one splice per
+  // call, matching real play — a batch of offers is accepted one at a
+  // time), so drive the registry past CLIENTS_CAP one stranger at a time;
+  // the tracked (loyalty>=REGULAR) client must survive throughout.
+  decayClient.loyalty = 90;
+  for (var fillN = 0; fillN < E.getConfig().CLIENTS_CAP + 10; fillN++) {
+    Engine.Jobs.findOrCreateClient(s, { customer: { name: 'Filler ' + fillN, type: 'home' } });
+  }
+  assert(s.clients.list.length <= E.getConfig().CLIENTS_CAP,
+         'clients: registry exceeded CLIENTS_CAP after eviction, size ' + s.clients.list.length);
+  assert(s.clients.list.some(function (c) { return c.id === clientId; }),
+         'clients: a loyalty>=REGULAR client must never be evicted under stranger pressure');
+
+  console.log('  client "' + client1.name + '" persisted machine ' + machineId +
+              ' (part ' + installedPartId + ' present), regular threshold, referral, ' +
+              'idle decay, and eviction all ok');
 }
 
 // ------------------------------------------------------------------
@@ -3552,6 +3734,29 @@ function accountsScenario(era) {
          'accounts: signing did not create the account');
   assert((s.achievementEvents['account-signed'] || {}).count >= 1,
          'accounts: signing should record the achievement event');
+
+  // §21.3: kind/seats/health/fleet seeded at signing (era-appropriate,
+  // slightly dated — NOT built for free, but not retroactive either).
+  var signedAcct = s.accounts[0];
+  assert(typeof signedAcct.kind === 'string' && signedAcct.kind.length,
+         'accounts: signed account missing a kind');
+  assert(signedAcct.seats === offer.account.seats && signedAcct.seats > 0,
+         'accounts: signed seats should match the offer terms');
+  assert(signedAcct.health === E.getConfig().ACCOUNT_HEALTH_START,
+         'accounts: signed account should start at ACCOUNT_HEALTH_START, got ' + signedAcct.health);
+  assert(Array.isArray(signedAcct.fleet) && signedAcct.fleet.length === signedAcct.seats,
+         'accounts: fleet should be seeded 1:1 with seats at signing, got ' +
+         (signedAcct.fleet || []).length + ' vs ' + signedAcct.seats);
+  assert(signedAcct.fleet.every(function (m) {
+    return Array.isArray(m.partIds) && m.partIds.length > 0 && m.specSummary && m.year > 0;
+  }), 'accounts: fleet machines missing partIds/specSummary/year');
+  assert(Array.isArray(signedAcct.history) && signedAcct.history.length === 0,
+         'accounts: fresh account should start with no seat history');
+  var accountsView = E.getAccounts();
+  var av0 = accountsView.filter(function (a) { return a.id === signedAcct.id; })[0];
+  assert(!!av0 && av0.seats === signedAcct.seats && av0.health === signedAcct.health &&
+         Array.isArray(av0.fleet) && av0.fleet.length === signedAcct.fleet.length,
+         'accounts: getAccounts() view missing kind/seats/health/fleet: ' + JSON.stringify(av0));
 
   // Monthly fee on the 1st + auto-jobs during the month. The observer bot
   // doesn't WORK the auto-jobs, so their deadlines are pushed out each night
@@ -3601,6 +3806,92 @@ function accountsScenario(era) {
   assert(s.accounts.length === 0, 'accounts: rating breach must cancel the account');
   console.log('  signed "' + offer.account.name + '" (fee ' + Engine.fmtMoney(feeSeen || 0) +
               '/mo), auto-job ok, both cancel paths ok');
+
+  // §21.3: monthly health tick — GROW path. A well-served account (full
+  // fresh fleet, every job this month completed on time) should visibly
+  // grow within ~2 months: seats up, a commissioned build offer tagged
+  // accountId appears (bounded to one open at a time), and completing it
+  // delivers fresh machines into the fleet.
+  var C = E.getConfig();
+  var growAcct = { id: 'acctGrow', name: 'Grow Co', monthlyFee: 150, jobsPerMonth: 3,
+                   minRating: 2.5, signedDay: s.day, failsThisMonth: 0, jobsThisMonth: 0,
+                   okThisMonth: 0, kind: 'office', seats: 6, health: C.ACCOUNT_HEALTH_START,
+                   healthTrend: 'flat', healthReason: null, fleet: [], history: [] };
+  for (var gf = 0; gf < growAcct.seats; gf++) {
+    var gm = Engine.Jobs.fleetMachineFor(s, true);
+    if (gm) growAcct.fleet.push(gm);
+  }
+  s.accounts.push(growAcct);
+  var seatsBefore = growAcct.seats, grewWithin = -1, coOffer = null;
+  for (var gmo = 1; gmo <= 3 && grewWithin < 0; gmo++) {
+    growAcct.okThisMonth = growAcct.jobsPerMonth; growAcct.failsThisMonth = 0;
+    Engine.Sim.accountMonthlyTick(s, growAcct, Engine.Sim.newSummary());
+    growAcct.jobsThisMonth = 0; growAcct.failsThisMonth = 0; growAcct.okThisMonth = 0;
+    if (growAcct.seats > seatsBefore) grewWithin = gmo;
+  }
+  assert(grewWithin > 0 && grewWithin <= 2,
+         'accounts: a well-served account should visibly grow within ~2 months, took ' +
+         (grewWithin > 0 ? grewWithin : '>3'));
+  assert(growAcct.history.length >= 1 && growAcct.history[0].delta > 0,
+         'accounts: growth should log a positive seat-history entry');
+  coOffer = s.jobs.offers.filter(function (o) {
+    return o.accountId === growAcct.id && o.subtype === 'contract_build_custom';
+  })[0];
+  if (assert(!!coOffer, 'accounts: growth should spawn a commissioned build offer')) {
+    assert(coOffer.type === 'contract' && coOffer.units === (growAcct.seats - seatsBefore),
+           'accounts: commissioned offer units should match the seats added');
+    // Force another grow-eligible tick while the first commissioned offer
+    // is still open — the guard must not spawn a second one for the account.
+    growAcct.health = C.ACCOUNT_HEALTH_GROW_AT;
+    Engine.Sim.accountMonthlyTick(s, growAcct, Engine.Sim.newSummary());
+    var openCommissioned = s.jobs.offers.filter(function (o) {
+      return o.accountId === growAcct.id && o.subtype === 'contract_build_custom';
+    });
+    assert(openCommissioned.length === 1,
+           'accounts: never more than one open commissioned offer per account, got ' +
+           openCommissioned.length);
+    growAcct.jobsThisMonth = 0; growAcct.failsThisMonth = 0; growAcct.okThisMonth = 0;
+    var fleetBefore = growAcct.fleet.length;
+    var accCo = E.acceptOffer(coOffer.id);
+    if (assert(accCo.ok, 'accounts: accepting the commissioned build failed: ' + (accCo.error || ''))) {
+      var coJob = E.getActiveJobs().filter(function (j) { return j.id === coOffer.id; })[0];
+      var coErr = workToDone(E, coJob);
+      assert(!coErr, 'accounts: commissioned build did not complete: ' + coErr);
+      assert(growAcct.fleet.length === fleetBefore + coOffer.units,
+             'accounts: completed commissioned build should deliver its machines into the fleet, ' +
+             fleetBefore + ' -> ' + growAcct.fleet.length + ' (expected +' + coOffer.units + ')');
+      assert(growAcct.fleet[growAcct.fleet.length - 1].builtByShop === true,
+             'accounts: delivered fleet machines should be flagged builtByShop');
+    }
+  }
+
+  // §21.3: monthly health tick — NEGLECT path. Paying for jobsPerMonth
+  // visits and getting none (quota unmet, never late enough to trip the
+  // instant 2-fails cancel) should shrink within ~3 months and eventually
+  // churn — a slow decline, not instant.
+  var neglectAcct = { id: 'acctNeglect', name: 'Neglect Co', monthlyFee: 100, jobsPerMonth: 3,
+                      minRating: 2.5, signedDay: s.day, failsThisMonth: 0, jobsThisMonth: 0,
+                      okThisMonth: 0, kind: 'office', seats: 6, health: C.ACCOUNT_HEALTH_START,
+                      healthTrend: 'flat', healthReason: null, fleet: [], history: [] };
+  for (var nf = 0; nf < neglectAcct.seats; nf++) {
+    var nm = Engine.Jobs.fleetMachineFor(s, false);
+    if (nm) neglectAcct.fleet.push(nm);
+  }
+  var shrankWithin = -1, churnedWithin = -1;
+  for (var nmo = 1; nmo <= 10 && churnedWithin < 0; nmo++) {
+    var seatsBeforeTick = neglectAcct.seats;
+    var verdict = Engine.Sim.accountMonthlyTick(s, neglectAcct, Engine.Sim.newSummary());
+    if (verdict === 'churn') { churnedWithin = nmo; break; }
+    if (shrankWithin < 0 && neglectAcct.seats < seatsBeforeTick) shrankWithin = nmo;
+  }
+  assert(shrankWithin > 0 && shrankWithin <= 4,
+         'accounts: a wholly-neglected account should shrink within ~3-4 months, took ' +
+         (shrankWithin > 0 ? shrankWithin : 'never'));
+  assert(churnedWithin > shrankWithin,
+         'accounts: churn should come meaningfully AFTER shrink, not instantly — shrank ' +
+         shrankWithin + ', churned ' + churnedWithin);
+  console.log('  ecosystem: grew in ' + grewWithin + 'mo (commissioned build delivered), ' +
+              'neglected shrank in ' + shrankWithin + 'mo and churned in ' + churnedWithin + 'mo');
 }
 
 // ------------------------------------------------------------------
@@ -6484,8 +6775,20 @@ function survivalScenario(era) {
 // Main
 // ------------------------------------------------------------------
 console.log('sim-test using: ' + DATA_SOURCE + ' | engine v' + Engine.VERSION);
-assert(Engine.VERSION === '0.9.1', 'Engine.VERSION must be "0.9.1"');
-assert(parseFloat(Engine.VERSION) >= 0.4, 'Engine.VERSION must stay parseFloat >= 0.4');
+assert(Engine.VERSION === '0.10', 'Engine.VERSION must be "0.10"');
+// §21 version-compare hazard: parseFloat('0.10') is 0.1, which would read as
+// a REGRESSION from 0.9.1 under naive parseFloat comparison — exactly the
+// bug the UI's segment-wise gate exists to avoid. Assert a real segment-wise
+// compare instead (never parseFloat on a dotted version string).
+function segCompareGte(v, min) {
+  var a = String(v).split('.').map(Number), b = String(min).split('.').map(Number);
+  for (var i = 0; i < Math.max(a.length, b.length); i++) {
+    var x = a[i] || 0, y = b[i] || 0;
+    if (x !== y) return x > y;
+  }
+  return true;
+}
+assert(segCompareGte(Engine.VERSION, '0.4'), 'Engine.VERSION must stay segment-wise >= 0.4');
 var lines = [];
 try {
   DATA.ERAS.forEach(function (era, idx) {
@@ -6644,7 +6947,7 @@ certScenario();
 transitionsScenario();
 scenarioLifecycleScenario();
 creditScenario(DATA.ERAS[0]);
-regularsScenario(DATA.ERAS[DATA.ERAS.length - 1]);
+clientsScenario(DATA.ERAS[DATA.ERAS.length - 1]);
 accountsScenario(DATA.ERAS[DATA.ERAS.length - 1]);
 achievementsScenario(DATA.ERAS[0]);
 difficultyScenario(DATA.ERAS[0]);

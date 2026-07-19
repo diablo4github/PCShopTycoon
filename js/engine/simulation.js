@@ -369,17 +369,24 @@
     var C = CFG();
     var ratio = Engine.Jobs.accountFleetRatio(state, acct);
     var uncovered = Math.max(0, (acct.seats || 0) - (acct.fleet || []).length);
+    // Visits neither completed nor failed this month (auto-jobs simply never
+    // worked) — a retainer client paying for jobsPerMonth visits and getting
+    // silence is its own quiet dissatisfaction, distinct from active fails.
+    var unmet = Math.max(0, (acct.jobsPerMonth || 0) -
+                            (acct.okThisMonth || 0) - (acct.failsThisMonth || 0));
     var delta = 0;
     delta += (ratio - 1) * C.ACCOUNT_HEALTH_FLEET_WEIGHT;
     delta += (acct.okThisMonth || 0) * C.ACCOUNT_HEALTH_OK_PER_JOB;
     delta -= (acct.failsThisMonth || 0) * C.ACCOUNT_HEALTH_FAIL_PER_JOB;
     delta -= uncovered * C.ACCOUNT_HEALTH_UNCOVERED_PENALTY;
+    delta -= unmet * C.ACCOUNT_HEALTH_UNMET_QUOTA_PENALTY;
     var before = acct.health;
     acct.health = Engine.clamp(Engine.round2(acct.health + delta), 0, 100);
     acct.healthTrend = acct.health > before ? 'up' : (acct.health < before ? 'down' : 'flat');
     if (uncovered > 0) acct.healthReason = uncovered + ' seat(s) without a working machine';
-    else if (ratio < 0.8) acct.healthReason = 'their fleet is falling behind the times';
     else if ((acct.failsThisMonth || 0) > 0) acct.healthReason = 'missed service this month';
+    else if (unmet > 0) acct.healthReason = 'quiet this month — service visits went unused';
+    else if (ratio < 0.8) acct.healthReason = 'their fleet is falling behind the times';
     else if ((acct.okThisMonth || 0) > 0) acct.healthReason = 'well-serviced fleet this month';
     else acct.healthReason = 'a quiet month';
     acct.history = acct.history || [];

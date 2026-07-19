@@ -284,6 +284,7 @@
     var C = CFG();
     if (job.type === 'repair') {
       var cat = job.fault && job.fault.partCategory;
+      var refaulted = false;
       if (cat && !solvableFaultCategoryInMachine(state, machine, cat)) {
         var faultCats = repairFaultCategories(state).filter(function (fc) {
           return solvableFaultCategoryInMachine(state, machine, fc.cat);
@@ -298,6 +299,7 @@
         if (Array.isArray(tmpl.complaints) && tmpl.complaints.length)
           job.blurbOverride = Engine.pick(tmpl.complaints, 'offers');
         cat = job.fault.partCategory;
+        refaulted = true;
       }
       var partIds = machine.partIds.slice();
       var idx = null;
@@ -311,7 +313,16 @@
                       askPrice: null, boughtFor: null, faultPartIdx: idx,
                       condition: null, faultRepaired: false,
                       specSummary: specSummaryFor(partIds) };
-      var sym = symptomSuffix(job.fault, job.blurbOverride);
+      // A re-rolled fault gets a fresh symptom line; otherwise the machine
+      // identity changed but the fault/complaint didn't — carry the
+      // existing symptom suffix over rather than silently dropping it.
+      var sym;
+      if (refaulted) {
+        sym = symptomSuffix(job.fault, job.blurbOverride);
+      } else {
+        var symMatch = /—\s*(.+)$/.exec(job.title || '');
+        sym = symMatch ? symMatch[1] : null;
+      }
       job.title = 'Repair: ' + machine.name + (sym ? ' — ' + sym : '');
       job.difficulty = deriveDifficulty(state, job);
       assembleSteps(state, job);
@@ -731,23 +742,24 @@
   }
   Jobs.pickBusinessNews = pickBusinessNews;
 
-  /* §21.3: fleet spec vs the year's baseline (dated fleet drags health). No
-   * fleet at all is treated as badly behind (0), not neutral. */
+  /* §21.3: fleet spec vs the year's baseline — AGE-based (years old vs
+   * MACHINE_REPLACE_AGE_YEARS), not raw perf-of-whichever-part-got-picked.
+   * Perf varies wildly by which CPU assembleMachineParts happened to draw
+   * even within the same model-year, which would make this term noisy
+   * rather than a steady reflection of "how current is this fleet"; age is
+   * deterministic and lines up with the same aging rule client machines use
+   * (§21.2). Brand-new reads slightly ahead (1.15); at replace-age, ~0.55;
+   * no fleet at all is badly behind (0), not neutral. */
   Jobs.accountFleetRatio = function (state, acct) {
     var year = Engine.currentYear(state);
-    var bl = Engine.baselineFor(year);
     var fleet = acct.fleet || [];
     if (!fleet.length) return 0;
-    var basePerf = bl.cpu || 1;
+    var replaceYears = Engine.CONFIG.MACHINE_REPLACE_AGE_YEARS || 7;
     var sum = 0;
     fleet.forEach(function (m) {
-      var cpu = null;
-      (m.partIds || []).forEach(function (id) {
-        var p = Engine.partById(id);
-        if (p && p.category === 'cpu') cpu = p;
-      });
-      var perf = cpu ? (cpu.perf || {}).cpu || 0 : 0;
-      sum += basePerf > 0 ? Engine.clamp(perf / basePerf, 0, 2) : 1;
+      var age = Math.max(0, year - (m.year != null ? m.year : year));
+      var r = 1.15 - 0.6 * Math.min(1.4, age / replaceYears);
+      sum += Math.max(0, r);
     });
     return sum / fleet.length;
   };

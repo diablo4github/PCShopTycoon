@@ -94,7 +94,17 @@
     // median vs jobs — a hair over the 1.2-1.8 band. One notch re-centers it
     // at 1.71x (cash band, offer ramp, and both dedicated parity guards
     // verified in-band at the gate seeds).
-    REFURB_SALE_RATIO: 0.69,
+    // v0.10 retune 0.69 -> 0.65: the §21.1 client registry adds a NEW
+    // consumer on the 'offers' stream every night once a client exists
+    // (return-attribution rolls per eligible offer, referral rolls, etc.) —
+    // reshuffling the whole rest of that stream's draws for the remainder of
+    // the run. Measured effect: the mixed-bot 1983 flips-vs-jobs $/hour ratio
+    // drifted to 1.99x median — over the 1.2-1.8x band — with zero change to
+    // supply, hours, or per-flip logic (a stream-order artifact, not a new
+    // economic advantage for flips). Three notches re-centers it at 1.66x
+    // median (0.81-2.29 range) at the gate seeds; cash band and offer ramp
+    // re-verified in-band.
+    REFURB_SALE_RATIO: 0.65,
     // §13.6: condition scales flip PROCEEDS but is not in the bot's buy decision
     // and consumes the same single RNG draw whatever its range — so nudging the
     // mean 0.93->0.99 restores flip-margin headroom (ratio back toward ~1.4)
@@ -330,14 +340,12 @@
     CREDIT_LIMIT_LABOR_MULT: 40,    // limit = laborRate(year) x this x (1 + prestige)
     CREDIT_APR_TABLE: { 1983: 0.19, 1995: 0.12, 2010: 0.08, 2021: 0.07 },  // interpolated
     CREDIT_PAPERWORK_HOURS: 0.1,    // per draw/repay operation (overtime rules)
-    // §15.4 repeat customers
-    REGULAR_SCORE_MIN: 4,           // completion score that earns a spot in state.regulars
-    REGULARS_CAP: 30,
+    // §15.4/§21.1 repeat customers — REGULAR_SCORE_MIN/REGULARS_CAP/
+    // REGULAR_CHANCE_* retired with state.regulars (superseded by the
+    // CLIENT_*/LOYALTY_* knobs above); PAY_MULT/FAIL_EXTRA/TASTE_BONUS carry
+    // over unchanged (still gate on loyalty>=LOYALTY_REGULAR instead).
     REGULAR_PAY_MULT: 1.10,         // loyalty premium on a returning regular's job
     REGULAR_FAIL_EXTRA: 0.3,        // extra score reduction when a regular's job fails
-    REGULAR_CHANCE_BASE: 0.10,      // per-offer chance a regular returns, at rating 3...
-    REGULAR_CHANCE_PER_STAR: 0.06,  // ...plus this per rating point above 3, capped
-    REGULAR_CHANCE_MAX: 0.35,
     REGULAR_TASTE_BONUS: 15,        // regulars' persistent taste bonusPct
     // §15.4 business accounts
     ACCOUNT_PRESTIGE_MIN: 2,
@@ -460,9 +468,12 @@
     CLIENT_WORKLOG_CAP: 12,      // per-client job history, newest first
     LOYALTY_REGULAR: 40,         // "Regular" threshold: pay premium + taste persistence
     LOYALTY_HIGH: 70,            // deadline leniency + referral eligibility
-    LOYALTY_ONTIME: 8,           // base rise on an on-time completion
+    // §21.1: tuned so a well-served client crosses LOYALTY_REGULAR (40) in
+    // 2-3 visits — an on-time+near-perfect visit (14+6=20) crosses at visit 2;
+    // a merely on-time one (14) crosses at visit 3.
+    LOYALTY_ONTIME: 14,          // base rise on an on-time completion
     LOYALTY_SCORE5_AT: 4.9,      // score at/above this counts as "near-perfect"
-    LOYALTY_SCORE5_BONUS: 4,     // ...extra rise when it does
+    LOYALTY_SCORE5_BONUS: 6,     // ...extra rise when it does
     LOYALTY_APPROVAL_BONUS: 3,   // caught-a-problem-early delight
     LOYALTY_TASTE_HIT: 3,        // an installed part matched their stated taste
     LOYALTY_LATE: 14,            // penalty: missed deadline
@@ -499,7 +510,11 @@
     ACCOUNT_HEALTH_OK_PER_JOB: 3,        // this month's on-time service jobs
     ACCOUNT_HEALTH_FAIL_PER_JOB: 12,     // this month's late/failed service jobs
     ACCOUNT_HEALTH_UNCOVERED_PENALTY: 8, // per seat with no fleet machine behind it
-    ACCOUNT_HEALTH_FLEET_WEIGHT: 15,     // x (fleet perf ratio vs year baseline - 1)
+    ACCOUNT_HEALTH_UNMET_QUOTA_PENALTY: 2, // per jobsPerMonth visit neither done nor failed
+    ACCOUNT_HEALTH_FLEET_WEIGHT: 15,     // x (fleet age-vs-baseline ratio - 1); age-based
+                                          // (not perf-of-whichever-part-got-picked) so a
+                                          // "slightly dated" signing fleet reads as a small,
+                                          // steady drag rather than noisy per-CPU variance
     ACCOUNT_SEATS_GROW_MIN: 1, ACCOUNT_SEATS_GROW_MAX: 2,
     ACCOUNT_SEATS_SHRINK_MIN: 1, ACCOUNT_SEATS_SHRINK_MAX: 2,
     ACCOUNT_SEATS_MIN: 2,                // never shrinks below this while alive

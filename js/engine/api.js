@@ -1885,6 +1885,16 @@
   // fleet/history). Engine.getBusinessAccounts above is unchanged for
   // back-compat; this is the v0.10 view the Clients > Businesses tab reads.
   // ------------------------------------------------------------------
+  var BUSINESS_KIND_LABEL_FALLBACK = { office: 'Office' };
+  function businessKindLabel(kindId) {
+    var table = Engine.getData().BUSINESS_KINDS;
+    if (Array.isArray(table)) {
+      for (var i = 0; i < table.length; i++) {
+        if (table[i] && table[i].id === kindId) return table[i].label || kindId;
+      }
+    }
+    return BUSINESS_KIND_LABEL_FALLBACK[kindId] || kindId;
+  }
   Engine.getAccounts = function () {
     var state = S();
     if (!state) return [];
@@ -1892,10 +1902,16 @@
     return (state.accounts || []).map(function (a) {
       var atRisk = state.reputation.rating < a.minRating + 0.3 ||
                    (a.failsThisMonth || 0) >= C.ACCOUNT_FAILS_CANCEL - 1;
+      var trend = a.healthTrend || 'flat';
+      var reason = a.healthReason || null;
       return {
-        id: a.id, name: a.name, kind: a.kind || 'office', seats: a.seats || 0,
+        id: a.id, name: a.name,
+        kind: businessKindLabel(a.kind || 'office'), kindId: a.kind || 'office',
+        seats: a.seats || 0,
         health: a.health != null ? a.health : C.ACCOUNT_HEALTH_START,
-        trend: a.healthTrend || 'flat', lastChangeReason: a.healthReason || null,
+        // Primary names + accepted aliases (UI checks both) for the trend arrow.
+        seatsTrend: trend, trend: trend,
+        seatsTrendReason: reason, trendReason: reason, lastChangeReason: reason,
         monthlyFee: a.monthlyFee, jobsPerMonth: a.jobsPerMonth, minRating: a.minRating,
         signedDay: a.signedDay,
         jobsThisMonth: a.jobsThisMonth || 0, failsThisMonth: a.failsThisMonth || 0,
@@ -1911,7 +1927,7 @@
           }
           var cond = ratio >= 1.1 ? 'cutting-edge' : ratio >= 0.85 ? 'solid' :
                      ratio >= 0.6 ? 'aging' : 'due for replacement';
-          return { id: m.id, name: m.name, year: m.year,
+          return { id: m.id, name: m.name, year: m.year, yearClass: m.year,
                    builtByShop: !!m.builtByShop, acquiredDay: m.acquiredDay,
                    condition: cond };
         }),

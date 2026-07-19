@@ -19,6 +19,9 @@
              certsEarned: [],            // §13.4 certifications completed since last morning
              achievements: [],           // §15.5 achievements unlocked since last morning
              accountJobs: [],            // §15.4 auto-accepted retainer jobs overnight
+             accounts: [],               // §22.1 #5: account lifecycle day-of lines
+                                          // (cancelled/churned, grown/shrunk) — NOT
+                                          // "Offers expired", that bucket is unrelated.
              deliveries: [],             // §18.1 distributor orders that arrived overnight
              scenarioComplete: null };   // §15.2 {grade, score, name} when a scenario ends
   };
@@ -343,7 +346,9 @@
           { title: 'Account: ' + acct.name, reasons: ['lost a business account'] });
         var cline = Engine.Jobs.pickBusinessNews(state, 'churn', acct.name, acct.seats || 0);
         Engine.pushNews(state, 'money', 'Account cancelled: ' + acct.name, cline);
-        summary.expired.push('Business account: ' + acct.name + ' (cancelled)');
+        // §22.1 #5: account lifecycle lines live in summary.accounts, not
+        // summary.expired ("Offers expired" is the wrong story for this).
+        summary.accounts.push('Business account: ' + acct.name + ' (cancelled)');
       }
     }
     // §21.1: idle loyalty decay — a client who hasn't been in for a stretch
@@ -660,7 +665,8 @@
         { title: 'Account: ' + acct.name, reasons: ['lost a business account'] });
       Engine.pushNews(state, 'money', 'Account cancelled: ' + acct.name,
         'They pulled the retainer — ' + reason + '. Word travels in business circles.');
-      if (summary) summary.expired.push('Business account: ' + acct.name + ' (cancelled)');
+      // §22.1 #5: account lifecycle lines live in summary.accounts.
+      if (summary) summary.accounts.push('Business account: ' + acct.name + ' (cancelled)');
     }
   };
 

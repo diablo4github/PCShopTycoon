@@ -528,7 +528,8 @@
   // ------------------------------------------------------------------
   // v0.10: honest dotted string (§21 version-compare hazard — parseFloat('0.10')
   // is 0.1 and would regress every gate; the UI owns a segment-wise semver fix).
-  Engine.VERSION = '0.10';
+  // v0.10.1 (§22): pure rough-edge polish, no save-format change.
+  Engine.VERSION = '0.10.1';
   Engine._state = null;
   Engine.getData = function () { return root.DATA || {}; };
 

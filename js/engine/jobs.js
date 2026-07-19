@@ -563,12 +563,24 @@
   // §15.4/§21.3 Business accounts — retainer offers, monthly fees, auto-jobs,
   // kind/seats/health/fleet ecosystem.
   // ------------------------------------------------------------------
-  function businessNameFor(state) {
+  // §22.1 #2: the account's KIND is rolled first (see businessKindFor call
+  // order in maybeAccountOffer) so the name can be picked from that kind's
+  // OWN `names` pool (DATA.BUSINESS_KINDS[].names — a law office sounds like
+  // a law firm). Falls back to the legacy FLAVOR.businessNames pool only when
+  // the kind has no pool, or every name in it is already under contract.
+  // Existing saved accounts are never touched — this only affects NEW offers.
+  function businessNameFor(state, kind) {
     var F = FLAVOR();
+    var taken = (state.accounts || []).map(function (a) { return a.name; });
+    var kindPool = kind && Array.isArray(kind.names) ? kind.names : null;
+    if (kindPool && kindPool.length) {
+      var freshKind = kindPool.filter(function (n) { return taken.indexOf(n) === -1; });
+      var kindName = Engine.pick(freshKind.length ? freshKind : kindPool, 'offers');
+      if (kindName) return kindName;
+    }
     var pool = F.businessNames;
     if (Array.isArray(pool) && pool.length) {
       // Prefer a name not already under contract
-      var taken = (state.accounts || []).map(function (a) { return a.name; });
       var fresh = pool.filter(function (n) { return taken.indexOf(n) === -1; });
       var name = Engine.pick(fresh.length ? fresh : pool, 'offers');
       if (name) return name;
@@ -602,8 +614,10 @@
       return null;   // one retainer on the table at a time
     if (!Engine.chance(C.ACCOUNT_OFFER_CHANCE, 'offers')) return null;
     var year = Engine.currentYear(state);
-    var name = businessNameFor(state);
+    // §22.1 #2: kind rolled BEFORE the name so the name can be picked from
+    // that kind's own pool.
     var kind = businessKindFor(state);
+    var name = businessNameFor(state, kind);
     var seats = Engine.randInt(kind.seats[0], kind.seats[1], 'offers');
     var fee = Math.round(Engine.laborRate(year) * C.ACCOUNT_FEE_LABOR_MULT);
     var jobsPerMonth = Engine.randInt(C.ACCOUNT_JOBS_MIN, C.ACCOUNT_JOBS_MAX, 'offers');

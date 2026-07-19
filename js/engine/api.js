@@ -1041,6 +1041,36 @@
     os: 'OS', peripheral: 'Peripheral', expansion: 'Expansion' };
   var CATALOG_CAT_ORDER = ['cpu', 'motherboard', 'ram', 'gpu', 'storage', 'psu',
                           'case', 'cooling', 'os', 'peripheral', 'expansion'];
+  // §22.1 #10: short human spec string per category, tight enough for a
+  // table cell. Reuses established conventions — Engine.fmtCapacity for
+  // RAM/storage, the same "perf <n>" currency the rest of the game already
+  // shows for cpu/gpu, and Engine.tagLabel for a RAM speed-class hint.
+  function specStringFor(part) {
+    var p = part.perf || {};
+    switch (part.category) {
+      case 'cpu':
+        return part.introYear + ' · perf ' + (p.cpu != null ? p.cpu : 0);
+      case 'gpu':
+        return 'perf ' + (p.gpu != null ? p.gpu : 0);
+      case 'ram': {
+        var s = Engine.fmtCapacity(p.ramMB || 0);
+        var memTag = (part.platformTags || []).filter(function (t) {
+          return /^MEM-/.test(t);
+        })[0];
+        if (memTag) s += ' ' + Engine.tagLabel(memTag);
+        return s;
+      }
+      case 'storage':
+        return Engine.fmtCapacity((p.storageGB || 0) * 1024);
+      case 'psu':
+        return (part.watts || 0) + 'W';
+      default: {
+        var str = String(part.introYear);
+        if (part.tier && part.tier !== 'mainstream') str += ' · ' + part.tier;
+        return str;
+      }
+    }
+  }
   Engine.getSourceCatalog = function (source, opts) {
     var state = S();
     if (!state) return { categories: [], rows: [] };
@@ -1073,6 +1103,7 @@
         year: part.introYear, tier: part.tier || 'mainstream',
         brand: part.brand || null, perf: part.perf || {}, watts: part.watts || null,
         tags: (part.platformTags || []).slice(),
+        spec: specStringFor(part),
         unitPrice: unitPrice, inStockQty: inv ? inv.qty : 0, deal: deal
       });
     }
@@ -1925,8 +1956,14 @@
             var bl = Engine.baselineFor(Engine.currentYear(state));
             ratio = (bl.cpu || 1) > 0 ? ((cpu.perf || {}).cpu || 0) / (bl.cpu || 1) : 1;
           }
+          // §22.1 #7: view-side only — health FORMULA above is untouched.
+          // Bands widen/soften so only genuinely old boxes read "due for
+          // replacement" ('aging' renamed 'dated'), and a same-year-ish
+          // machine (age <= 1) never reads below 'solid' regardless of ratio.
+          var age = Engine.currentYear(state) - (m.year || Engine.currentYear(state));
           var cond = ratio >= 1.1 ? 'cutting-edge' : ratio >= 0.85 ? 'solid' :
-                     ratio >= 0.6 ? 'aging' : 'due for replacement';
+                     (ratio < 0.45 || age >= 5) ? 'due for replacement' : 'dated';
+          if (age <= 1 && cond !== 'cutting-edge') cond = 'solid';
           return { id: m.id, name: m.name, year: m.year, yearClass: m.year,
                    builtByShop: !!m.builtByShop, acquiredDay: m.acquiredDay,
                    condition: cond };

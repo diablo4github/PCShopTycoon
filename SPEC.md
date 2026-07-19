@@ -2159,3 +2159,168 @@ distributor `<select>` flow is deleted.
   with fee math, in-cart chip → on-order chip transition, refurb ghost timing
   (none at completion, plays at sale), stockBuild abandon rep unchanged, zero
   console errors.
+
+---
+
+# §21 — v0.10 "The Clientele Update" (regulars' machines, business ecosystems, client CRM)
+
+Later sections win. This round ships the three items deferred from the v0.9
+list: #18 regulars with persistent, consistent machines; #19 business accounts
+whose businesses grow or shrink with the quality of the machines you keep them
+on; #20 a client CRM recording every customer, their machines, and the work
+history. Save v12. Engine.VERSION '0.10' — **version-compare hazard**: the UI's
+engine-version gate must be made segment-wise semver-aware (parseFloat('0.10')
+is 0.1 and would regress every gate; UI owns the fix, ENGINE keeps VERSION an
+honest dotted string).
+
+## 21.1 Client registry (ENGINE) — the CRM spine (#20)
+
+`state.clients = { nextId, list: [] }`; client =
+`{ id, name, type, tasteBrand|null, firstSeenDay, lastSeenDay, visits,
+   loyalty (0..100), machines: [machine], workLog: [{day, title, type,
+   outcome: 'done'|'late'|'failed'|'callback'|'abandoned', pay, score}] }`.
+- A client record is created (or matched by name) when an offer is ACCEPTED —
+  every served person is remembered, not just the score≥4 elite. Declined
+  offers never create records. Account/institutional jobs (accountId,
+  contract, business_account) never create PERSON records.
+- `workLog` capped (CONFIG.CLIENT_WORKLOG_CAP ~ 12, newest first); clients
+  list capped (CONFIG.CLIENTS_CAP ~ 60) with eviction of the lowest-loyalty,
+  longest-idle client — never evict a client with loyalty ≥ the regular
+  threshold while under cap pressure from strangers.
+- **Loyalty**: rises on on-time completion (more for score 5, approval
+  delight, taste hit), falls on late/failed/callback/overspend-anger; decays
+  slowly with idle months. CONFIG knobs, tuned so a well-served client crosses
+  the regular threshold (CONFIG.LOYALTY_REGULAR ~ 40) in 2-3 visits.
+- The legacy `state.regulars` array is REPLACED: v11→v12 migration seeds
+  clients from existing regulars (visits=jobs, loyalty above threshold so
+  existing regulars stay regulars, tasteBrand carried, machines empty). The
+  'regular-10' achievement reads clients now. `maybeRegularReturn` /
+  `rememberRegular` are rebuilt on the registry: return-rebranding chance now
+  scales with the client's loyalty tier as well as shop rating; offer VOLUME
+  is unchanged (returns rebrand an existing fresh offer, never add offers —
+  the ≤3.9/day guard must not move).
+- Effects at loyalty tiers (CONFIG): regulars keep the 1.10 pay premium +
+  taste persistence; high loyalty (~70) adds deadline leniency (+1 day on
+  their jobs) and occasional referrals — a fresh offer tagged "referred by
+  <client>" with a small starting-loyalty seed for the new client. Referrals
+  rebrand existing offers too (volume-neutral).
+- Views: `Engine.getClients()` → sorted-ready array of client views (id,
+  name, type, loyaltyTier label + value, visits, firstSeen/lastSeen real
+  dates via dateInfo, machines summaries, workLog with real dates,
+  tasteBrand, regular flag, referredBy|null). `Engine.getClient(id)` → one
+  full view. Mutators none (CRM is read-only UI-side).
+
+## 21.2 Persistent machines (#18)
+
+- Client machine = the SAME machine object shape jobs already use
+  (name/partIds/…), stored on the client, plus `{ id, acquiredDay,
+  builtByShop: bool }`. Machines-per-client by type (CONFIG table): most types
+  1; enthusiast/gamer up to 2. A client's machine is born the first time a
+  machine-carrying job of theirs completes (the job's machine, as repaired —
+  including parts the shop installed) or when the shop builds them one (build
+  jobs store the built machine, builtByShop).
+- When a client with a stored machine gets a return offer of a
+  machine-carrying shape (repair/upgrade), the offer's machine IS their stored
+  machine (same identity — same partIds the shop last saw, the GPU you
+  installed still in it). The rolled fault must be solvable against THAT
+  machine (§20.4 #6 compatibility rules apply; if no solvable fault exists,
+  fall back to a non-machine job shape rather than leaking a fresh random
+  machine). Completing the job writes the changes back (replaced parts,
+  upgrades, OS). `job.clientId` + `job.clientMachineId` carry the link;
+  UI may surface "you've serviced this box before".
+- **Aging & replacement**: each client machine drifts (faults stream). When a
+  machine's core is badly outdated (CONFIG.MACHINE_REPLACE_AGE_YEARS ~ 7 vs
+  current year), the client may show up with a NEW era-appropriate machine
+  (generated as today's offers do) replacing the old one; the old box SHOULD
+  then appear once in the as-is market ("<name>'s old machine") — a nice
+  closed loop, but engine may ship without the as-is hook if it endangers the
+  liveness guard (report either way).
+- Conservation: parts installed into client machines leave inventory exactly
+  as today; the stored machine is a record, not a second inventory (the §19.1
+  shadow-ledger invariant must stay green).
+
+## 21.3 Business ecosystems (#19)
+
+Extends §15.4 accounts (retainers) — accounts gain
+`{ kind, seats, health (0..100, start ~60), fleet: [machine], history: [...] }`.
+- **Kinds** from a new DATA table (era-windowed: typing pool / print shop /
+  law office / video store / dot-com / LAN café / design studio / clinic /
+  e-sports den …) with seat ranges; account offers name the kind and size.
+- **Fleet**: machines the business runs. Seeded at signing (generated,
+  era-appropriate, slightly dated — that's why they need you). Contract
+  builds/upgrades COMMISSIONED by an account (see below) enter/refresh the
+  fleet with builtByShop. Retainer auto-jobs repair fleet machines (persistent
+  identity, same rules as §21.2).
+- **Monthly tick** (with the existing retainer billing): health moves on
+  (a) fleet spec vs the year's baseline (dated fleet drags), (b) this month's
+  service outcomes on their jobs (late/failed hurt hard, on-time helps),
+  (c) uncovered seats (seats without a working machine hurt). Health bands
+  drive: growth (seats +1..2, news item crediting the shop, and a commissioned
+  CONTRACT offer for the new seats — builds for that account, entering the
+  fleet), stability, shrink (seats down, aging news), or churn (health floor:
+  account cancels with a stinging news item). CONFIG-tuned so a well-served
+  account visibly grows within ~2 in-game months and a neglected one shrinks
+  within ~3.
+- Commissioned contract offers are TAGGED to the account (`job.accountId` on a
+  'contract' build job) and bounded (never more than one open commissioned
+  offer per account; global contract volume guard unchanged).
+- View: `Engine.getAccounts()` (extend the existing accounts view): kind,
+  seats, health + trend (up/flat/down + last change reason string), fleet
+  summaries (name, year-class, builtByShop, condition-ish), monthly fee,
+  jobsPerMonth, history of seat changes with real dates.
+
+## 21.4 Clients tab (UI) — #20 face
+
+- New top-level tab **"Clients"** between Shop and Ledger (10 tabs; tab-bar
+  must stay usable at 1366×768 and 130% zoom — E2E guards reachability).
+  Sub-tabs (UI.subTabsHTML): **People** and **Businesses**.
+  - People: sortable list (Name / Loyalty / Visits / Last seen) with search;
+    loyalty as tier label + pip/star meter; expandable detail: their machines
+    (wiki-style spec summaries, "built by you" badge, acquired date), work
+    history with real dates and outcome chips, taste line, referral credit.
+    A "How loyalty works" expandable (§19 pattern) states the rules plainly.
+  - Businesses: account cards: kind + name, seats with trend arrow + reason,
+    health meter, fleet grid (year-class chips, builtByShop badges), monthly
+    fee/service terms, seat-change history. "How business health works"
+    expandable.
+- Offers tab: offers from known clients get a small client chip (name +
+  loyalty tier; "referred by X" when applicable) — click opens their CRM
+  detail (modal or tab-jump, UI's call). Workbench job cards for
+  client-machine jobs note "their usual machine — you've serviced it N times"
+  (engine provides the count via the job view).
+- Empty states matter: a fresh 1983 shop shows a friendly "no clients yet"
+  and the tab still renders (zero console errors from day one).
+
+## 21.5 DATA
+
+- `BUSINESS_KINDS` table (≥12, era-windowed: {id, label, minYear, maxYear,
+  seats: [lo,hi], blurb}) written in the game's voice; validator: unique ids,
+  sane windows/seat ranges, ≥3 kinds live in every start-era year.
+- FLAVOR additions: referral blurbs (≥6), business growth/shrink/churn news
+  templates (≥4 each, with {name}/{seats}-style placeholders as flavor.js
+  already does), loyalty tier labels (4-5, era-neutral). Validator counts.
+- Existing fog/complaint rules untouched and still enforced.
+
+## 21.6 Save, config, guards, testing
+
+- Save v12: migrateV11toV12 — clients seeded from legacy regulars (see 21.1),
+  accounts gain kind/seats/health/fleet (defaults: kind rolled from the new
+  table deterministically via misc stream, seats from kind range midpoint,
+  health 60, fleet seeded on next monthly tick, NOT retroactively). Old saves
+  load forever; v12 round-trip byte-identical.
+- Engine.VERSION '0.10'; UI version gates fixed to segment-wise compare.
+- Guards unchanged and re-verified (median-of-5): offers/day ≤3.9 is the
+  headline risk (returns/referrals must stay volume-neutral); 1983 cash band;
+  flips/jobs ratios; survival; conservation + orphan-link invariants.
+- sim-test: client persistence (complete a machine job, force the client's
+  return, assert same machine id + the installed part still present);
+  loyalty rise/decay transitions incl. eviction rules; referral seeding;
+  account lifecycle (sign → fleet seeded → good service → seats grow +
+  commissioned contract appears → contract build enters fleet; neglect path →
+  shrink → churn); volume guards; v12 migration fixtures (legacy regulars
+  become regular-tier clients).
+- Overseer E2E: 10-tab render loop; Clients tab People/Businesses sub-tabs
+  render with empty states; served client appears in People with work log;
+  loyalty meter renders; business card shows kind/seats/health; client chip
+  on a return offer; persistent-machine identity via engine calls; zero
+  console errors.
